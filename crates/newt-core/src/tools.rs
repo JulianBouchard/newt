@@ -161,6 +161,7 @@ pub fn builtin_tools() -> Vec<ToolDef> {
                 },
             }),
         ),
+        crate::batch_tool::batch_tool(),
     ]
 }
 

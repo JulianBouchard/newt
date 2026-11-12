@@ -123,6 +123,7 @@ struct TurnState {
     steered: Vec<String>,
     scratch: Vec<Message>,
     summaries: HashMap<String, String>,
+    kept: HashSet<String>,
     harness_notes: HashSet<usize>,
     calls: Vec<CallReport>,
 }
@@ -185,6 +186,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         steered: Vec::new(),
         scratch: input.events,
         summaries: HashMap::new(),
+        kept: HashSet::new(),
         harness_notes: HashSet::new(),
         calls: Vec::new(),
     };
@@ -195,6 +197,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         &CommitRules {
             retention: &retention,
             summaries: &state.summaries,
+            kept: &state.kept,
             harness_notes: &state.harness_notes,
         },
     );
@@ -296,6 +299,7 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
 
         let batch = crate::batch::run_tools(&tool_calls, context, deps, &state.replay).await;
         state.summaries.extend(batch.summaries);
+        state.kept.extend(batch.kept);
         state.effects |= batch.effects;
         state.scratch.push(Message {
             role: Role::User,

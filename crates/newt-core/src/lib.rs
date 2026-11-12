@@ -1,4 +1,5 @@
 mod batch;
+pub mod batch_tool;
 mod commit;
 pub mod event;
 pub mod journal;

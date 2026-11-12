@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use futures_util::future::join_all;
 use futures_util::stream::{self, StreamExt};
 
+use crate::batch_tool::{Expanded, expand, fold, project};
 use crate::event::{Event, EventKind};
 use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{ToolCall, ToolResult};
@@ -25,6 +26,7 @@ const OUTWARD_CANCELLED: &str = "Not run: the turn was cancelled before this cal
 pub(crate) struct Batch {
     pub(crate) results: Vec<ToolResult>,
     pub(crate) summaries: HashMap<String, String>,
+    pub(crate) kept: HashSet<String>,
     pub(crate) end: Option<EndTurn>,
     pub(crate) effects: bool,
 }
@@ -46,6 +48,7 @@ fn success(content: impl Into<String>) -> ToolOutput {
 
 fn plan_calls(
     tool_calls: &[ToolCall],
+    preset: &HashMap<String, ToolOutput>,
     context: &TurnContext<'_>,
     replay: &Replay,
 ) -> (Vec<Plan>, Option<EndTurn>, Option<usize>) {
@@ -63,6 +66,9 @@ fn plan_calls(
                     )),
                     0,
                 );
+            }
+            if let Some(output) = preset.get(&call.id) {
+                return Plan::Done(output.clone(), 0);
             }
             if let Some(output) = replay.output(&call.id) {
                 return Plan::Done(output.clone(), 0);
@@ -97,13 +103,15 @@ fn plan_calls(
 }
 
 pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
-    tool_calls: &[ToolCall],
+    model_calls: &[ToolCall],
     context: &TurnContext<'_>,
     deps: &TurnDeps<'_, M, H, S, J>,
     replay: &Replay,
 ) -> Batch {
+    let expanded = expand(model_calls, context.retention);
+    let tool_calls = expanded.calls.as_slice();
     let (host, journal) = (deps.host, deps.journal);
-    let (plans, mut end, end_slot) = plan_calls(tool_calls, context, replay);
+    let (plans, mut end, end_slot) = plan_calls(tool_calls, &expanded.preset, context, replay);
 
     let mut slots: Vec<Option<(ToolOutput, u64)>> = Vec::with_capacity(plans.len());
     let mut workspace_reads = Vec::new();
@@ -151,39 +159,10 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         slots[slot] = Some(output);
     }
 
-    let replayed_outward_failed = tool_calls.iter().any(|call| {
-        context.retention.get(&call.name) == Some(&Retention::Outward)
-            && replay
-                .output(&call.id)
-                .is_some_and(|output| output.is_error)
-    });
-    let mut skip_reason = replayed_outward_failed.then(|| OUTWARD_SKIPPED.to_owned());
-    for slot in outward {
-        let call = &tool_calls[slot];
-        if skip_reason.is_none() && deps.cancel.is_cancelled() {
-            skip_reason = Some(OUTWARD_CANCELLED.to_owned());
-        }
-        if skip_reason.is_none()
-            && let Err(error) = journal
-                .append_and_wait(JournalEntry::OutwardIntent {
-                    call_id: call.id.clone(),
-                })
-                .await
-        {
-            skip_reason = Some(format!("Not sent: {error}"));
-        }
-        let output = if let Some(reason) = &skip_reason {
-            (failure(reason.clone()), 0)
-        } else {
-            let output = timed_call(host, call, &keys[slot]).await;
-            record_output(journal, call, &output.0);
-            if output.0.is_error {
-                skip_reason = Some(OUTWARD_SKIPPED.to_owned());
-            }
-            output
-        };
-        slots[slot] = Some(output);
-    }
+    run_outward(
+        tool_calls, &outward, &keys, &mut slots, context, deps, replay,
+    )
+    .await;
 
     let mut outputs: Vec<(ToolOutput, u64)> = slots
         .into_iter()
@@ -191,6 +170,13 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
             slot.unwrap_or_else(|| (failure("internal error: tool was never scheduled"), 0))
         })
         .collect();
+    for (slot, projection) in &expanded.projections {
+        if let Some((output, _)) = outputs.get_mut(*slot)
+            && !output.is_error
+        {
+            output.content = project(&output.content, projection);
+        }
+    }
     let batch_failed = outputs
         .iter()
         .enumerate()
@@ -204,16 +190,17 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     }
 
     apply_workspace_changes(tool_calls, &mut outputs, context);
-    finish_batch(tool_calls, outputs, end, context, deps.sink)
+    finish_batch(&expanded, outputs, end, context, deps.sink)
 }
 
 fn finish_batch(
-    tool_calls: &[ToolCall],
+    expanded: &Expanded,
     outputs: Vec<(ToolOutput, u64)>,
     end: Option<EndTurn>,
     context: &TurnContext<'_>,
     sink: &dyn EventSink,
 ) -> Batch {
+    let tool_calls = expanded.calls.as_slice();
     let mut summaries = HashMap::new();
     let mut results = Vec::with_capacity(outputs.len());
     let effects = tool_calls.iter().zip(&outputs).any(|(call, (output, _))| {
@@ -242,17 +229,64 @@ fn finish_batch(
         {
             summaries.insert(call.id.clone(), summary);
         }
-        results.push(ToolResult {
+        results.push(Some(ToolResult {
             call_id: call.id.clone(),
             content: output.content,
             is_error: output.is_error,
-        });
+        }));
     }
+    let folded = fold(expanded, results, summaries, context.retention);
     Batch {
-        results,
-        summaries,
+        results: folded.results,
+        summaries: folded.summaries,
+        kept: folded.kept,
         end,
         effects,
+    }
+}
+
+async fn run_outward<M, H: ToolHost, S, J: Journal>(
+    tool_calls: &[ToolCall],
+    outward: &[usize],
+    keys: &[String],
+    slots: &mut [Option<Timed>],
+    context: &TurnContext<'_>,
+    deps: &TurnDeps<'_, M, H, S, J>,
+    replay: &Replay,
+) {
+    let replayed_outward_failed = tool_calls.iter().any(|call| {
+        context.retention.get(&call.name) == Some(&Retention::Outward)
+            && replay
+                .output(&call.id)
+                .is_some_and(|output| output.is_error)
+    });
+    let mut skip_reason = replayed_outward_failed.then(|| OUTWARD_SKIPPED.to_owned());
+    for &slot in outward {
+        let call = &tool_calls[slot];
+        if skip_reason.is_none() && deps.cancel.is_cancelled() {
+            skip_reason = Some(OUTWARD_CANCELLED.to_owned());
+        }
+        if skip_reason.is_none()
+            && let Err(error) = deps
+                .journal
+                .append_and_wait(JournalEntry::OutwardIntent {
+                    call_id: call.id.clone(),
+                })
+                .await
+        {
+            skip_reason = Some(format!("Not sent: {error}"));
+        }
+        let output = if let Some(reason) = &skip_reason {
+            (failure(reason.clone()), 0)
+        } else {
+            let output = timed_call(deps.host, call, &keys[slot]).await;
+            record_output(deps.journal, call, &output.0);
+            if output.0.is_error {
+                skip_reason = Some(OUTWARD_SKIPPED.to_owned());
+            }
+            output
+        };
+        slots[slot] = Some(output);
     }
 }
 

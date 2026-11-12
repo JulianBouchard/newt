@@ -8,6 +8,7 @@ const UNSUMMARIZED_RESULT_LIMIT: usize = 500;
 pub(crate) struct CommitRules<'a> {
     pub retention: &'a HashMap<String, Retention>,
     pub summaries: &'a HashMap<String, String>,
+    pub kept: &'a HashSet<String>,
     pub harness_notes: &'a HashSet<usize>,
 }
 
@@ -16,10 +17,11 @@ pub(crate) fn committed_messages(scratch: Vec<Message>, rules: &CommitRules<'_>)
         .iter()
         .flat_map(Message::tool_calls)
         .filter(|call| {
-            rules
-                .retention
-                .get(&call.name)
-                .is_some_and(|retention| *retention != Retention::Ephemeral)
+            rules.kept.contains(&call.id)
+                || rules
+                    .retention
+                    .get(&call.name)
+                    .is_some_and(|retention| *retention != Retention::Ephemeral)
         })
         .map(|call| call.id.clone())
         .collect();
@@ -137,6 +139,7 @@ mod tests {
             &CommitRules {
                 retention: &retention,
                 summaries: &summaries,
+                kept: &HashSet::new(),
                 harness_notes: &harness_notes,
             },
         );

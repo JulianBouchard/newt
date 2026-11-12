@@ -508,3 +508,127 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
     assert!(host.calls.lock().unwrap().is_empty());
     assert!(outcome.is_err());
 }
+
+fn batch(id: &str, calls: Value) -> Part {
+    let arguments = serde_json::Map::from_iter([("calls".to_owned(), calls)]);
+    call(id, "batch", Value::Object(arguments))
+}
+
+#[tokio::test]
+async fn a_batch_runs_its_calls_with_the_send_last_and_keeps_only_the_writes() {
+    let script = vec![
+        assistant(vec![batch(
+            "b1",
+            json!([
+                { "name": "send_message", "arguments": { "text": "Hi" } },
+                { "name": "read_file", "arguments": { "paths": ["profile.md"] } },
+                { "name": "save_note", "arguments": { "text": "remote only" } },
+            ]),
+        )]),
+        assistant(vec![call(
+            "e1",
+            "end_turn",
+            json!({ "recorded": ["remote only"] }),
+        )]),
+    ];
+    let run = run(script, 4, &external_tools()).await;
+    let outcome = run.outcome.unwrap();
+    assert_eq!(
+        *run.host.calls.lock().unwrap(),
+        vec!["save_note", "send_message"],
+        "the outward call runs after the others"
+    );
+    let seen = &run.model.seen.lock().unwrap()[1].scratch;
+    let folded = seen
+        .iter()
+        .flat_map(|message| &message.parts)
+        .find_map(|part| match part {
+            Part::ToolResult(result) if result.call_id == "b1" => Some(result.content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(folded.starts_with("[1] send_message: "), "{folded}");
+    assert!(
+        folded.contains("[2] read_file: --- profile.md ---"),
+        "{folded}"
+    );
+    assert!(folded.contains("[3] save_note: "), "{folded}");
+
+    let committed = format!("{:?}", outcome.committed);
+    assert!(committed.contains("\"b1\""), "{committed}");
+    assert!(
+        committed.contains("Sent message; Saved: remote only"),
+        "{committed}"
+    );
+    assert!(!committed.contains("--- profile.md ---"), "{committed}");
+}
+
+#[tokio::test]
+async fn a_batch_of_reads_never_reaches_history() {
+    let script = vec![
+        assistant(vec![batch(
+            "b1",
+            json!([
+                { "name": "read_file", "arguments": { "paths": ["profile.md"] } },
+                { "name": "glob", "arguments": { "pattern": "*.md" } },
+            ]),
+        )]),
+        assistant(vec![call(
+            "e1",
+            "end_turn",
+            json!({ "nothing_new": "just looked" }),
+        )]),
+    ];
+    let outcome = run(script, 4, &external_tools()).await.outcome.unwrap();
+    let committed = format!("{:?}", outcome.committed);
+    assert!(!committed.contains("b1"), "{committed}");
+}
+
+#[tokio::test]
+async fn a_batch_with_two_sends_is_refused_before_anything_runs() {
+    let script = vec![
+        assistant(vec![batch(
+            "b1",
+            json!([
+                { "name": "send_message", "arguments": { "text": "a" } },
+                { "name": "send_message", "arguments": { "text": "b" } },
+            ]),
+        )]),
+        assistant(vec![call(
+            "e1",
+            "end_turn",
+            json!({ "nothing_new": "refused" }),
+        )]),
+    ];
+    let run = run(script, 4, &external_tools()).await;
+    assert!(run.outcome.is_ok());
+    assert!(run.host.calls.lock().unwrap().is_empty());
+    let seen = &run.model.seen.lock().unwrap()[1].scratch;
+    let refused = seen
+        .iter()
+        .flat_map(|message| &message.parts)
+        .any(|part| matches!(part, Part::ToolResult(result) if result.is_error && result.content.contains("at most one outward")));
+    assert!(refused);
+}
+
+#[tokio::test]
+async fn fields_and_limit_trim_what_the_model_sees_from_a_batched_call() {
+    let script = vec![
+        assistant(vec![batch(
+            "b1",
+            json!([{ "name": "save_note", "arguments": { "text": "x" }, "fields": ["note.id"] }]),
+        )]),
+        assistant(vec![call("e1", "end_turn", json!({ "recorded": ["x"] }))]),
+    ];
+    let run = run(script, 4, &external_tools()).await;
+    let seen = &run.model.seen.lock().unwrap()[1].scratch;
+    let folded = seen
+        .iter()
+        .flat_map(|message| &message.parts)
+        .find_map(|part| match part {
+            Part::ToolResult(result) if result.call_id == "b1" => Some(result.content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(folded, "[1] save_note: {\"note\":{\"id\":7}}");
+}
