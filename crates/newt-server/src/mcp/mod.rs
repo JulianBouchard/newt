@@ -1,21 +1,23 @@
+//! Connecting to MCP servers and listing their tools. One call's path lives in
+//! `call.rs`.
+
+mod call;
+
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use newt_core::message::ToolCall;
 use newt_core::prompt::ToolSpec;
-use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
-use newt_core::workspace::{Page, PageKey};
+use newt_core::tools::{Retention, ToolDef};
+use newt_core::workspace::PageKey;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientConfig, ContentBlock, JsonObject,
-    RequestMetaObject, Tool,
+    ClientConfig, JsonObject, ProtocolVersion, ServerNotification, SubscriptionFilter, Tool,
 };
 use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{RoleClient, ServiceError, ServiceExt};
+use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -31,10 +33,9 @@ pub const META_SUMMARY: &str = "newt/summary";
 pub const META_INVALIDATE: &str = "newt/invalidate";
 pub const META_PAGES: &str = "newt/pages";
 
-const CALL_TIMEOUT: Duration = Duration::from_secs(90);
+const CALL_QUIET_LIMIT: Duration = Duration::from_secs(90);
+const CALL_LIMIT: Duration = Duration::from_mins(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const OUTCOME_UNKNOWN: &str = "it may or may not have taken effect. Do not repeat it: check the workspace first, and tell the person if you cannot confirm it.";
-const BAD_META: &str = "(newt could not read this tool's workspace metadata, so every page will be refetched before its next read)";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -74,10 +75,28 @@ struct Remote {
     server: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallLimits {
+    /// How long a call may go without a result or a progress notification.
+    pub quiet: Duration,
+    /// How long a call may run in total, however much progress it reports.
+    pub total: Duration,
+}
+
+impl Default for CallLimits {
+    fn default() -> Self {
+        Self {
+            quiet: CALL_QUIET_LIMIT,
+            total: CALL_LIMIT,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct McpHost {
     tools: Arc<HashMap<String, Remote>>,
-    broken: Arc<AtomicBool>,
+    stale: Arc<AtomicBool>,
+    limits: CallLimits,
     session: String,
 }
 
@@ -86,7 +105,8 @@ impl std::fmt::Debug for McpHost {
         formatter
             .debug_struct("McpHost")
             .field("tools", &self.tools.len())
-            .field("broken", &self.broken)
+            .field("stale", &self.stale)
+            .field("limits", &self.limits)
             .field("session", &self.session)
             .finish()
     }
@@ -95,7 +115,8 @@ impl std::fmt::Debug for McpHost {
 pub struct Toolset {
     pub tools: Vec<ToolDef>,
     remotes: Arc<HashMap<String, Remote>>,
-    broken: Arc<AtomicBool>,
+    stale: Arc<AtomicBool>,
+    limits: CallLimits,
 }
 
 impl std::fmt::Debug for Toolset {
@@ -119,19 +140,31 @@ impl Toolset {
             })?
     }
 
-    pub fn is_broken(&self) -> bool {
-        self.broken.load(Ordering::Relaxed)
+    /// True once a connection broke, a server said its tools changed, or a
+    /// server's change notifications stopped: the next turn reconnects and
+    /// lists the tools again.
+    pub fn is_stale(&self) -> bool {
+        self.stale.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn with_call_limits(mut self, limits: CallLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     async fn connect_all(servers: &[McpServer], agent_token: &str) -> Result<Self, String> {
         let mut tools = Vec::new();
         let mut remotes = HashMap::new();
+        let stale = Arc::new(AtomicBool::new(false));
         for server in servers {
             let client = Arc::new(connect(server, agent_token).await?);
-            let listed = client
+            let mut listed = client
                 .list_all_tools()
                 .await
                 .map_err(|error| format!("MCP server `{}`: listing tools: {error}", server.name))?;
+            listed.sort_by(|left, right| left.name.cmp(&right.name));
+            watch_tool_list(&server.name, &client, &stale).await;
             for tool in listed {
                 let name = tool.name.to_string();
                 let def = tool_def(tool).map_err(|error| {
@@ -151,17 +184,60 @@ impl Toolset {
         Ok(Self {
             tools,
             remotes: Arc::new(remotes),
-            broken: Arc::new(AtomicBool::new(false)),
+            stale,
+            limits: CallLimits::default(),
         })
     }
 
     pub fn host(&self, session: &str) -> McpHost {
         McpHost {
             tools: Arc::clone(&self.remotes),
-            broken: Arc::clone(&self.broken),
+            stale: Arc::clone(&self.stale),
+            limits: self.limits,
             session: session.to_owned(),
         }
     }
+}
+
+async fn watch_tool_list(server: &str, client: &Client, stale: &Arc<AtomicBool>) {
+    let filter = SubscriptionFilter::builder().tools_list_changed().build();
+    let mut subscription = match client.peer().listen(filter).await {
+        Ok(subscription) if subscription.acknowledged().tools_list_changed == Some(true) => {
+            subscription
+        }
+        Ok(_) => {
+            tracing::debug!(server, "MCP server does not announce tool changes");
+            return;
+        }
+        Err(error) => {
+            tracing::debug!(server, %error, "MCP server offers no change notifications");
+            return;
+        }
+    };
+    let server = server.to_owned();
+    let stale = Arc::clone(stale);
+    tokio::spawn(async move {
+        loop {
+            match subscription.next().await {
+                Ok(Some(ServerNotification::ToolListChangedNotification(_))) => {
+                    tracing::info!(
+                        server,
+                        "MCP server changed its tools; relisting before the next turn"
+                    );
+                    stale.store(true, Ordering::Relaxed);
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {
+                    tracing::info!(
+                        server,
+                        "MCP change notifications stopped; relisting before the next turn"
+                    );
+                    stale.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+    });
 }
 
 async fn connect(server: &McpServer, agent_token: &str) -> Result<Client, String> {
@@ -190,7 +266,13 @@ async fn connect(server: &McpServer, agent_token: &str) -> Result<Client, String
         config = config.auth_header(agent_token);
     }
     ClientConfig::default()
-        .serve(StreamableHttpClientTransport::from_config(config))
+        .serve_with_lifecycle(
+            StreamableHttpClientTransport::from_config(config),
+            ClientLifecycleMode::Auto {
+                preferred_versions: vec![ProtocolVersion::LATEST],
+                legacy_version: Some(ProtocolVersion::LATEST_WITH_INITIALIZE),
+            },
+        )
         .await
         .map_err(|error| format!("MCP server `{}`: connecting: {error}", server.name))
 }
@@ -229,114 +311,4 @@ fn tool_def(tool: Tool) -> Result<ToolDef, String> {
     );
     def.invalidates = invalidates;
     Ok(def)
-}
-
-impl McpHost {
-    async fn run(&self, call: &ToolCall, context: &CallContext) -> ToolOutput {
-        let Some(remote) = self.tools.get(&call.name) else {
-            return ToolOutput::error(format!("unknown tool `{}`", call.name));
-        };
-        let Value::Object(arguments) = call.arguments.clone() else {
-            return ToolOutput::error(format!("arguments for {} must be a JSON object", call.name));
-        };
-        let mut meta = RequestMetaObject::new();
-        meta.insert(META_SESSION.to_owned(), Value::from(self.session.as_str()));
-        meta.insert(
-            META_IDEMPOTENCY_KEY.to_owned(),
-            Value::from(context.idempotency_key.as_str()),
-        );
-        meta.insert(
-            META_SKILLS_LOADED.to_owned(),
-            serde_json::json!(context.skills_loaded),
-        );
-        meta.insert(
-            META_PAGES_READ.to_owned(),
-            serde_json::json!(context.pages_read),
-        );
-        let mut params = CallToolRequestParams::new(call.name.clone()).with_arguments(arguments);
-        params.meta = Some(meta);
-        match tokio::time::timeout(CALL_TIMEOUT, remote.client.call_tool(params)).await {
-            Ok(Ok(result)) => tool_output(result),
-            Ok(Err(ServiceError::McpError(error))) => {
-                tracing::warn!(server = %remote.server, tool = %call.name, %error, "MCP call returned an error");
-                ToolOutput::error(format!("The tool call failed: {}", error.message))
-            }
-            Ok(Err(error)) => {
-                if matches!(
-                    error,
-                    ServiceError::TransportSend(_) | ServiceError::TransportClosed
-                ) {
-                    self.broken.store(true, Ordering::Relaxed);
-                }
-                tracing::warn!(server = %remote.server, tool = %call.name, %error, "MCP call lost its connection");
-                ToolOutput::error(format!(
-                    "The connection to the tool broke during the call, so {OUTCOME_UNKNOWN}"
-                ))
-            }
-            Err(_) => ToolOutput::error(format!(
-                "The tool call did not answer within {} seconds, so {OUTCOME_UNKNOWN}",
-                CALL_TIMEOUT.as_secs()
-            )),
-        }
-    }
-}
-
-impl ToolHost for McpHost {
-    fn call(
-        &self,
-        call: &ToolCall,
-        context: &CallContext,
-    ) -> impl Future<Output = ToolOutput> + Send {
-        self.run(call, context)
-    }
-}
-
-fn tool_output(result: CallToolResult) -> ToolOutput {
-    let mut content: Vec<String> = result
-        .content
-        .into_iter()
-        .map(|block| match block {
-            ContentBlock::Text(text) => text.text,
-            ContentBlock::Image(_) => "[image]".to_owned(),
-            ContentBlock::Audio(_) => "[audio]".to_owned(),
-            _ => "[resource]".to_owned(),
-        })
-        .collect();
-    if content.is_empty()
-        && let Some(structured) = &result.structured_content
-    {
-        content.push(structured.to_string());
-    }
-    let mut output = ToolOutput {
-        content: content.join("\n"),
-        is_error: result.is_error == Some(true),
-        ..ToolOutput::default()
-    };
-    let meta = result.meta.as_deref();
-    let summary = meta_field::<String>(meta, META_SUMMARY);
-    let invalidate = meta_field::<Vec<PageKey>>(meta, META_INVALIDATE);
-    let pages = meta_field::<Vec<Page>>(meta, META_PAGES).and_then(|pages| {
-        if let Some(pages) = &pages {
-            crate::context::check_pages(pages)?;
-        }
-        Ok(pages)
-    });
-    match (summary, invalidate, pages) {
-        (Ok(summary), Ok(invalidate), Ok(pages)) => {
-            output.summary = summary;
-            output.invalidate = invalidate.unwrap_or_default();
-            output.pages = pages.unwrap_or_default();
-        }
-        (summary, invalidate, pages) => {
-            let problems: Vec<String> = [summary.err(), invalidate.err(), pages.err()]
-                .into_iter()
-                .flatten()
-                .collect();
-            tracing::error!(problems = %problems.join("; "), "MCP result had invalid newt metadata");
-            output.invalidate = vec![Vec::new()];
-            output.content.push('\n');
-            output.content.push_str(BAD_META);
-        }
-    }
-    output
 }

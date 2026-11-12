@@ -124,6 +124,7 @@ pub(crate) struct TurnIds<'a> {
     pub(crate) session: &'a str,
     pub(crate) cache_key: &'a str,
     pub(crate) turn: &'a str,
+    pub(crate) started: time::OffsetDateTime,
 }
 
 pub(crate) struct TurnContext<'a> {
@@ -174,6 +175,23 @@ struct TurnState {
     traced: usize,
 }
 
+impl TurnState {
+    fn new(context: Option<String>, events: Vec<Message>, replay: Vec<JournalEntry>) -> Self {
+        let (scratch, harness_notes) = initial_scratch(context, events);
+        Self {
+            effects: false,
+            replay: Replay::new(replay),
+            steered: Vec::new(),
+            scratch,
+            summaries: HashMap::new(),
+            kept: HashSet::new(),
+            harness_notes,
+            calls: Vec::new(),
+            traced: 0,
+        }
+    }
+}
+
 #[expect(
     clippy::result_large_err,
     reason = "a failed turn is rare and must hand back what it committed"
@@ -207,11 +225,13 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         history: input.history,
         scratch: &[],
     };
+    let started = turn_started(&input, settings);
     let context = TurnContext {
         ids: TurnIds {
             session: input.session,
             cache_key: input.cache_key,
             turn: input.turn,
+            started: started.at,
         },
         system: &system,
         history: input.history,
@@ -225,19 +245,8 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         prefix_fingerprint: layers.prefix_fingerprint(),
         history_fingerprint: layers.history_fingerprint(),
     };
-    sink.emit(turn_started(&input, settings));
-    let (scratch, harness_notes) = initial_scratch(input.context, input.events);
-    let mut state = TurnState {
-        effects: false,
-        replay: Replay::new(input.replay),
-        steered: Vec::new(),
-        scratch,
-        summaries: HashMap::new(),
-        kept: HashSet::new(),
-        harness_notes,
-        calls: Vec::new(),
-        traced: 0,
-    };
+    sink.emit(started);
+    let mut state = TurnState::new(input.context, input.events, input.replay);
 
     let result = drive(deps, &context, settings, &mut state).await;
     let committed = committed_messages(

@@ -76,6 +76,7 @@ pub struct CallContext {
     pub idempotency_key: String,
     pub skills_loaded: Vec<String>,
     pub pages_read: Vec<PageRead>,
+    pub traceparent: Option<String>,
 }
 
 pub trait ToolHost: Send + Sync {

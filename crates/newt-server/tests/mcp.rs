@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use newt_core::journal::NoJournal;
 use newt_core::message::{Message, Part, Role, ToolCall};
@@ -20,12 +21,13 @@ use newt_core::steering::NoSteering;
 use newt_core::tools::{CallContext, PageRead, Retention, ToolHost};
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
-use newt_server::mcp::{McpAuth, McpServer, Toolset};
+use newt_server::mcp::{CallLimits, McpAuth, McpServer, Toolset};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
-    ListToolsResult, MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    ListToolsResult, MetaObject, PaginatedRequestParams, ProgressNotificationParam,
+    ServerCapabilities, ServerConfig, SubscriptionFilter, Tool,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{RequestContext, SubscriptionContext, SubscriptionSink};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -37,12 +39,40 @@ struct Calls {
     seen: Mutex<Vec<(String, Value)>>,
     authorization: Mutex<Vec<Option<String>>>,
     profile: Mutex<String>,
+    listeners: Mutex<Vec<SubscriptionSink>>,
+    cancelled: AtomicUsize,
 }
 
 #[derive(Clone)]
 struct Server {
     calls: Arc<Calls>,
     outward_idempotent: bool,
+    announces_changes: bool,
+}
+
+impl Server {
+    fn new(calls: &Arc<Calls>) -> Self {
+        Self {
+            calls: Arc::clone(calls),
+            outward_idempotent: true,
+            announces_changes: true,
+        }
+    }
+}
+
+async fn report_progress(context: &RequestContext<RoleServer>, every: Duration, times: u32) {
+    let token = context.meta.get_progress_token().unwrap();
+    for step in 0..times {
+        tokio::time::sleep(every).await;
+        context
+            .peer
+            .notify_progress(ProgressNotificationParam::new(
+                token.clone(),
+                f64::from(step),
+            ))
+            .await
+            .unwrap();
+    }
 }
 
 fn meta(value: Value) -> MetaObject {
@@ -64,7 +94,29 @@ fn schema() -> Arc<JsonObject> {
 
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        let capabilities = ServerCapabilities::builder().enable_tools();
+        ServerConfig::new(if self.announces_changes {
+            capabilities.enable_tool_list_changed().build()
+        } else {
+            capabilities.build()
+        })
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        self.announces_changes.then(|| requested.clone())
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        self.calls
+            .listeners
+            .lock()
+            .unwrap()
+            .push(context.sink().clone());
+        context.cancelled().await;
+        Ok(())
     }
 
     async fn list_tools(
@@ -95,6 +147,11 @@ impl ServerHandler for Server {
                 schema(),
             ),
             Tool::new("bad_meta", "Returns broken newt metadata.", schema()),
+            Tool::new("change_tools", "Announces a new tool list.", schema()),
+            Tool::new("slow_search", "Reports progress, then answers.", schema()),
+            Tool::new("silent_search", "Answers late without progress.", schema()),
+            Tool::new("endless_search", "Reports progress forever.", schema()),
+            Tool::new("wait_forever", "Answers only when cancelled.", schema()),
         ]))
     }
 
@@ -135,6 +192,30 @@ impl ServerHandler for Server {
                 }))),
             ),
             "lookup_role" => CallToolResult::error(vec![ContentBlock::text("no such role")]),
+            "change_tools" => {
+                let listeners = self.calls.listeners.lock().unwrap().clone();
+                for listener in listeners {
+                    listener.notify_tool_list_changed().await.unwrap();
+                }
+                CallToolResult::success(vec![ContentBlock::text("changed")])
+            }
+            "slow_search" => {
+                report_progress(&context, Duration::from_millis(100), 6).await;
+                CallToolResult::success(vec![ContentBlock::text("found 3")])
+            }
+            "wait_forever" => {
+                context.ct.cancelled().await;
+                self.calls.cancelled.fetch_add(1, Ordering::SeqCst);
+                CallToolResult::success(vec![ContentBlock::text("cancelled")])
+            }
+            "silent_search" => {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                CallToolResult::success(vec![ContentBlock::text("too late")])
+            }
+            "endless_search" => {
+                report_progress(&context, Duration::from_millis(50), 100).await;
+                CallToolResult::success(vec![ContentBlock::text("never")])
+            }
             "bad_meta" => CallToolResult::success(vec![ContentBlock::text("done")]).with_meta(
                 Some(meta(json!({ "newt/pages": [{ "key": [], "path": "", "version": "1", "content": "" }] }))),
             ),
@@ -168,11 +249,15 @@ async fn spawn_stoppable(server: Server) -> (String, CancellationToken) {
 }
 
 async fn connect(calls: &Arc<Calls>, outward_idempotent: bool) -> Result<Toolset, String> {
-    let url = spawn_server(Server {
-        calls: Arc::clone(calls),
+    connect_to(Server {
         outward_idempotent,
+        ..Server::new(calls)
     })
-    .await;
+    .await
+}
+
+async fn connect_to(server: Server) -> Result<Toolset, String> {
+    let url = spawn_server(server).await;
     Toolset::connect(
         &[McpServer {
             name: "app".into(),
@@ -251,6 +336,7 @@ async fn a_call_sends_the_session_and_idempotency_key_and_reads_result_meta() {
                     path: "profile.md".into(),
                     version: "3".into(),
                 }],
+                traceparent: None,
             },
         )
         .await;
@@ -404,6 +490,13 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
     .await
     .unwrap();
 
+    let traceparent = calls.seen.lock().unwrap()[0].1["traceparent"].clone();
+    assert!(
+        traceparent
+            .as_str()
+            .is_some_and(|value| value.len() == 55 && value.starts_with("00-")),
+        "{traceparent}"
+    );
     assert_eq!(source.fetches.load(Ordering::SeqCst), 1);
     assert_eq!(
         workspace.read("profile.md").await.unwrap().as_deref(),
@@ -463,11 +556,7 @@ fn header_values_never_appear_in_debug_output() {
 #[tokio::test]
 async fn a_lost_connection_marks_the_toolset_broken_and_says_the_outcome_is_unknown() {
     let calls = Arc::new(Calls::default());
-    let (url, stop) = spawn_stoppable(Server {
-        calls: Arc::clone(&calls),
-        outward_idempotent: true,
-    })
-    .await;
+    let (url, stop) = spawn_stoppable(Server::new(&calls)).await;
     let toolset = Toolset::connect(
         &[McpServer {
             name: "app".into(),
@@ -494,5 +583,149 @@ async fn a_lost_connection_marks_the_toolset_broken_and_says_the_outcome_is_unkn
         "{}",
         output.content
     );
-    assert!(toolset.is_broken());
+    assert!(toolset.is_stale());
+}
+
+#[tokio::test]
+async fn tools_are_ordered_by_name_whatever_order_the_server_lists_them_in() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect(&calls, true).await.unwrap();
+    let names: Vec<&str> = toolset
+        .tools
+        .iter()
+        .map(|tool| tool.spec.name.as_str())
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted);
+    assert_eq!(names.first(), Some(&"bad_meta"));
+}
+
+async fn eventually(check: impl Fn() -> bool) -> bool {
+    for _ in 0..50 {
+        if check() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    check()
+}
+
+#[tokio::test]
+async fn a_server_announcing_new_tools_marks_the_toolset_stale() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect(&calls, true).await.unwrap();
+    assert_eq!(calls.listeners.lock().unwrap().len(), 1);
+    assert!(!toolset.is_stale());
+    let output = toolset
+        .host("customer-7")
+        .call(&call("c1", "change_tools", json!({})), &key("k1"))
+        .await;
+    assert!(!output.is_error, "{}", output.content);
+    assert!(eventually(|| toolset.is_stale()).await);
+}
+
+#[tokio::test]
+async fn a_server_without_change_notifications_still_connects_and_stays_fresh() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect_to(Server {
+        announces_changes: false,
+        ..Server::new(&calls)
+    })
+    .await
+    .unwrap();
+    let output = toolset
+        .host("customer-7")
+        .call(&call("c1", "plain_tool", json!({})), &key("k1"))
+        .await;
+    assert!(!output.is_error, "{}", output.content);
+    assert!(calls.listeners.lock().unwrap().is_empty());
+    assert!(!toolset.is_stale());
+}
+
+fn tight_limits(toolset: Toolset) -> Toolset {
+    toolset.with_call_limits(CallLimits {
+        quiet: Duration::from_millis(300),
+        total: Duration::from_millis(1500),
+    })
+}
+
+#[tokio::test]
+async fn progress_keeps_a_long_call_alive_past_the_quiet_limit() {
+    let calls = Arc::new(Calls::default());
+    let toolset = tight_limits(connect(&calls, true).await.unwrap());
+    let output = toolset
+        .host("customer-7")
+        .call(&call("c1", "slow_search", json!({})), &key("k1"))
+        .await;
+    assert!(!output.is_error, "{}", output.content);
+    assert_eq!(output.content, "found 3");
+}
+
+#[tokio::test]
+async fn a_call_that_goes_quiet_times_out_and_says_the_outcome_is_unknown() {
+    let calls = Arc::new(Calls::default());
+    let toolset = tight_limits(connect(&calls, true).await.unwrap());
+    let output = toolset
+        .host("customer-7")
+        .call(&call("c1", "silent_search", json!({})), &key("k1"))
+        .await;
+    assert!(output.is_error);
+    assert!(
+        output.content.contains("no result or progress"),
+        "{}",
+        output.content
+    );
+    assert!(output.content.contains("Do not repeat it"));
+}
+
+#[tokio::test]
+async fn progress_never_extends_a_call_past_the_total_limit() {
+    let calls = Arc::new(Calls::default());
+    let toolset = tight_limits(connect(&calls, true).await.unwrap());
+    let started = std::time::Instant::now();
+    let output = toolset
+        .host("customer-7")
+        .call(&call("c1", "endless_search", json!({})), &key("k1"))
+        .await;
+    assert!(output.is_error);
+    assert!(
+        output.content.contains("did not finish within"),
+        "{}",
+        output.content
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn an_abandoned_call_is_cancelled_on_the_server() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect(&calls, true).await.unwrap();
+    let host = toolset.host("customer-7");
+    let abandoned = tokio::time::timeout(
+        Duration::from_millis(200),
+        host.call(&call("c1", "wait_forever", json!({})), &key("k1")),
+    )
+    .await;
+    assert!(abandoned.is_err());
+    assert!(eventually(|| calls.cancelled.load(Ordering::SeqCst) == 1).await);
+}
+
+#[tokio::test]
+async fn a_call_carries_its_traceparent_to_the_server() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect(&calls, true).await.unwrap();
+    let traceparent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+    toolset
+        .host("customer-7")
+        .call(
+            &call("c1", "plain_tool", json!({})),
+            &CallContext {
+                traceparent: Some(traceparent.into()),
+                ..key("k1")
+            },
+        )
+        .await;
+    let seen = calls.seen.lock().unwrap().clone();
+    assert_eq!(seen[0].1["traceparent"], traceparent);
 }

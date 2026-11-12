@@ -241,7 +241,7 @@ impl ContextProviderBackend {
         let mut slot = slot.lock().await;
         if let Some(loaded) = slot
             .as_ref()
-            .filter(|loaded| loaded.bootstrap.version == version && !loaded.toolset.is_broken())
+            .filter(|loaded| loaded.bootstrap.version == version && !loaded.toolset.is_stale())
         {
             return Ok(Arc::clone(loaded));
         }

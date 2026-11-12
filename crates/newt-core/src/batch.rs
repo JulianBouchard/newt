@@ -301,6 +301,12 @@ fn call_context(context: &TurnContext<'_>, call: &ToolCall) -> CallContext {
         idempotency_key: format!("{}:{}:{}", context.ids.session, context.ids.turn, call.id),
         skills_loaded: context.skills_loaded(),
         pages_read: context.workspace.pages_read(),
+        traceparent: Some(crate::otlp::tool_traceparent(
+            context.ids.session,
+            context.ids.turn,
+            context.ids.started,
+            &call.id,
+        )),
     }
 }
 

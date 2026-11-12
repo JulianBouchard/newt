@@ -14,6 +14,38 @@ fn hex64(parts: &[&str]) -> String {
     format!("{:016x}", fnv1a(parts.join("\u{0}").as_bytes()))
 }
 
+fn attempt(started: OffsetDateTime) -> String {
+    started.unix_timestamp_nanos().to_string()
+}
+
+fn trace_id(session: &str, turn: &str, attempt: &str) -> String {
+    format!(
+        "{}{}",
+        hex64(&["trace", session, turn, attempt]),
+        hex64(&["trace-low", session, turn, attempt])
+    )
+}
+
+fn tool_span_id(session: &str, turn: &str, attempt: &str, call_id: &str) -> String {
+    hex64(&["tool", session, turn, attempt, call_id])
+}
+
+/// The W3C `traceparent` of a tool call's span, as the exporter will later
+/// emit it, so a tool server can parent its own spans under newt's.
+pub fn tool_traceparent(
+    session: &str,
+    turn: &str,
+    started: OffsetDateTime,
+    call_id: &str,
+) -> String {
+    let attempt = attempt(started);
+    format!(
+        "00-{}-{}-01",
+        trace_id(session, turn, &attempt),
+        tool_span_id(session, turn, &attempt, call_id)
+    )
+}
+
 fn nanos(at: OffsetDateTime) -> String {
     at.unix_timestamp_nanos().to_string()
 }
@@ -75,6 +107,7 @@ fn content(messages: &impl serde::Serialize, hooks: &Hooks) -> String {
 struct Ids<'a> {
     trace: String,
     root: String,
+    session: &'a str,
     attempt: String,
     conversation: String,
     agent: &'a str,
@@ -83,17 +116,11 @@ struct Ids<'a> {
 
 pub(crate) fn spans(trace: &TurnTrace, config: &OtlpConfig, hooks: &Hooks) -> Vec<Value> {
     let (session, turn) = (trace.session.as_str(), trace.turn.as_str());
-    let attempt = trace
-        .started
-        .map(|started| started.unix_timestamp_nanos().to_string())
-        .unwrap_or_default();
+    let attempt = trace.started.map(attempt).unwrap_or_default();
     let ids = Ids {
-        trace: format!(
-            "{}{}",
-            hex64(&["trace", session, turn, &attempt]),
-            hex64(&["trace-low", session, turn, &attempt])
-        ),
+        trace: trace_id(session, turn, &attempt),
         root: hex64(&["root", session, turn, &attempt]),
+        session,
         conversation: if config.capture_content {
             session.to_owned()
         } else {
@@ -319,13 +346,7 @@ fn tool_span(tool: &ToolTrace, ids: &Ids<'_>, config: &OtlpConfig) -> Value {
     if config.profile == Profile::Langfuse {
         attributes.push(text("langfuse.observation.type", "tool"));
     }
-    let tool_id = hex64(&[
-        "tool",
-        &ids.conversation,
-        ids.turn,
-        &ids.attempt,
-        &tool.call_id,
-    ]);
+    let tool_id = tool_span_id(ids.session, ids.turn, &ids.attempt, &tool.call_id);
     span(
         (&ids.trace, &tool_id, Some(&ids.root)),
         format!("execute_tool {}", tool.name),

@@ -6,7 +6,7 @@ This document specifies the two interfaces an application implements for newt, a
 2. **MCP tools**, served over Streamable HTTP, with newt's `_meta` fields;
 3. the **event API**, which the application calls on newt.
 
-It is written from `crates/newt-server/src/{context,mcp,http}.rs`, `crates/newt-core/src/{workspace,tools,skills,checkpoint,batch,commit}.rs` and the reference implementation in `crates/newt-demo`. Anything not confirmed in code is marked "(unverified)".
+It is written from `crates/newt-server/src/{context,http}.rs`, `crates/newt-server/src/mcp/`, `crates/newt-core/src/{workspace,tools,skills,checkpoint,batch,commit}.rs` and the reference implementation in `crates/newt-demo`. Anything not confirmed in code is marked "(unverified)".
 
 Terms: an **agent** is a name in `[agents.<name>]` in `server.toml`. A **session** is one conversation of one agent, identified by a **session key**, a string of 1 to 200 bytes with no `/`. A **turn** is one run of the model loop over the events that arrived for a session.
 
@@ -26,7 +26,7 @@ Each agent names a base URL (`context_provider`) and a token variable (`token_en
 
 ### 1.2 Call order
 
-At the start of every turn newt calls `POST {base}/turn`. The response names a `version`. If newt holds no bootstrap for that agent at that version, or the connections to its MCP servers broke since, it then calls `GET {base}/bootstrap`, which must return the same version, and connects the MCP servers. Otherwise it reuses the loaded bootstrap and tool set. Newt keeps one loaded bootstrap per agent in memory.
+At the start of every turn newt calls `POST {base}/turn`. The response names a `version`. If newt holds no bootstrap for that agent at that version, or its tool set went stale since (section 2.1), it then calls `GET {base}/bootstrap`, which must return the same version, and connects the MCP servers. Otherwise it reuses the loaded bootstrap and tool set. Newt keeps one loaded bootstrap per agent in memory.
 
 `POST {base}/pages` is called during the turn, when the agent reads a page that a tool made stale, and once at the start when `turn` returned no `pages`.
 
@@ -210,9 +210,13 @@ Tools come from the servers in the bootstrap's `mcp_servers`. A server that know
 | `headers` | object of string to string | no | `{}` | Static headers sent on every request. Do not put secrets here; use `auth` for the agent token. |
 | `auth` | `"none"` or `"agent_token"` | no | `"none"` | `"agent_token"` sends `Authorization: Bearer <agent token>`. |
 
-Newt connects to each server in order, initializes it and lists all its tools. All servers together get 20 seconds. Two servers offering the same tool name is an error. Connections are shared by every session of the same bootstrap version. If a call finds the transport closed or unable to send, newt marks the tool set broken, and the next turn fetches the bootstrap again and reconnects.
+Newt connects to each server in order and lists all its tools. All servers together get 20 seconds. Newt speaks MCP `2026-07-28` (`server/discover`, no handshake) and falls back to the `2025-11-25` `initialize` handshake for a server that does not answer `server/discover`. Two servers offering the same tool name is an error. Connections are shared by every session of the same bootstrap version.
 
-Every call has a 90 second timeout.
+Newt sorts each server's tools by name, so the tool list in the cached prompt prefix is byte-identical whatever order a server lists them in. Servers keep the order the bootstrap lists them in.
+
+If a server accepts `subscriptions/listen` for `toolsListChanged`, newt keeps that subscription open. A `notifications/tools/list_changed` marks the tool set stale, and so does the subscription ending. A stale tool set is also what a closed or unsendable transport causes during a call. Either way, the next turn fetches the bootstrap again, reconnects and lists the tools again. A server that does not offer the subscription is only relisted on a new bootstrap version or a broken connection. A proxy that cuts long-lived streams causes one relist per cut.
+
+Every call may go 90 seconds without a result or a `notifications/progress` for its progress token (newt always sends one), and at most 10 minutes in total, however much progress it reports. A call past either limit is cancelled with `notifications/cancelled`, and so is a call whose turn ends before it answers.
 
 ### 2.2 Tool `_meta`
 
@@ -256,6 +260,8 @@ Newt sends these in `params._meta` of every `tools/call`:
 | `newt/idempotency_key` | string | `{agent}/{session}:{turn}:{call id}`. Opaque to you. Stable across retries and replays of the same call (section 4). For a call made through the `batch` tool the call id is `{batch call id}.{index}`. |
 | `newt/skills_loaded` | array of string | Skills the agent has loaded this turn, sorted. Lets a handler refuse an action until the right skill was read. |
 | `newt/pages_read` | array of `{ path, version }` | Pages the agent has read this turn, sorted by path, with the version newt holds. Lets a handler refuse to act on a page that has since changed. |
+| `traceparent` | string | W3C trace context of the call's `execute_tool` span, as newt's OTLP exporter emits it. Parent your own spans on it to see them under the turn's trace. Sent whether or not OTLP export is on. |
+| `progressToken` | string or number | Standard MCP. Report `notifications/progress` with it to keep a long call alive (section 2.1). |
 
 ```json
 {
@@ -304,7 +310,8 @@ If any of the three fields is malformed (wrong type, or a page list that breaks 
 - The model sees the text blocks joined with newlines. An image becomes `[image]`, audio `[audio]`, any other block `[resource]`. If there are no content blocks, the JSON of `structuredContent` is used.
 - `isError: true` makes the result an error result.
 - A JSON-RPC error from the server becomes `The tool call failed: <message>`.
-- A broken connection, or no answer within 90 seconds, becomes an error result that says the outcome is unknown and tells the model not to repeat the call but to check the workspace first.
+- A broken connection, 90 seconds without a result or progress, or 10 minutes in total, becomes an error result that says the outcome is unknown and tells the model not to repeat the call but to check the workspace first.
+- An `input_required` result (the MCP multi round-trip pattern) becomes an error result saying the tool asked for input newt cannot give yet and nothing was done.
 
 ## 3. Retention classes
 

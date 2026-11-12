@@ -13,7 +13,9 @@ use axum::http::HeaderMap;
 use axum::routing::post;
 use newt_core::event::{Event, EventKind};
 use newt_core::message::{Message, Part, Role, ToolCall};
-use newt_core::otlp::{Hooks, OtlpConfig, OtlpSink, Profile, Redactor, parse_headers};
+use newt_core::otlp::{
+    Hooks, OtlpConfig, OtlpSink, Profile, Redactor, parse_headers, tool_traceparent,
+};
 use newt_core::prompt::LayerFingerprint;
 use newt_core::provider::{CallTiming, StopReason, Usage};
 use newt_core::sink::EventSink;
@@ -304,6 +306,28 @@ async fn without_content_capture_errors_and_session_keys_stay_private() {
     assert!(!body.contains("555"), "{body}");
     assert!(!body.contains("customer-7"), "{body}");
     assert_eq!(spans(&exports[0].1)[0]["status"]["message"], "failed");
+}
+
+#[tokio::test]
+async fn a_tool_calls_traceparent_names_the_span_the_exporter_emits_for_it() {
+    for capture_content in [true, false] {
+        let events = turn_events("t1", "555 0100");
+        let started = events[0].at;
+        let exports = export_events(Profile::Generic, capture_content, events).await;
+        let tool = spans(&exports[0].1)
+            .into_iter()
+            .find(|span| span["name"] == "execute_tool read_file")
+            .unwrap();
+        assert_eq!(
+            tool_traceparent("assistant/customer-7", "t1", started, "r1"),
+            format!(
+                "00-{}-{}-01",
+                tool["traceId"].as_str().unwrap(),
+                tool["spanId"].as_str().unwrap()
+            ),
+            "capture_content: {capture_content}"
+        );
+    }
 }
 
 #[tokio::test]
