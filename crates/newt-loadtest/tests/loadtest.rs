@@ -37,7 +37,8 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
             seed: 11,
             ..FakeOptions::default()
         },
-    );
+    )
+    .unwrap();
     let model_url = listen(fake_model::router(Arc::clone(&model))).await;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

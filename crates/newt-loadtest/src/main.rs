@@ -3,6 +3,7 @@ use std::io::Write as _;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use newt_loadtest::cache::CacheScope;
 use newt_loadtest::driver::{LoadPlan, NewtTarget, run};
 use newt_loadtest::fake_model::{self, FakeModel, FakeOptions};
 use newt_loadtest::mock_app::{self, MockApp};
@@ -12,7 +13,8 @@ use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
-                           [--cache-scope key|prefix] [--dump-dir DIR] [--turn-marker TEXT]
+                           [--cache-scope key|prefix|routed] [--machines 2]
+                           [--dump-dir DIR] [--turn-marker TEXT] [--decision-log FILE]
   newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false]
   newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
                     [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--timeout-s 300]
@@ -50,6 +52,17 @@ impl Flags {
                 .map_err(|_| anyhow::anyhow!("--{name} must be a number"))
         })
     }
+}
+
+fn cache_scope(flags: &Flags) -> anyhow::Result<CacheScope> {
+    Ok(match flags.text("cache-scope", "key").as_str() {
+        "key" => CacheScope::Key,
+        "prefix" => CacheScope::Prefix,
+        "routed" => CacheScope::Routed {
+            machines: flags.number("machines", 2)?,
+        },
+        other => bail!("--cache-scope must be key, prefix or routed, not `{other}`"),
+    })
 }
 
 async fn serve(listen: &str, router: axum::Router) -> anyhow::Result<()> {
@@ -131,11 +144,12 @@ async fn main() -> anyhow::Result<()> {
                     speed: flags.number("speed", 1.0)?,
                     failure_rate: flags.number("failure-rate", 0.0)?,
                     seed: flags.number("seed", 1)?,
-                    shared_cache: flags.text("cache-scope", "key") == "prefix",
+                    cache_scope: cache_scope(&flags)?,
                     dump_dir: flags.0.get("dump-dir").map(std::path::PathBuf::from),
                     turn_marker: flags.0.get("turn-marker").cloned(),
+                    decision_log: flags.0.get("decision-log").map(std::path::PathBuf::from),
                 },
-            );
+            )?;
             serve(
                 &flags.text("listen", "127.0.0.1:9100"),
                 fake_model::router(model),

@@ -14,7 +14,8 @@ use futures_util::stream;
 use serde_json::{Value, json};
 
 use crate::args::{SKILL_TOOLS, arguments_for};
-use crate::cache::{CacheRules, PrefixCache, prompt_bytes};
+use crate::audit::Audit;
+use crate::cache::{CacheRules, CacheScope, PrefixCache, Router, prompt_bytes};
 use crate::profile::{Kind, ModelTiming, ASSISTANT_TOOLS};
 use crate::sample::Rng;
 
@@ -58,7 +59,9 @@ pub struct FakeModel {
     failure_rate: f64,
     cache: PrefixCache,
     ids: AtomicU64,
-    shared_cache: bool,
+    scope: CacheScope,
+    router: Router,
+    audit: Audit,
     dump_dir: Option<std::path::PathBuf>,
     turn_marker: Option<String>,
     pub stats: Stats,
@@ -69,24 +72,30 @@ pub struct FakeOptions {
     pub speed: f64,
     pub failure_rate: f64,
     pub seed: u64,
-    pub shared_cache: bool,
+    pub cache_scope: CacheScope,
     pub dump_dir: Option<std::path::PathBuf>,
     pub turn_marker: Option<String>,
+    pub decision_log: Option<std::path::PathBuf>,
 }
 
 const DUMP_LIMIT: u64 = 400;
 
 impl FakeModel {
-    pub fn new(timing: ModelTiming, options: FakeOptions) -> Arc<Self> {
+    pub fn new(timing: ModelTiming, options: FakeOptions) -> std::io::Result<Arc<Self>> {
         let FakeOptions {
             speed,
             failure_rate,
             seed: rng_seed,
-            shared_cache,
+            cache_scope,
             dump_dir,
             turn_marker,
+            decision_log,
         } = options;
-        Arc::new(Self {
+        let machines = match cache_scope {
+            CacheScope::Routed { machines } => machines,
+            CacheScope::Key | CacheScope::Prefix => 1,
+        };
+        Ok(Arc::new(Self {
             rng: Rng::new(rng_seed),
             timing,
             speed,
@@ -96,11 +105,13 @@ impl FakeModel {
                 readable_after: timing.cache_readable_after.div_f64(speed.max(0.001)),
             }),
             ids: AtomicU64::new(rng_seed),
-            shared_cache,
+            scope: cache_scope,
+            router: Router::new(machines),
+            audit: Audit::new(decision_log.as_deref())?,
             dump_dir,
             turn_marker,
             stats: Stats::default(),
-        })
+        }))
     }
 
     pub(crate) fn next_id(&self) -> u64 {
@@ -116,7 +127,12 @@ pub fn router(model: Arc<FakeModel>) -> axum::Router {
 }
 
 async fn stats(State(model): State<Arc<FakeModel>>) -> Json<Value> {
-    Json(model.stats.snapshot())
+    let mut snapshot = model.stats.snapshot();
+    if let (Some(totals), Value::Object(audit)) = (snapshot.as_object_mut(), model.audit.snapshot())
+    {
+        totals.extend(audit);
+    }
+    Json(snapshot)
 }
 
 struct Turn {
@@ -297,13 +313,22 @@ fn tool_schemas(body: &Value) -> HashMap<String, Value> {
 async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -> Response {
     model.stats.calls.fetch_add(1, Ordering::Relaxed);
     let timing = model.timing;
-    let key = if model.shared_cache {
-        "shared".to_owned()
-    } else {
-        cache_key(&body)
+    let prompt = prompt_bytes(&body);
+    let key = match model.scope {
+        CacheScope::Key => cache_key(&body),
+        CacheScope::Prefix => "shared".to_owned(),
+        CacheScope::Routed { .. } => {
+            let requested = body.get("prompt_cache_key").and_then(Value::as_str);
+            format!(
+                "machine-{}",
+                model
+                    .router
+                    .machine(requested, &prompt, model.rng.next_u64())
+            )
+        }
     };
     record_shape(&model, &body).await;
-    let lookup = model.cache.lookup_and_store(&key, &prompt_bytes(&body));
+    let lookup = model.cache.lookup_and_store(&key, &prompt);
     let uncached = lookup.input_tokens - lookup.cached_tokens;
     #[expect(clippy::cast_precision_loss, reason = "token counts far below 2^52")]
     let prefill = Duration::from_secs_f64(
@@ -322,6 +347,7 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         .cloned()
         .unwrap_or_default();
     let tools = tool_schemas(&body);
+    model.audit.observe_outputs(&input);
     let turn = read_turn(&input, model.turn_marker.as_deref());
     let target = timing
         .tool_calls_per_turn
@@ -335,6 +361,7 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
             .min(target - turn.done_calls);
         pick_tools(&model, &tools, step.max(1))
     };
+    audit_reply(&model, &body, &tools, &turn, target, &calls);
     let (input_tokens, cached) = (lookup.input_tokens, lookup.cached_tokens);
     let text = calls
         .is_empty()
@@ -379,6 +406,30 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         },
     );
     Sse::new(paced).into_response()
+}
+
+fn audit_reply(
+    model: &FakeModel,
+    body: &Value,
+    tools: &HashMap<String, Value>,
+    turn: &Turn,
+    target: usize,
+    calls: &[Call],
+) {
+    for call in calls {
+        model.audit.check_call(
+            &call.name,
+            tools.get(&call.name).unwrap_or(&Value::Null),
+            &call.arguments,
+        );
+    }
+    model.audit.log_decision(&json!({
+        "cache_key": body.get("prompt_cache_key"),
+        "turn": turn.last_user,
+        "done": turn.done_calls,
+        "target": target,
+        "returned": calls.iter().map(|call| call.name.as_str()).collect::<Vec<_>>(),
+    }));
 }
 
 fn calls_json(calls: &[Call]) -> Vec<(String, String)> {

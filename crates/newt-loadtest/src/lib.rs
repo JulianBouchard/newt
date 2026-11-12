@@ -1,4 +1,5 @@
 mod args;
+mod audit;
 pub mod cache;
 pub mod driver;
 pub mod fake_model;
@@ -7,3 +8,4 @@ pub mod profile;
 pub mod report;
 pub mod sample;
 mod stream;
+mod validate;

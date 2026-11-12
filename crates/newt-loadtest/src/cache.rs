@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -59,6 +59,60 @@ pub fn prompt_bytes(body: &Value) -> Vec<u8> {
         bytes.push(0);
     }
     bytes
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CacheScope {
+    #[default]
+    Key,
+    Prefix,
+    Routed {
+        machines: u64,
+    },
+}
+
+const ROUTE_HEAD_BYTES: usize = 1024;
+const OVERFLOW_PER_MINUTE: usize = 15;
+
+#[derive(Debug)]
+pub struct Router {
+    machines: u64,
+    recent: Mutex<HashMap<u64, VecDeque<Instant>>>,
+}
+
+impl Router {
+    pub fn new(machines: u64) -> Self {
+        Self {
+            machines: machines.max(1),
+            recent: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn machine(&self, cache_key: Option<&str>, prompt: &[u8], roll: u64) -> u64 {
+        let route = cache_key.map_or_else(
+            || fnv(0, prompt.get(..ROUTE_HEAD_BYTES).unwrap_or(prompt)),
+            |key| fnv(1, key.as_bytes()),
+        );
+        let now = Instant::now();
+        let mut recent = match self.recent.lock() {
+            Ok(recent) => recent,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let window = recent.entry(route).or_default();
+        while window
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= Duration::from_mins(1))
+        {
+            window.pop_front();
+        }
+        window.push_back(now);
+        let home = route % self.machines;
+        if window.len() <= OVERFLOW_PER_MINUTE || self.machines == 1 {
+            home
+        } else {
+            (home + 1 + roll % (self.machines - 1)) % self.machines
+        }
+    }
 }
 
 impl PrefixCache {
@@ -134,6 +188,31 @@ mod tests {
             ttl: Duration::from_mins(5),
             readable_after,
         }
+    }
+
+    #[test]
+    fn one_key_stays_on_one_machine_until_it_passes_the_overflow_rate() {
+        let router = Router::new(4);
+        let home = router.machine(Some("assistant/0"), b"prompt", 0);
+        for roll in 1..OVERFLOW_PER_MINUTE as u64 {
+            assert_eq!(router.machine(Some("assistant/0"), b"prompt", roll), home);
+        }
+        let spilled: std::collections::BTreeSet<u64> = (0..40)
+            .map(|roll| router.machine(Some("assistant/0"), b"prompt", roll))
+            .collect();
+        assert!(spilled.len() > 1);
+    }
+
+    #[test]
+    fn without_a_key_the_prompt_head_picks_the_machine() {
+        let router = Router::new(8);
+        let head = vec![b'a'; ROUTE_HEAD_BYTES];
+        let first = [head.clone(), b"customer one".to_vec()].concat();
+        let second = [head, b"customer two".to_vec()].concat();
+        assert_eq!(
+            router.machine(None, &first, 0),
+            router.machine(None, &second, 0)
+        );
     }
 
     fn prompt(prefix: &str, tail: &str) -> Vec<u8> {
