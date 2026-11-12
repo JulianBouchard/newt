@@ -6,6 +6,29 @@ Newts regrow what they lose. So does this: every turn strips the context back an
 
 Early days, not yet in production. In so far: streaming Anthropic and OpenAI clients, the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, a reactive workspace fed by a context provider, MCP tools, compaction and OTLP tracing.
 
+**Status:** pre-1.0. The crates are not published to crates.io; build from source (Rust 1.99, Postgres 18).
+
+```
+              events (POST)                        live feed (SSE)
+  your app ----------------------+   +--------------------------> your app
+                                 v   |
+                         +---------------------+
+                         |   newt-server       |
+                         |   event API         |
+                         |   runner: leases,   |
+                         |   sweeps, turn loop |
+                         +---------------------+
+                           |     |       |     |
+         model calls       |     |       |     |   state, journal, wakeups
+        +------------------+     |       |     +----------------------+
+        v                        v       v                            v
+  Model providers      Context provider  MCP servers             Postgres
+  (Anthropic, OpenAI)  (bootstrap, turn, (tools with              (inbox, history,
+                        pages)            newt _meta)              journal, leases)
+```
+
+Read on for a demo. The details live in [docs/design.md](docs/design.md) (why it works this way), [docs/protocol.md](docs/protocol.md) (the context-provider and MCP contract), [docs/config.md](docs/config.md) (every `server.toml` key), [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
 ## Try it: a personal assistant
 
 `newt-demo` is a small assistant that keeps a person's notes and tasks and replies by chat. One process serves both halves an app gives newt: the context provider (`/assistant`) and the tools, over MCP (`/mcp`). Its state lives in memory.
@@ -41,8 +64,8 @@ The event is accepted in a few milliseconds; the turn reads the workspace, adds 
 
 `newt-loadtest` runs load against newt with no real model behind it:
 
-- `fake-model` speaks the OpenAI Responses stream with random text. Its timings (response headers, thinking, token rate, prefill per uncached token) and its tool use come from a production agent's production profile: about 16 tool calls per turn, picked with a production agent's real tool mix. Prompt caching is simulated per prefix: a request reuses the longest run of 128-token blocks an earlier request with the same `prompt_cache_key` wrote (at least 1,024 tokens, readable 2 seconds after the write, five-minute expiry), so a rewritten history misses just as it would against a real model.
-- `mock-app` is a context provider with a production-sized prompt and workspace, and an MCP server whose tools have a production agent's latencies and error rates.
+- `fake-model` speaks the OpenAI Responses stream with random text. Its timings (response headers, thinking, token rate, prefill per uncached token) and its tool use come from the profile of a production assistant: about 16 tool calls per turn, picked with that assistant's real tool mix. Prompt caching is simulated per prefix: a request reuses the longest run of 128-token blocks an earlier request with the same `prompt_cache_key` wrote (at least 1,024 tokens, readable 2 seconds after the write, five-minute expiry), so a rewritten history misses just as it would against a real model.
+- `mock-app` is a context provider with a production-sized prompt and workspace, and an MCP server whose tools have the latencies and error rates of that assistant's tools.
 - `run` drives sessions against newt's events API and live feed and reports read receipt, time to turn start, turn duration, model calls, cache rate and tool calls.
 
 ```sh
@@ -55,9 +78,19 @@ LOADTEST_TOKEN=... newt-loadtest run --base http://127.0.0.1:7878 --agent assist
 
 Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `context_provider` at `http://127.0.0.1:9200/agent`.
 
+## Running the tests
+
+```sh
+docker compose up -d --wait
+export DATABASE_URL=postgres://newt:newt@localhost:55432/newt
+cargo test --workspace
+```
+
+The tests in `newt-server`, `newt-demo` and `newt-loadtest` use Postgres: each `#[sqlx::test]` creates a throwaway database from `DATABASE_URL` and applies `migrations/`. The `newt-core` tests need no database. No test calls a real model provider. CI also runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo deny check` and `cargo machete`; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Context provider
 
-Each agent in `server.toml` names a `context_provider` base URL and a `token_env`. That one token authenticates both directions: callers send it to newt as `Authorization: Bearer`, and newt sends it to the provider. The provider serves three JSON endpoints:
+The full contract is in [docs/protocol.md](docs/protocol.md). Each agent in `server.toml` names a `context_provider` base URL and a `token_env`. That one token authenticates both directions: callers send it to newt as `Authorization: Bearer`, and newt sends it to the provider. The provider serves three JSON endpoints:
 
 | Call | When | Request | Response |
 |---|---|---|---|
@@ -65,7 +98,7 @@ Each agent in `server.toml` names a `context_provider` base URL and a `token_env
 | `POST {base}/turn` | start of every turn | `{ session }` | `{ version, pages?: [Page], pinned?, instructions?, constraints? }` |
 | `POST {base}/pages` | a read of a page a tool invalidated, or the first read when `turn` returned no pages | `{ session, keys: [PageKey] }` (an empty key means every page) | `{ pages: [Page] }` |
 
-Leave `pages` out of the turn response when rendering them is slow: newt starts the first model call at once and loads every page in the background, and the first read, glob or grep waits for that load. A `Page` is `{ key: ["customer", "profile"], path: "profile.md", version, content }`. Tools invalidate pages by key prefix; the next read refetches them, and a page missing from the response is gone. `pinned` is text that stays the same from turn to turn for this session, such as the writing guide for the person's channel: newt places it after the bootstrap instructions, in the cached prefix, so it costs nothing while it is unchanged and one cache miss when it changes. `instructions` and `constraints` reach the model at the start of that turn only and never enter history; put anything that must hold until it changes (a hold, a dealbreaker) in `constraints`, and enforce it in your tool handlers too, since the model can still get it wrong. `model` must be a `[models]` alias from `server.toml`. Unknown fields, an unknown model or a version mismatch fail the turn loudly.
+Leave `pages` out of the turn response when rendering them is slow: newt starts the first model call at once and loads every page in the background, and the first read, glob or grep waits for that load. A `Page` is `{ key: ["customer", "profile"], path: "profile.md", version, content }`. Tools invalidate pages by key prefix; the next read refetches them, and a page missing from the response is gone. `pinned` is text that stays the same from turn to turn for this session, such as the writing guide for the person's channel: newt places it after the bootstrap instructions, in the cached prefix, so it costs nothing while it is unchanged and one cache miss when it changes. `instructions` and `constraints` reach the model at the start of that turn only and never enter history; put anything that must hold until it changes (a hold, a hard requirement) in `constraints`, and enforce it in your tool handlers too, since the model can still get it wrong. `model` must be a `[models]` alias from `server.toml`. Unknown fields, an unknown model or a version mismatch fail the turn loudly.
 
 ## Skills
 
@@ -75,7 +108,7 @@ A skill is instructions for one kind of task, loaded only when the agent needs i
 
 Tools come from the MCP servers the bootstrap lists: `{ name, url, headers?, auth? }`, where `auth: "agent_token"` sends the agent's token as the bearer and the default sends none. Headers are static and must not hold secrets. Newt connects once per agent and bootstrap version over Streamable HTTP, lists the tools, and keeps those connections for every session of that version.
 
-Newt reads and writes a few `_meta` fields; a server that ignores them still works, and its tools count as durable with no invalidation.
+The full contract is in [docs/protocol.md](docs/protocol.md). Newt reads and writes a few `_meta` fields; a server that ignores them still works, and its tools count as durable with no invalidation.
 
 | Where | Field | Meaning |
 |---|---|---|
@@ -102,4 +135,4 @@ Every turn emits one typed event stream; sinks read it. The JSONL sink writes it
 
 ## License
 
-Apache-2.0 or MIT, at your option.
+Apache-2.0 or MIT, at your option. See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
