@@ -8,18 +8,38 @@ pub const PAGES: &[&str] = &[
     "memory.md",
     "calendar.md",
     "match-page.md",
-    "profile/summary.md",
+    "profile/profile.md",
     "profile/preferences.md",
     "conversation/timeline/latest.md",
     "applications.md",
 ];
 
-pub const SKILLS: &[&str] = &["writing", "intro", "screening", "followups", "matching"];
+pub const SKILLS: &[&str] = &[
+    "about-us",
+    "call-handling",
+    "channel-management",
+    "interview-management",
+    "intro-requests",
+    "job-search",
+    "onboarding",
+    "customer-state",
+    "team-comms",
+    "writing",
+    "writing-email",
+    "writing-web",
+];
+
+pub const SKILL_TOOLS: &[&str] = &["load_skill", "runtime__skill", "read_file"];
 
 pub fn arguments_for(name: &str, kind: Kind, schema: &Value, rng: &Rng) -> Value {
     match (name, kind) {
-        (_, Kind::Skill) if name == "read_file" => {
-            read_one(schema, &format!("skills/{}.md", SKILLS[rng.below(SKILLS.len())]))
+        (_, Kind::Skill) => {
+            let skill = SKILLS[rng.below(SKILLS.len())];
+            if name == "read_file" {
+                read_one(schema, &format!("skills/{skill}.md"))
+            } else {
+                json!({ "name": skill })
+            }
         }
         ("read_file", _) => read_one(schema, PAGES[rng.below(PAGES.len())]),
         ("grep", _) => json!({ "pattern": "role|intro" }),
@@ -30,12 +50,14 @@ pub fn arguments_for(name: &str, kind: Kind, schema: &Value, rng: &Rng) -> Value
 }
 
 fn property<'a>(schema: &'a Value, name: &str) -> Option<&'a Value> {
-    schema.get("properties").and_then(|properties| properties.get(name))
+    schema
+        .get("properties")
+        .and_then(|properties| properties.get(name))
 }
 
 fn read_one(schema: &Value, path: &str) -> Value {
     if property(schema, "filePath").is_some() {
-        json!({ "filePath": path })
+        json!({ "filePath": format!("customer/{path}") })
     } else {
         json!({ "paths": [path] })
     }

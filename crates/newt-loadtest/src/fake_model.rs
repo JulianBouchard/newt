@@ -13,7 +13,7 @@ use axum::routing::get;
 use futures_util::stream;
 use serde_json::{Value, json};
 
-use crate::args::arguments_for;
+use crate::args::{SKILL_TOOLS, arguments_for};
 use crate::cache::{CacheRules, PrefixCache, prompt_bytes};
 use crate::profile::{Kind, ModelTiming, ASSISTANT_TOOLS};
 use crate::sample::Rng;
@@ -185,7 +185,8 @@ fn pick_tools(model: &FakeModel, tools: &HashMap<String, Value>, count: usize) -
         .filter(|tool| !matches!(tool.kind, Kind::End))
         .filter(|tool| {
             tools.contains_key(tool.name)
-                || (tool.kind == Kind::Skill && tools.contains_key("read_file"))
+                || (tool.kind == Kind::Skill
+                    && SKILL_TOOLS.iter().any(|name| tools.contains_key(*name)))
         })
         .collect();
     let total: f64 = available.iter().map(|tool| tool.share).sum();
@@ -202,8 +203,11 @@ fn pick_tools(model: &FakeModel, tools: &HashMap<String, Value>, count: usize) -
         if tool.kind == Kind::Send && std::mem::replace(&mut sent, true) {
             continue;
         }
-        let name = if tool.kind == Kind::Skill && !tools.contains_key(tool.name) {
-            "read_file"
+        let name = if tool.kind == Kind::Skill {
+            let Some(name) = SKILL_TOOLS.iter().find(|name| tools.contains_key(**name)) else {
+                continue;
+            };
+            name
         } else {
             tool.name
         };
