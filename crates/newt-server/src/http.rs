@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -21,6 +21,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::live::{Channel, Notification};
 use crate::store::{InboundEvent, LiveEvent, Store, live_topic};
+
+const EVENT_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
 const LIVE_PAGE: i64 = 100;
 const LIVE_POLL: Duration = Duration::from_secs(5);
@@ -51,6 +53,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/agents/{agent}/sessions/{key}", get(session_status))
         .route("/v1/agents/{agent}/sessions/{key}/events", post(post_event))
         .route("/v1/agents/{agent}/sessions/{key}/live", get(live))
+        .layer(DefaultBodyLimit::max(EVENT_BODY_LIMIT))
         .with_state(state)
 }
 

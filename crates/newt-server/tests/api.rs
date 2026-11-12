@@ -184,3 +184,15 @@ async fn session_keys_with_slashes_or_huge_lengths_are_refused(pool: PgPool) {
         .unwrap();
     assert_eq!(slashed.status(), 400);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn an_event_body_over_two_megabytes_is_refused(pool: PgPool) {
+    let base = start(pool).await;
+    let huge = "x".repeat(2 * 1024 * 1024 + 1);
+    assert_eq!(
+        post(&base, "k1", "secret", &event("e1", &huge))
+            .await
+            .status(),
+        413
+    );
+}

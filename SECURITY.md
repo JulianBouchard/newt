@@ -52,6 +52,6 @@ Model output reaches the world only through tools.
 
 ### Not covered
 
-- Rate limiting or request-size policy on the event API beyond what axum defaults to (unverified).
+- Rate limiting on the event API. Event bodies are capped at 2 MiB (413 above that); put a proxy in front for per-client limits.
 - Isolation between agents sharing one database and one process.
 - Anything about the model providers' own handling of your data.

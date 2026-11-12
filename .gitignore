@@ -5,3 +5,5 @@
 CLAUDE.md
 .claude/
 assets/logo/explorations/
+.DS_Store
+*.log
