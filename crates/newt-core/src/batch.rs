@@ -5,31 +5,21 @@ use futures_util::future::join_all;
 use futures_util::stream::{self, StreamExt};
 
 use crate::batch_tool::{BATCH, Expanded, expand, fold, project};
-use crate::checkpoint::{CHECKPOINT, Checkpoint};
+use crate::checkpoint::Checkpoint;
 use crate::event::{Event, EventKind};
 use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{ToolCall, ToolResult};
 use crate::sink::EventSink;
-use crate::skills::{self, LOAD_SKILL};
 use crate::tools::{
-    CallContext, END_TURN, EndTurn, REMEMBER, Retention, ToolHost, ToolOutput, is_workspace_tool,
-    remember, run_workspace_tool,
+    CallContext, END_TURN, EndTurn, REMEMBER, Retention, ToolHost, ToolOutput, run_workspace_tool,
 };
 use crate::turn::{TurnContext, TurnDeps};
 
-const TOOL_CONCURRENCY: usize = 5;
+mod plan;
 
-type Timed = (ToolOutput, u64);
-const END_TURN_BLOCKED: &str = "Turn not ended: a tool call in this batch failed. Deal with the failure, then call end_turn again.";
-const END_TURN_REPEATED: &str = "Only one end_turn per batch; this one was ignored.";
-const OUTWARD_SKIPPED: &str =
-    "Not run: an earlier outward call in this batch failed, so later ones were skipped.";
-const OUTWARD_CANCELLED: &str = "Not run: the turn was cancelled before this call started.";
-const CHECKPOINT_OUTSIDE: &str = "Only call checkpoint when newt asks you to compact.";
-const CHECKPOINT_ALONE: &str =
-    "Call checkpoint on its own, after your saves have succeeded, not alongside other calls.";
-const NO_SENDS_WHILE_COMPACTING: &str = "Not run: nothing is sent while compacting.";
-const END_TURN_WHILE_COMPACTING: &str = "Compaction ends with checkpoint, not end_turn.";
+use plan::{
+    END_TURN_BLOCKED, OUTWARD_CANCELLED, OUTWARD_SKIPPED, Plan, Planned, failure, plan_calls,
+};
 
 pub(crate) struct Batch {
     pub(crate) results: Vec<ToolResult>,
@@ -40,137 +30,9 @@ pub(crate) struct Batch {
     pub(crate) effects: bool,
 }
 
-enum Plan {
-    Done(ToolOutput, u64),
-    Workspace,
-    Concurrent,
-    Outward,
-}
+const TOOL_CONCURRENCY: usize = 5;
 
-fn failure(content: impl Into<String>) -> ToolOutput {
-    ToolOutput::error(content)
-}
-
-fn success(content: impl Into<String>) -> ToolOutput {
-    ToolOutput::ok(content)
-}
-
-struct Planned {
-    plans: Vec<Plan>,
-    end: Option<EndTurn>,
-    end_slot: Option<usize>,
-    checkpoint: Option<Checkpoint>,
-}
-
-fn plan_calls(
-    tool_calls: &[ToolCall],
-    preset: &HashMap<String, ToolOutput>,
-    context: &TurnContext<'_>,
-    replay: &Replay,
-) -> Planned {
-    let mut end = None;
-    let mut end_slot = None;
-    let mut checkpoint = None;
-    let plans = tool_calls
-        .iter()
-        .enumerate()
-        .map(|(slot, call)| {
-            if let Some(raw) = call.invalid_arguments() {
-                return Plan::Done(
-                    failure(format!(
-                        "The arguments for {} were not a complete JSON object (possibly cut off by the output limit): call it again. Received: {raw}",
-                        call.name
-                    )),
-                    0,
-                );
-            }
-            if let Some(output) = preset.get(&call.id) {
-                return Plan::Done(output.clone(), 0);
-            }
-            if let Some(output) = replay.output(&call.id) {
-                if call.name == LOAD_SKILL && !output.is_error {
-                    context.mark_skill_loaded(call);
-                }
-                return Plan::Done(output.clone(), 0);
-            }
-            if call.name == LOAD_SKILL {
-                let output = skills::load(call, context.skills);
-                if !output.is_error {
-                    context.mark_skill_loaded(call);
-                }
-                return Plan::Done(output, 0);
-            }
-            if call.name == CHECKPOINT {
-                return Plan::Done(plan_checkpoint(call, tool_calls.len(), context, &mut checkpoint), 0);
-            }
-            if call.name == END_TURN {
-                if context.compaction.is_some() {
-                    return Plan::Done(failure(END_TURN_WHILE_COMPACTING), 0);
-                }
-                if end_slot.is_some() {
-                    return Plan::Done(failure(END_TURN_REPEATED), 0);
-                }
-                end_slot = Some(slot);
-                return Plan::Done(
-                    match EndTurn::parse(&call.arguments) {
-                        Ok(parsed) => {
-                            end = Some(parsed);
-                            success("Turn ended.")
-                        }
-                        Err(message) => failure(message),
-                    },
-                    0,
-                );
-            }
-            if call.name == REMEMBER {
-                return Plan::Done(remember(call), 0);
-            }
-            if is_workspace_tool(&call.name) {
-                return Plan::Workspace;
-            }
-            match context.retention.get(&call.name) {
-                Some(Retention::Outward) if context.compaction.is_some() => {
-                    Plan::Done(failure(NO_SENDS_WHILE_COMPACTING), 0)
-                }
-                Some(Retention::Outward) => Plan::Outward,
-                Some(_) => Plan::Concurrent,
-                None => Plan::Done(failure(format!("unknown tool `{}`", call.name)), 0),
-            }
-        })
-        .collect();
-    Planned {
-        plans,
-        end,
-        end_slot,
-        checkpoint,
-    }
-}
-
-fn plan_checkpoint(
-    call: &ToolCall,
-    calls_in_batch: usize,
-    context: &TurnContext<'_>,
-    accepted: &mut Option<Checkpoint>,
-) -> ToolOutput {
-    let Some(compaction) = context.compaction else {
-        return failure(CHECKPOINT_OUTSIDE);
-    };
-    if calls_in_batch != 1 {
-        return failure(CHECKPOINT_ALONE);
-    }
-    match Checkpoint::accept(
-        call,
-        compaction.open_commitments,
-        compaction.max_checkpoint_chars,
-    ) {
-        Ok(checkpoint) => {
-            *accepted = Some(checkpoint);
-            success("Checkpoint saved.")
-        }
-        Err(message) => failure(message),
-    }
-}
-
+type Timed = (ToolOutput, u64);
 pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     model_calls: &[ToolCall],
     context: &TurnContext<'_>,
