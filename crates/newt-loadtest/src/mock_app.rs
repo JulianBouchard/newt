@@ -15,8 +15,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::args::{PAGES, SKILLS};
-use crate::profile::{Kind, ASSISTANT_TOOLS};
+use crate::profile::{Kind, Profile};
 use crate::sample::{Rng, Spread};
 
 const VERSION: &str = "loadtest-1";
@@ -31,6 +30,7 @@ pub struct MockApp {
     lazy_pages: bool,
     public_url: String,
     instructions: String,
+    profile: Profile,
     pub tool_calls: AtomicU64,
     pub sends: AtomicU64,
 }
@@ -42,6 +42,7 @@ impl MockApp {
         rng_seed: u64,
         render_ms: f64,
         lazy_pages: bool,
+        profile: Profile,
     ) -> Arc<Self> {
         let rng = Rng::new(rng_seed);
         let mut instructions = String::from(
@@ -58,6 +59,7 @@ impl MockApp {
             lazy_pages,
             public_url: public_url.trim_end_matches('/').to_owned(),
             instructions,
+            profile,
             tool_calls: AtomicU64::new(0),
             sends: AtomicU64::new(0),
         })
@@ -74,7 +76,11 @@ impl MockApp {
     }
 
     fn pages(&self) -> Vec<Value> {
-        PAGES.iter().map(|path| self.page(path)).collect()
+        self.profile
+            .pages
+            .iter()
+            .map(|path| self.page(path))
+            .collect()
     }
 }
 
@@ -107,12 +113,12 @@ async fn bootstrap(State(app): State<Arc<MockApp>>) -> Json<Value> {
         "first_call_effort": "low",
         "effort": "medium",
         "max_model_calls": 30,
-        "skills": SKILLS.iter().map(|name| json!({
+        "skills": app.profile.skills.iter().map(|name| json!({
             "name": name,
             "description": format!("How to handle {name} work."),
             "content": app.rng.words(400),
         })).collect::<Vec<_>>(),
-        "mcp_servers": [{ "name": "assistant", "url": format!("{}/mcp", app.public_url), "auth": "agent_token" }],
+        "mcp_servers": [{ "name": "tools", "url": format!("{}/mcp", app.public_url), "auth": "agent_token" }],
     }))
 }
 
@@ -160,7 +166,7 @@ fn meta(value: Value) -> MetaObject {
     meta
 }
 
-fn catalogue() -> Vec<Tool> {
+fn catalogue(profile: &Profile) -> Vec<Tool> {
     let mut schema = JsonObject::new();
     schema.insert("type".to_owned(), json!("object"));
     schema.insert(
@@ -169,7 +175,8 @@ fn catalogue() -> Vec<Tool> {
     );
     schema.insert("required".to_owned(), json!(["text"]));
     let schema = Arc::new(schema);
-    ASSISTANT_TOOLS
+    profile
+        .tools
         .iter()
         .filter_map(|tool| {
             let newt = match tool.kind {
@@ -180,8 +187,8 @@ fn catalogue() -> Vec<Tool> {
             };
             Some(
                 Tool::new(
-                    tool.name,
-                    "A production tool, mocked for load tests.",
+                    tool.name.clone(),
+                    "A tool mocked for load tests.",
                     Arc::clone(&schema),
                 )
                 .with_meta(meta(newt)),
@@ -200,7 +207,9 @@ impl ServerHandler for Tools {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
-        std::future::ready(Ok(ListToolsResult::with_all_items(catalogue())))
+        std::future::ready(Ok(ListToolsResult::with_all_items(catalogue(
+            &self.0.profile,
+        ))))
     }
 
     fn call_tool(
@@ -211,7 +220,7 @@ impl ServerHandler for Tools {
         let app = Arc::clone(&self.0);
         async move {
             app.tool_calls.fetch_add(1, Ordering::Relaxed);
-            let Some(profile) = ASSISTANT_TOOLS.iter().find(|tool| tool.name == request.name) else {
+            let Some(profile) = app.profile.find(&request.name).cloned() else {
                 return Ok(CallToolResult::error(vec![ContentBlock::text("unknown tool")]).into());
             };
             tokio::time::sleep(profile.latency.millis(&app.rng, app.speed)).await;

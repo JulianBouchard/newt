@@ -58,7 +58,7 @@ fn turn_events(turn: &str, secret: &str) -> Vec<Event> {
         session: session.clone(),
         turn: turn.clone(),
         call,
-        model: "terra".into(),
+        model: "fake-model".into(),
         effort: None,
         prefix: fingerprint(),
         history: fingerprint(),
@@ -229,7 +229,7 @@ async fn each_turn_is_one_trace_with_chat_and_tool_spans_under_its_root() {
     );
 
     let chat = &first[1];
-    assert_eq!(chat["name"], "chat terra");
+    assert_eq!(chat["name"], "chat fake-model");
     assert_eq!(
         attribute(chat, "langfuse.observation.type").unwrap()["stringValue"],
         "generation"

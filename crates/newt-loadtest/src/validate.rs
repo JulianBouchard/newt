@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn matching_arguments_and_enums_pass() {
         assert_eq!(
-            violations(&read_file(), &json!({ "filePath": "customer/memory.md" })),
+            violations(&read_file(), &json!({ "filePath": "memory.md" })),
             Vec::<String>::new()
         );
         let send =

@@ -7,15 +7,15 @@ use newt_loadtest::cache::CacheScope;
 use newt_loadtest::driver::{LoadPlan, NewtTarget, run};
 use newt_loadtest::fake_model::{self, FakeModel, FakeOptions};
 use newt_loadtest::mock_app::{self, MockApp};
-use newt_loadtest::profile::TERRA;
+use newt_loadtest::profile::{Profile, REFERENCE_TIMING};
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
                            [--cache-scope key|prefix|routed] [--machines 4]
-                           [--dump-dir DIR] [--turn-marker TEXT] [--decision-log FILE]
-  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false]
+                           [--dump-dir DIR] [--turn-marker TEXT] [--decision-log FILE] [--profile FILE]
+  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false] [--profile FILE]
   newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
                     [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--timeout-s 300]
                     [--fake http://127.0.0.1:9100] [--mock http://127.0.0.1:9200]";
@@ -52,6 +52,14 @@ impl Flags {
                 .map_err(|_| anyhow::anyhow!("--{name} must be a number"))
         })
     }
+}
+
+fn profile(flags: &Flags) -> anyhow::Result<Profile> {
+    let Some(path) = flags.0.get("profile") else {
+        return Ok(Profile::default());
+    };
+    let raw = std::fs::read_to_string(path).with_context(|| format!("reading profile {path}"))?;
+    Profile::parse(&raw).with_context(|| format!("invalid profile {path}"))
 }
 
 fn cache_scope(flags: &Flags) -> anyhow::Result<CacheScope> {
@@ -139,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
     match command.as_str() {
         "fake-model" => {
             let model = FakeModel::new(
-                TERRA,
+                REFERENCE_TIMING,
                 FakeOptions {
                     speed: flags.number("speed", 1.0)?,
                     failure_rate: flags.number("failure-rate", 0.0)?,
@@ -148,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
                     dump_dir: flags.0.get("dump-dir").map(std::path::PathBuf::from),
                     turn_marker: flags.0.get("turn-marker").cloned(),
                     decision_log: flags.0.get("decision-log").map(std::path::PathBuf::from),
+                    profile: profile(&flags)?,
                 },
             )?;
             serve(
@@ -164,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
                 flags.number("seed", 2)?,
                 flags.number("render-ms", 0.0)?,
                 flags.text("lazy-pages", "false") == "true",
+                profile(&flags)?,
             );
             serve(&listen, mock_app::router(app)).await
         }

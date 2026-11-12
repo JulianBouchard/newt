@@ -193,12 +193,12 @@ mod tests {
     #[test]
     fn one_key_stays_on_one_machine_until_it_passes_the_overflow_rate() {
         let router = Router::new(4);
-        let home = router.machine(Some("assistant/0"), b"prompt", 0);
+        let home = router.machine(Some("agent/0"), b"prompt", 0);
         for roll in 1..OVERFLOW_PER_MINUTE as u64 {
-            assert_eq!(router.machine(Some("assistant/0"), b"prompt", roll), home);
+            assert_eq!(router.machine(Some("agent/0"), b"prompt", roll), home);
         }
         let spilled: std::collections::BTreeSet<u64> = (0..40)
-            .map(|roll| router.machine(Some("assistant/0"), b"prompt", roll))
+            .map(|roll| router.machine(Some("agent/0"), b"prompt", roll))
             .collect();
         assert!(spilled.len() > 1);
     }

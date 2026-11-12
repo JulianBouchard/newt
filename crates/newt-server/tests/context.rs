@@ -32,7 +32,7 @@ impl Provider {
         *provider.profile.lock().unwrap() = "Remote only".into();
         *provider.bootstrap.lock().unwrap() = json!({
             "version": "v1",
-            "instructions": "You help one customer.",
+            "instructions": "You help one customer find a job.",
             "model": "default",
             "first_call_effort": "low",
             "max_model_calls": 6,
@@ -127,7 +127,7 @@ async fn a_turn_gets_instructions_settings_and_pages_from_the_provider() {
     let provider = Provider::new();
     let backend = serve(&provider, TOKEN).await;
     let prepared = backend.prepare("assistant", "customer-7").await.unwrap();
-    assert_eq!(prepared.system, "You help one customer.");
+    assert_eq!(prepared.system, "You help one customer find a job.");
     assert_eq!(prepared.model, "default");
     assert_eq!(prepared.max_model_calls, 6);
     assert_eq!(prepared.max_output_tokens, 4096);
@@ -165,7 +165,9 @@ async fn an_invalidated_page_is_refetched_from_the_provider() {
     let backend = serve(&provider, TOKEN).await;
     let prepared = backend.prepare("assistant", "customer-7").await.unwrap();
     *provider.profile.lock().unwrap() = "Remote or Berlin".into();
-    prepared.workspace.invalidate(&[vec!["customer".to_owned()]]);
+    prepared
+        .workspace
+        .invalidate(&[vec!["customer".to_owned()]]);
     assert_eq!(
         prepared
             .workspace
@@ -292,7 +294,7 @@ async fn pinned_context_joins_the_cached_prefix_not_the_turn() {
     let prepared = backend.prepare("assistant", "customer-7").await.unwrap();
     assert_eq!(
         prepared.system,
-        "You help one customer.\n\n<pinned>\nWrite like a peer. Short sentences.\n</pinned>"
+        "You help one customer find a job.\n\n<pinned>\nWrite like a peer. Short sentences.\n</pinned>"
     );
     let context = prepared.context.unwrap();
     assert!(context.contains("Reply on WhatsApp."));

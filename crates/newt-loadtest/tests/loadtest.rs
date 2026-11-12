@@ -8,7 +8,7 @@ use std::time::Duration;
 use newt_loadtest::driver::{LoadPlan, NewtTarget, run};
 use newt_loadtest::fake_model::{self, FakeModel, FakeOptions};
 use newt_loadtest::mock_app::{self, MockApp};
-use newt_loadtest::profile::TERRA;
+use newt_loadtest::profile::{Profile, REFERENCE_TIMING};
 use newt_server::config::ServerConfig;
 use newt_server::context::{ContextProviderBackend, ProviderEndpoint};
 use newt_server::http::{AppState, router};
@@ -31,7 +31,7 @@ async fn listen(router: axum::Router) -> String {
 #[sqlx::test(migrations = "../../migrations")]
 async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPool) {
     let model = FakeModel::new(
-        TERRA,
+        REFERENCE_TIMING,
         FakeOptions {
             speed: SPEED,
             seed: 11,
@@ -43,7 +43,7 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let app_url = format!("http://{}", listener.local_addr().unwrap());
-    let app = MockApp::new(&app_url, SPEED, 12, 0.0, false);
+    let app = MockApp::new(&app_url, SPEED, 12, 0.0, false, Profile::default());
     tokio::spawn({
         let router = mock_app::router(Arc::clone(&app));
         async move { axum::serve(listener, router).await.unwrap() }
@@ -55,7 +55,7 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
         &config_path,
         format!(
             "server = {{ listen = \"127.0.0.1:0\" }}\ndatabase = {{ url_env = \"DATABASE_URL\" }}\n\
-             [routes.fake]\nprotocol = \"openai-responses\"\nmodel = \"terra\"\nbase_url = \"{model_url}/v1\"\n\
+             [routes.fake]\nprotocol = \"openai-responses\"\nmodel = \"fake-model\"\nbase_url = \"{model_url}/v1\"\n\
              key_env = \"CARGO_MANIFEST_DIR\"\nmax_concurrent = 64\n[models.default]\nchain = [\"fake\"]\n"
         ),
     )

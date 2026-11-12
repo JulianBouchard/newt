@@ -13,10 +13,10 @@ use axum::routing::get;
 use futures_util::stream;
 use serde_json::{Value, json};
 
-use crate::args::{SKILL_TOOLS, arguments_for};
+use crate::args::arguments_for;
 use crate::audit::Audit;
 use crate::cache::{CacheRules, CacheScope, PrefixCache, Router, prompt_bytes};
-use crate::profile::{Kind, ModelTiming, ASSISTANT_TOOLS};
+use crate::profile::{Kind, ModelTiming, Profile};
 use crate::sample::Rng;
 
 const CACHE_TTL: Duration = Duration::from_mins(5);
@@ -64,6 +64,7 @@ pub struct FakeModel {
     audit: Audit,
     dump_dir: Option<std::path::PathBuf>,
     turn_marker: Option<String>,
+    profile: Profile,
     pub stats: Stats,
 }
 
@@ -76,6 +77,7 @@ pub struct FakeOptions {
     pub dump_dir: Option<std::path::PathBuf>,
     pub turn_marker: Option<String>,
     pub decision_log: Option<std::path::PathBuf>,
+    pub profile: Profile,
 }
 
 const DUMP_LIMIT: u64 = 400;
@@ -90,6 +92,7 @@ impl FakeModel {
             dump_dir,
             turn_marker,
             decision_log,
+            profile,
         } = options;
         let machines = match cache_scope {
             CacheScope::Routed { machines } => machines,
@@ -110,6 +113,7 @@ impl FakeModel {
             audit: Audit::new(decision_log.as_deref())?,
             dump_dir,
             turn_marker,
+            profile,
             stats: Stats::default(),
         }))
     }
@@ -196,13 +200,19 @@ struct Call {
 }
 
 fn pick_tools(model: &FakeModel, tools: &HashMap<String, Value>, count: usize) -> Vec<Call> {
-    let available: Vec<_> = ASSISTANT_TOOLS
+    let available: Vec<_> = model
+        .profile
+        .tools
         .iter()
         .filter(|tool| !matches!(tool.kind, Kind::End))
         .filter(|tool| {
-            tools.contains_key(tool.name)
+            tools.contains_key(&tool.name)
                 || (tool.kind == Kind::Skill
-                    && SKILL_TOOLS.iter().any(|name| tools.contains_key(*name)))
+                    && model
+                        .profile
+                        .skill_tools
+                        .iter()
+                        .any(|name| tools.contains_key(name)))
         })
         .collect();
     let total: f64 = available.iter().map(|tool| tool.share).sum();
@@ -220,17 +230,22 @@ fn pick_tools(model: &FakeModel, tools: &HashMap<String, Value>, count: usize) -
             continue;
         }
         let name = if tool.kind == Kind::Skill {
-            let Some(name) = SKILL_TOOLS.iter().find(|name| tools.contains_key(**name)) else {
+            let Some(name) = model
+                .profile
+                .skill_tools
+                .iter()
+                .find(|name| tools.contains_key(*name))
+            else {
                 continue;
             };
             name
         } else {
-            tool.name
+            tool.name.as_str()
         };
         let schema = tools.get(name).cloned().unwrap_or(Value::Null);
         calls.push(Call {
             name: name.to_owned(),
-            arguments: arguments_for(name, tool.kind, &schema, &model.rng),
+            arguments: arguments_for(name, tool.kind, &schema, &model.rng, &model.profile),
         });
     }
     calls

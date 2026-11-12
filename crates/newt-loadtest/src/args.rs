@@ -1,47 +1,33 @@
 use serde_json::{Map, Value, json};
 
-use crate::profile::Kind;
+use crate::profile::{Kind, Profile};
 use crate::sample::Rng;
 
-pub const PAGES: &[&str] = &[
-    "since-last-turn.md",
-    "memory.md",
-    "calendar.md",
-    "match-page.md",
-    "profile/profile.md",
-    "profile/preferences.md",
-    "conversation/timeline/latest.md",
-    "applications.md",
-];
-
-pub const SKILLS: &[&str] = &[
-    "about-us",
-    "call-handling",
-    "channel-management",
-    "interview-management",
-    "intro-requests",
-    "job-search",
-    "onboarding",
-    "customer-state",
-    "team-comms",
-    "writing",
-    "writing-email",
-    "writing-web",
-];
-
-pub const SKILL_TOOLS: &[&str] = &["load_skill", "runtime__skill", "read_file"];
-
-pub fn arguments_for(name: &str, kind: Kind, schema: &Value, rng: &Rng) -> Value {
+pub fn arguments_for(
+    name: &str,
+    kind: Kind,
+    schema: &Value,
+    rng: &Rng,
+    profile: &Profile,
+) -> Value {
     match (name, kind) {
         (_, Kind::Skill) => {
-            let skill = SKILLS[rng.below(SKILLS.len())];
+            let skill = &profile.skills[rng.below(profile.skills.len())];
             if name == "read_file" {
-                read_one(schema, &format!("skills/{skill}.md"))
+                read_one(
+                    schema,
+                    &format!("skills/{skill}.md"),
+                    &profile.file_path_prefix,
+                )
             } else {
                 json!({ "name": skill })
             }
         }
-        ("read_file", _) => read_one(schema, PAGES[rng.below(PAGES.len())]),
+        ("read_file", _) => read_one(
+            schema,
+            &profile.pages[rng.below(profile.pages.len())],
+            &profile.file_path_prefix,
+        ),
         ("grep", _) => json!({ "pattern": "role|intro" }),
         ("glob", _) => json!({ "pattern": "**/*.md" }),
         (_, Kind::Send) => send(schema, rng),
@@ -55,9 +41,9 @@ fn property<'a>(schema: &'a Value, name: &str) -> Option<&'a Value> {
         .and_then(|properties| properties.get(name))
 }
 
-fn read_one(schema: &Value, path: &str) -> Value {
+fn read_one(schema: &Value, path: &str, prefix: &str) -> Value {
     if property(schema, "filePath").is_some() {
-        json!({ "filePath": format!("customer/{path}") })
+        json!({ "filePath": format!("{prefix}{path}") })
     } else {
         json!({ "paths": [path] })
     }
