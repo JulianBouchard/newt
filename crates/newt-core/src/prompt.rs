@@ -18,6 +18,14 @@ pub enum Effort {
     High,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lane {
+    #[default]
+    Interactive,
+    Background,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerFingerprint {
     pub hash: String,
@@ -92,6 +100,7 @@ pub struct ModelRequest<'a> {
     pub effort: Option<Effort>,
     pub max_output_tokens: u32,
     pub cache_key: &'a str,
+    pub lane: Lane,
 }
 
 #[cfg(test)]

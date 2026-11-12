@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use crate::commit::{CommitRules, committed_messages};
 use crate::event::{Event, EventKind};
 use crate::message::{Message, Part, Role, ToolCall, ToolResult};
-use crate::prompt::{Effort, LayerFingerprint, ModelRequest, Prompt, ToolSpec};
+use crate::prompt::{Effort, Lane, LayerFingerprint, ModelRequest, Prompt, ToolSpec};
 use crate::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
@@ -44,6 +44,7 @@ pub struct TurnSettings<'a> {
     pub effort: Option<Effort>,
     pub max_output_tokens: u32,
     pub max_model_calls: u32,
+    pub lane: Lane,
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +221,7 @@ async fn drive<M: Model, H: ToolHost>(
             },
             max_output_tokens: settings.max_output_tokens,
             cache_key: context.ids.session,
+            lane: settings.lane,
         };
         let response = call_model(model, &request, call, context, sink, cancel).await?;
         state.calls.push(CallReport {
@@ -433,14 +435,14 @@ async fn run_tools<H: ToolHost>(
         }
     }
 
-    let outputs: Vec<(ToolOutput, u64)> = stream::iter(
-        concurrent
-            .iter()
-            .map(|&slot| timed_call(host, &tool_calls[slot])),
-    )
-    .buffered(TOOL_CONCURRENCY)
-    .collect()
-    .await;
+    let calls: Vec<_> = concurrent
+        .iter()
+        .map(|&slot| timed_call(host, &tool_calls[slot]))
+        .collect();
+    let outputs: Vec<(ToolOutput, u64)> = stream::iter(calls)
+        .buffered(TOOL_CONCURRENCY)
+        .collect()
+        .await;
     for (&slot, output) in concurrent.iter().zip(outputs) {
         slots[slot] = Some(output);
     }

@@ -14,7 +14,7 @@ use axum::response::Response;
 use axum::routing::post;
 use futures_util::{StreamExt, stream};
 use newt_core::message::{Message, Part, Reasoning, Role, ToolCall, ToolResult};
-use newt_core::prompt::{Effort, ModelRequest, Prompt, ToolSpec};
+use newt_core::prompt::{Effort, Lane, ModelRequest, Prompt, ToolSpec};
 use newt_core::provider::{
     Model, Protocol, ProviderClient, ProviderError, StopReason, StreamEvent,
 };
@@ -118,6 +118,7 @@ async fn stream_once(
         effort: Some(Effort::Low),
         max_output_tokens: 4096,
         cache_key: "session-42",
+        lane: Lane::Interactive,
     };
     let mut events = Vec::new();
     let result = client

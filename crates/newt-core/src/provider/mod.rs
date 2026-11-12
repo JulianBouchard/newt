@@ -117,6 +117,8 @@ pub enum ProviderError {
     Protocol(String),
     #[error("could not write the capture of a model call")]
     Capture(#[source] std::io::Error),
+    #[error("no model route is configured for `{0}`")]
+    UnknownModel(String),
     #[error("model call was cancelled")]
     Cancelled,
 }
@@ -134,6 +136,7 @@ impl ProviderError {
             | Self::Decode { .. }
             | Self::Protocol(_)
             | Self::Capture(_)
+            | Self::UnknownModel(_)
             | Self::Cancelled => false,
         }
     }

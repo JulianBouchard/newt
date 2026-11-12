@@ -48,8 +48,11 @@ pub struct Events {
 #[serde(deny_unknown_fields)]
 pub struct Route {
     pub protocol: Protocol,
+    pub model: String,
     pub base_url: String,
     pub key_env: String,
+    #[serde(default)]
+    pub api_key_header: Option<String>,
     pub max_concurrent: u32,
 }
 
@@ -58,7 +61,6 @@ pub struct Route {
 pub enum Protocol {
     AnthropicMessages,
     OpenaiResponses,
-    OpenaiChat,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,7 +179,8 @@ mod tests {
             server = { listen = "127.0.0.1:0" }
             database = { url_env = "X" }
             [routes.local]
-            protocol = "openai-chat"
+            protocol = "openai-responses"
+            model = "m"
             base_url = "http://localhost:3456"
             key_env = "K"
             max_concurrent = 0
@@ -192,7 +195,8 @@ mod tests {
             server = { listen = "127.0.0.1:0" }
             database = { url_env = "X" }
             [routes.local]
-            protocol = "openai-chat"
+            protocol = "openai-responses"
+            model = "m"
             base_url = "http://localhost:3456"
             key_env = "NEWT_TEST_SURELY_UNSET_ROUTE_KEY"
             max_concurrent = 1

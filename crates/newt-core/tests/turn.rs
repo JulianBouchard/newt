@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use newt_core::event::{Event, EventKind};
 use newt_core::message::{Message, Part, Role, ToolCall, ToolResult};
-use newt_core::prompt::{Effort, ModelRequest, ToolSpec};
+use newt_core::prompt::{Effort, Lane, ModelRequest, ToolSpec};
 use newt_core::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
@@ -195,6 +195,7 @@ async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> R
             effort: Some(Effort::Medium),
             max_output_tokens: 4096,
             max_model_calls,
+            lane: Lane::Interactive,
         },
         &sink,
         &CancellationToken::new(),
@@ -479,6 +480,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             effort: None,
             max_output_tokens: 1024,
             max_model_calls: 1,
+            lane: Lane::Interactive,
         },
         &CollectingSink::default(),
         &cancel,

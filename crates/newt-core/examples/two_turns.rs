@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use newt_core::message::Message;
-use newt_core::prompt::Effort;
+use newt_core::prompt::{Effort, Lane};
 use newt_core::provider::{Protocol, ProviderClient};
 use newt_core::sink::JsonlSink;
 use newt_core::tools::NoTools;
@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         effort: Some(Effort::Medium),
         max_output_tokens: 4096,
         max_model_calls: 6,
+        lane: Lane::Interactive,
     };
     let mut history: Vec<Message> = Vec::new();
     let asks = [

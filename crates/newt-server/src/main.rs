@@ -9,8 +9,11 @@ use newt_core::sink::{EventSink, JsonlSink};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+use newt_server::backend::NoContextProvider;
 use newt_server::config::ServerConfig;
 use newt_server::http::{self, AppState};
+use newt_server::models::Routes;
+use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::Store;
 use newt_server::{db, live};
 
@@ -75,16 +78,33 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<_>>()?;
     let (live_topics, _listener_task) = live::spawn_listener(pool.clone());
+    let instrumentation = jsonl
+        .as_ref()
+        .map(|(sink, _)| Arc::new(sink.clone()) as Arc<dyn EventSink>);
+    let runner = Runner::new(
+        Store::new(pool.clone()),
+        NoContextProvider,
+        Routes::from_config(&config)?,
+        RunnerConfig::default(),
+        instrumentation,
+    );
+    let loops = runner.spawn_loops(live_topics.subscribe());
     let state = AppState {
         store: Store::new(pool),
         tokens: Arc::new(tokens),
         live: live_topics,
     };
 
+    let stopping = runner.clone();
     axum::serve(listener, http::router(state))
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            stopping.shutdown().await;
+        })
         .await
         .context("serving http")?;
+    drop(runner);
+    loops.await.context("runner loops panicked")?;
 
     if let Some((sink, writer)) = jsonl {
         drop(sink);
