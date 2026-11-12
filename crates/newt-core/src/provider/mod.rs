@@ -21,6 +21,7 @@ use capture::{Capture, CaptureStream};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const CALL_DEADLINE: Duration = Duration::from_mins(10);
 const ERROR_BODY_LIMIT: usize = 2000;
 const DECODE_SNIPPET_LIMIT: usize = 200;
 const REQUEST_ID_HEADERS: [&str; 5] = [
@@ -100,6 +101,8 @@ pub enum ProviderError {
     Http(#[source] reqwest::Error),
     #[error("model provider went silent past the idle timeout")]
     Timeout(#[source] reqwest::Error),
+    #[error("model call ran past its {}s deadline", .0.as_secs())]
+    Deadline(Duration),
     #[error("model provider returned {status}: {body}")]
     Status { status: u16, body: String },
     #[error(transparent)]
@@ -126,7 +129,7 @@ pub enum ProviderError {
 impl ProviderError {
     pub fn retryable(&self) -> bool {
         match self {
-            Self::Http(_) | Self::Timeout(_) => true,
+            Self::Http(_) | Self::Timeout(_) | Self::Deadline(_) => true,
             Self::Status { status, .. } => matches!(status, 408 | 409 | 429 | 500..=599),
             Self::Api { kind, .. } => matches!(
                 kind.as_str(),
@@ -175,6 +178,7 @@ pub struct ProviderClient {
     api_key: String,
     auth: Auth,
     capture: Option<Capture>,
+    deadline: Duration,
 }
 
 impl fmt::Debug for ProviderClient {
@@ -186,6 +190,7 @@ impl fmt::Debug for ProviderClient {
             .field("api_key", &"<redacted>")
             .field("auth", &self.auth)
             .field("capture", &self.capture)
+            .field("deadline", &self.deadline)
             .finish_non_exhaustive()
     }
 }
@@ -211,7 +216,14 @@ impl ProviderClient {
             api_key: api_key.into(),
             auth,
             capture: None,
+            deadline: CALL_DEADLINE,
         })
+    }
+
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
     }
 
     #[must_use]
@@ -259,14 +271,19 @@ impl Model for ProviderClient {
         if self.protocol == Protocol::AnthropicMessages {
             http = http.header("anthropic-version", "2023-06-01");
         }
-        match self.protocol {
-            Protocol::AnthropicMessages => {
-                run_stream::<anthropic::Decoder>(http, capture, cancel, on_event).await
+        let call = async {
+            match self.protocol {
+                Protocol::AnthropicMessages => {
+                    run_stream::<anthropic::Decoder>(http, capture, cancel, on_event).await
+                }
+                Protocol::OpenaiResponses => {
+                    run_stream::<openai::Decoder>(http, capture, cancel, on_event).await
+                }
             }
-            Protocol::OpenaiResponses => {
-                run_stream::<openai::Decoder>(http, capture, cancel, on_event).await
-            }
-        }
+        };
+        tokio::time::timeout(self.deadline, call)
+            .await
+            .unwrap_or(Err(ProviderError::Deadline(self.deadline)))
     }
 }
 

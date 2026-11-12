@@ -283,6 +283,29 @@ async fn an_error_status_surfaces_the_status_and_body() {
 }
 
 #[tokio::test]
+async fn a_provider_that_keeps_the_stream_open_forever_hits_the_call_deadline() {
+    let first = Bytes::from_static(
+        b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",
+    );
+    let hanging = stream::iter([Ok::<_, std::io::Error>(first)]).chain(stream::pending());
+    let (base, _) = serve("/v1/messages", StatusCode::OK, Body::from_stream(hanging)).await;
+    let client = ProviderClient::new(Protocol::AnthropicMessages, base, "key")
+        .unwrap()
+        .with_deadline(Duration::from_millis(100));
+
+    let (result, _) = tokio::time::timeout(
+        Duration::from_secs(5),
+        stream_once(&client, &CancellationToken::new()),
+    )
+    .await
+    .unwrap();
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, ProviderError::Deadline(_)), "{error:?}");
+    assert!(error.retryable());
+}
+
+#[tokio::test]
 async fn cancelling_mid_stream_stops_the_call() {
     let first = Bytes::from_static(
         b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",

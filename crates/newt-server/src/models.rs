@@ -109,6 +109,29 @@ impl Routes {
     }
 }
 
+const ATTEMPTS_PER_ROUTE: u32 = 2;
+const RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
+
+impl Route {
+    async fn stream(
+        &self,
+        request: &ModelRequest<'_>,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ModelResponse, ProviderError> {
+        let _admitted = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(ProviderError::Cancelled),
+            admitted = self.admission.admit(request.lane) => admitted?,
+        };
+        let routed = ModelRequest {
+            model: &self.model,
+            ..*request
+        };
+        self.client.stream(&routed, cancel, on_event).await
+    }
+}
+
 impl Model for Routes {
     async fn stream(
         &self,
@@ -116,21 +139,38 @@ impl Model for Routes {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> Result<ModelResponse, ProviderError> {
-        let route = self
+        let chain = self
             .aliases
             .get(request.model)
-            .and_then(|chain| chain.first())
+            .filter(|chain| !chain.is_empty())
             .ok_or_else(|| ProviderError::UnknownModel(request.model.to_owned()))?;
-        let _admitted = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(ProviderError::Cancelled),
-            admitted = route.admission.admit(request.lane) => admitted?,
-        };
-        let routed = ModelRequest {
-            model: &route.model,
-            ..*request
-        };
-        route.client.stream(&routed, cancel, on_event).await
+        let mut last_error = None;
+        for route in chain {
+            for attempt in 0..ATTEMPTS_PER_ROUTE {
+                if attempt > 0 {
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                        () = tokio::time::sleep(RETRY_PAUSE * attempt) => {}
+                    }
+                }
+                let mut streamed = false;
+                let result = route
+                    .stream(request, cancel, &mut |event| {
+                        streamed = true;
+                        on_event(event);
+                    })
+                    .await;
+                match result {
+                    Err(error) if !streamed && error.retryable() => {
+                        tracing::warn!(model = %route.model, attempt, %error, "model call failed before streaming, trying again");
+                        last_error = Some(error);
+                    }
+                    other => return other,
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| ProviderError::UnknownModel(request.model.to_owned())))
     }
 }
 
@@ -138,9 +178,99 @@ impl Model for Routes {
 mod tests {
     #![expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use axum::http::StatusCode;
+    use newt_core::prompt::Prompt;
+
     use super::*;
+
+    const OPENAI_STREAM: &str = include_str!("../../newt-core/tests/fixtures/openai_tool_use.sse");
+
+    async fn provider(status: StatusCode, body: &'static str) -> (String, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&hits);
+        let app = axum::Router::new().route(
+            "/responses",
+            axum::routing::post(move || {
+                let counted = Arc::clone(&counted);
+                async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    (status, [("content-type", "text/event-stream")], body)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, hits)
+    }
+
+    fn route(base: &str) -> Arc<Route> {
+        Arc::new(Route {
+            client: ProviderClient::new(CoreProtocol::OpenaiResponses, base, "key").unwrap(),
+            model: "upstream".to_owned(),
+            admission: Admission::new(4),
+        })
+    }
+
+    async fn call(routes: &Routes) -> Result<ModelResponse, ProviderError> {
+        let request = ModelRequest {
+            model: "default",
+            prompt: Prompt {
+                system: "Be brief.",
+                tools: &[],
+                history: &[],
+                scratch: &[],
+            },
+            effort: None,
+            max_output_tokens: 64,
+            cache_key: "agent/0",
+            lane: Lane::Interactive,
+        };
+        routes
+            .stream(&request, &CancellationToken::new(), &mut |_| {})
+            .await
+    }
+
+    #[tokio::test]
+    async fn an_overloaded_route_is_retried_once_then_the_chain_falls_back() {
+        let (overloaded, overloaded_hits) = provider(StatusCode::SERVICE_UNAVAILABLE, "busy").await;
+        let (healthy, healthy_hits) = provider(StatusCode::OK, OPENAI_STREAM).await;
+        let routes = Routes {
+            aliases: HashMap::from([(
+                "default".to_owned(),
+                vec![route(&overloaded), route(&healthy)],
+            )]),
+        };
+
+        call(&routes).await.unwrap();
+
+        assert_eq!(overloaded_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(healthy_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_the_provider_rejects_is_not_retried() {
+        let (rejecting, rejecting_hits) = provider(StatusCode::BAD_REQUEST, "bad request").await;
+        let (healthy, healthy_hits) = provider(StatusCode::OK, OPENAI_STREAM).await;
+        let routes = Routes {
+            aliases: HashMap::from([(
+                "default".to_owned(),
+                vec![route(&rejecting), route(&healthy)],
+            )]),
+        };
+
+        let error = call(&routes).await.unwrap_err();
+
+        assert!(
+            matches!(error, ProviderError::Status { status: 400, .. }),
+            "{error:?}"
+        );
+        assert_eq!(rejecting_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(healthy_hits.load(Ordering::SeqCst), 0);
+    }
 
     #[tokio::test]
     async fn background_turns_never_take_the_last_slot() {
