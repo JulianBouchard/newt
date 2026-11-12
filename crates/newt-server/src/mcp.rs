@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use newt_core::message::ToolCall;
 use newt_core::prompt::ToolSpec;
-use newt_core::tools::{Retention, ToolDef, ToolHost, ToolOutput};
+use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::workspace::{Page, PageKey};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientConfig, ContentBlock, JsonObject,
@@ -25,6 +25,8 @@ pub const META_INVALIDATES: &str = "newt/invalidates";
 pub const META_IDEMPOTENT: &str = "newt/idempotent";
 pub const META_SESSION: &str = "newt/session";
 pub const META_IDEMPOTENCY_KEY: &str = "newt/idempotency_key";
+pub const META_SKILLS_LOADED: &str = "newt/skills_loaded";
+pub const META_PAGES_READ: &str = "newt/pages_read";
 pub const META_SUMMARY: &str = "newt/summary";
 pub const META_INVALIDATE: &str = "newt/invalidate";
 pub const META_PAGES: &str = "newt/pages";
@@ -230,7 +232,7 @@ fn tool_def(tool: Tool) -> Result<ToolDef, String> {
 }
 
 impl McpHost {
-    async fn run(&self, call: &ToolCall, idempotency_key: &str) -> ToolOutput {
+    async fn run(&self, call: &ToolCall, context: &CallContext) -> ToolOutput {
         let Some(remote) = self.tools.get(&call.name) else {
             return ToolOutput::error(format!("unknown tool `{}`", call.name));
         };
@@ -241,7 +243,15 @@ impl McpHost {
         meta.insert(META_SESSION.to_owned(), Value::from(self.session.as_str()));
         meta.insert(
             META_IDEMPOTENCY_KEY.to_owned(),
-            Value::from(idempotency_key),
+            Value::from(context.idempotency_key.as_str()),
+        );
+        meta.insert(
+            META_SKILLS_LOADED.to_owned(),
+            serde_json::json!(context.skills_loaded),
+        );
+        meta.insert(
+            META_PAGES_READ.to_owned(),
+            serde_json::json!(context.pages_read),
         );
         let mut params = CallToolRequestParams::new(call.name.clone()).with_arguments(arguments);
         params.meta = Some(meta);
@@ -275,9 +285,9 @@ impl ToolHost for McpHost {
     fn call(
         &self,
         call: &ToolCall,
-        idempotency_key: &str,
+        context: &CallContext,
     ) -> impl Future<Output = ToolOutput> + Send {
-        self.run(call, idempotency_key)
+        self.run(call, context)
     }
 }
 

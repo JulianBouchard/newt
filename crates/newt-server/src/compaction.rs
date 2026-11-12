@@ -53,6 +53,7 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
             external_tools: &prepared.tools,
             history: &history,
             context: Some(COMPACTION_INSTRUCTION.to_owned()),
+            skills: &prepared.skills,
             events: Vec::new(),
             workspace: &prepared.workspace,
             replay: Vec::new(),

@@ -14,7 +14,7 @@ use newt_core::provider::{
 };
 use newt_core::sink::EventSink;
 use newt_core::steering::NoSteering;
-use newt_core::tools::{Retention, ToolDef, ToolHost, ToolOutput};
+use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::turn::{TurnDeps, TurnInput, TurnOutcome, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
 use serde_json::json;
@@ -54,7 +54,12 @@ struct Host {
 }
 
 impl ToolHost for Host {
-    fn call(&self, call: &ToolCall, key: &str) -> impl Future<Output = ToolOutput> + Send {
+    fn call(
+        &self,
+        call: &ToolCall,
+        context: &CallContext,
+    ) -> impl Future<Output = ToolOutput> + Send {
+        let key = context.idempotency_key.as_str();
         self.calls
             .lock()
             .unwrap()
@@ -160,6 +165,7 @@ async fn run(
             external_tools: &tools(),
             history: &[],
             context: None,
+            skills: &[],
             events: vec![Message::user_text("Remote only.")],
             workspace: &Workspace::default(),
             replay,

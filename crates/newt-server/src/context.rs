@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use newt_core::prompt::Effort;
+use newt_core::skills::Skill;
 use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,8 @@ pub struct Bootstrap {
     pub max_model_calls: u32,
     #[serde(default = "default_history_budget")]
     pub history_budget: u32,
+    #[serde(default)]
+    pub skills: Vec<Skill>,
     #[serde(default)]
     pub mcp_servers: Vec<McpServer>,
 }
@@ -303,6 +306,7 @@ impl ContextProviderBackend {
             system: bootstrap.instructions.clone(),
             tools: loaded.toolset.tools.clone(),
             context: turn.render(),
+            skills: bootstrap.skills.clone(),
             workspace: Workspace::with_source(turn.pages, Arc::new(source)),
             model: bootstrap.model.clone(),
             first_call_effort: bootstrap.first_call_effort,

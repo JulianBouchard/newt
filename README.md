@@ -61,11 +61,15 @@ Each agent in `server.toml` names a `context_provider` base URL and a `token_env
 
 | Call | When | Request | Response |
 |---|---|---|---|
-| `GET {base}/bootstrap` | first turn, then whenever the version changes | none | `{ version, instructions, model, first_call_effort?, effort?, max_output_tokens?, max_model_calls?, history_budget?, mcp_servers? }` |
+| `GET {base}/bootstrap` | first turn, then whenever the version changes | none | `{ version, instructions, model, first_call_effort?, effort?, max_output_tokens?, max_model_calls?, history_budget?, skills?, mcp_servers? }` |
 | `POST {base}/turn` | start of every turn | `{ session }` | `{ version, pages: [Page], instructions?, constraints? }` |
 | `POST {base}/pages` | a read of a page a tool invalidated | `{ session, keys: [PageKey] }` | `{ pages: [Page] }` |
 
 A `Page` is `{ key: ["customer", "profile"], path: "profile.md", version, content }`. Tools invalidate pages by key prefix; the next read refetches them, and a page missing from the response is gone. `instructions` and `constraints` reach the model at the start of that turn only and never enter history; put anything that must hold until it changes (a hold, a dealbreaker) in `constraints`, and enforce it in your tool handlers too, since the model can still get it wrong. `model` must be a `[models]` alias from `server.toml`. Unknown fields, an unknown model or a version mismatch fail the turn loudly.
+
+## Skills
+
+A skill is instructions for one kind of task, loaded only when the agent needs it. The bootstrap lists them as `skills: [{ name, description, content }]`; newt adds an index of names and descriptions to the instructions (it changes only with the bootstrap version, so it stays in the cached prefix) and gives the agent a built-in `load_skill` tool. A loaded skill's text stays in that turn's scratch and never enters history.
 
 ## Tools over MCP
 
@@ -80,6 +84,8 @@ Newt reads and writes a few `_meta` fields; a server that ignores them still wor
 | tool | `newt/idempotent` | must be `true` on outward tools, or newt refuses to load them |
 | call | `newt/session` | the session key |
 | call | `newt/idempotency_key` | stable across retries of the same call; outward handlers must honour it |
+| call | `newt/skills_loaded` | the skills the agent loaded this turn, so a handler can refuse an action until the right skill was read |
+| call | `newt/pages_read` | `[{ path, version }]` of the workspace pages the agent read this turn |
 | result | `newt/summary` | what durable history keeps instead of the full result |
 | result | `newt/invalidate` | more page key prefixes to mark stale |
 | result | `newt/pages` | fresh page data, used without a refetch |

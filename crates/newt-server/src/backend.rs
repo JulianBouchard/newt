@@ -1,6 +1,7 @@
 use std::future::Future;
 
 use newt_core::prompt::Effort;
+use newt_core::skills::Skill;
 use newt_core::tools::{NoTools, ToolDef, ToolHost};
 use newt_core::workspace::Workspace;
 
@@ -9,6 +10,7 @@ pub struct Prepared<H> {
     pub system: String,
     pub tools: Vec<ToolDef>,
     pub context: Option<String>,
+    pub skills: Vec<Skill>,
     pub workspace: Workspace,
     pub model: String,
     pub first_call_effort: Option<Effort>,
@@ -52,6 +54,7 @@ impl Backend for StaticBackend {
             system: self.system.clone(),
             tools: Vec::new(),
             context: None,
+            skills: Vec::new(),
             workspace: self.workspace.clone(),
             model: self.model.clone(),
             first_call_effort: Some(Effort::Low),

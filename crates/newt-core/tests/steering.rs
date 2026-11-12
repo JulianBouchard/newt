@@ -162,6 +162,7 @@ async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) 
             external_tools: &[],
             history: &[],
             context: None,
+            skills: &[],
             events: vec![Message::user_text("Find me roles in Lisbon.")],
             workspace: &Workspace::default(),
             replay: Vec::new(),

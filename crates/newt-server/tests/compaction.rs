@@ -38,6 +38,7 @@ impl Backend for Budgeted {
             system: "You are a helpful agent.".into(),
             tools: Vec::new(),
             context: None,
+            skills: Vec::new(),
             workspace: Workspace::default(),
             model: "test".into(),
             first_call_effort: None,

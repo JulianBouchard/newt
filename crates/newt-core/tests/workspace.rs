@@ -18,7 +18,7 @@ use newt_core::provider::{
 };
 use newt_core::sink::NoSink;
 use newt_core::steering::NoSteering;
-use newt_core::tools::{Retention, ToolDef, ToolHost, ToolOutput};
+use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
 use serde_json::json;
@@ -289,7 +289,11 @@ struct WritingHost {
 }
 
 impl ToolHost for WritingHost {
-    fn call(&self, call: &ToolCall, _key: &str) -> impl Future<Output = ToolOutput> + Send {
+    fn call(
+        &self,
+        call: &ToolCall,
+        _context: &CallContext,
+    ) -> impl Future<Output = ToolOutput> + Send {
         let text = call.arguments["text"].as_str().unwrap_or_default();
         self.backing.write("profile.md", text);
         let mut output = ToolOutput::ok("{\"saved\":true}");
@@ -365,6 +369,7 @@ async fn write_then_read_with(
             external_tools: &[save],
             history: &[],
             context: None,
+            skills: &[],
             events: vec![Message::user_text("Berlin works too.")],
             workspace: &workspace,
             replay,

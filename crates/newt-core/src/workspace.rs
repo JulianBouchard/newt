@@ -156,6 +156,21 @@ impl Workspace {
         self.lock().pages.keys().cloned().collect()
     }
 
+    pub fn pages_read(&self) -> Vec<crate::tools::PageRead> {
+        let state = self.lock();
+        let mut read: Vec<crate::tools::PageRead> = state
+            .read
+            .iter()
+            .filter_map(|path| state.pages.get(path))
+            .map(|page| crate::tools::PageRead {
+                path: page.path.clone(),
+                version: page.version.clone(),
+            })
+            .collect();
+        read.sort_by(|a, b| a.path.cmp(&b.path));
+        read
+    }
+
     pub fn is_stale(&self, path: &str) -> bool {
         self.lock().stale.contains(path)
     }

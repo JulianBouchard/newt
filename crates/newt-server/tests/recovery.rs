@@ -14,7 +14,7 @@ use newt_core::prompt::{ModelRequest, ToolSpec};
 use newt_core::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
-use newt_core::tools::{Retention, ToolDef, ToolHost, ToolOutput};
+use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::workspace::Workspace;
 use newt_server::backend::{Backend, BackendError, Prepared};
 use newt_server::runner::{Runner, RunnerConfig};
@@ -75,8 +75,12 @@ impl World {
 struct Host(Arc<World>);
 
 impl ToolHost for Host {
-    fn call(&self, _call: &ToolCall, key: &str) -> impl Future<Output = ToolOutput> + Send {
-        std::future::ready(self.0.send(key))
+    fn call(
+        &self,
+        _call: &ToolCall,
+        context: &CallContext,
+    ) -> impl Future<Output = ToolOutput> + Send {
+        std::future::ready(self.0.send(&context.idempotency_key))
     }
 }
 
@@ -102,6 +106,7 @@ impl Backend for WorldBackend {
                 invalidates: Vec::new(),
             }],
             context: None,
+            skills: Vec::new(),
             workspace: Workspace::default(),
             model: "test".into(),
             first_call_effort: None,

@@ -64,12 +64,7 @@ impl MockApp {
     }
 
     fn pages(&self) -> Vec<Value> {
-        PAGES
-            .iter()
-            .map(|path| (*path).to_owned())
-            .chain(SKILLS.iter().map(|skill| format!("skills/{skill}.md")))
-            .map(|path| self.page(&path))
-            .collect()
+        PAGES.iter().map(|path| self.page(path)).collect()
     }
 }
 
@@ -102,6 +97,11 @@ async fn bootstrap(State(app): State<Arc<MockApp>>) -> Json<Value> {
         "first_call_effort": "low",
         "effort": "medium",
         "max_model_calls": 30,
+        "skills": SKILLS.iter().map(|name| json!({
+            "name": name,
+            "description": format!("How to handle {name} work."),
+            "content": app.rng.words(400),
+        })).collect::<Vec<_>>(),
         "mcp_servers": [{ "name": "assistant", "url": format!("{}/mcp", app.public_url), "auth": "agent_token" }],
     }))
 }

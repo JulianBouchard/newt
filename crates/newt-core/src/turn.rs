@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_util::sync::CancellationToken;
+
+use std::sync::Mutex;
 
 use crate::checkpoint::Checkpoint;
 use crate::commit::{CommitRules, committed_messages};
@@ -13,6 +15,7 @@ use crate::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
 use crate::sink::EventSink;
+use crate::skills::{Skill, load_skill_tool, with_index};
 use crate::steering::Steering;
 use crate::tools::{EndTurn, Retention, ToolDef, ToolHost, builtin_tools};
 use crate::workspace::{PageKey, Workspace};
@@ -29,6 +32,7 @@ pub struct TurnInput<'a> {
     pub external_tools: &'a [ToolDef],
     pub history: &'a [Message],
     pub context: Option<String>,
+    pub skills: &'a [Skill],
     pub events: Vec<Message>,
     pub workspace: &'a Workspace,
     pub replay: Vec<JournalEntry>,
@@ -90,6 +94,25 @@ pub struct TurnFailure {
     pub effects: bool,
 }
 
+impl TurnContext<'_> {
+    fn loaded(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+        match self.loaded_skills.lock() {
+            Ok(loaded) => loaded,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    pub(crate) fn mark_skill_loaded(&self, call: &ToolCall) {
+        if let Some(name) = crate::skills::requested(call) {
+            self.loaded().insert(name.to_owned());
+        }
+    }
+
+    pub(crate) fn skills_loaded(&self) -> Vec<String> {
+        self.loaded().iter().cloned().collect()
+    }
+}
+
 pub(crate) struct TurnIds<'a> {
     pub(crate) session: &'a str,
     pub(crate) turn: &'a str,
@@ -104,6 +127,8 @@ pub(crate) struct TurnContext<'a> {
     pub(crate) retention: &'a HashMap<String, Retention>,
     pub(crate) invalidates: &'a HashMap<String, Vec<PageKey>>,
     pub(crate) compaction: Option<Compaction<'a>>,
+    pub(crate) skills: &'a [Skill],
+    loaded_skills: Mutex<BTreeSet<String>>,
     prefix_fingerprint: LayerFingerprint,
     history_fingerprint: LayerFingerprint,
 }
@@ -155,7 +180,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         specs,
         retention,
         invalidates,
-    } = match tool_table(input.external_tools) {
+    } = match tool_table(input.external_tools, input.skills) {
         Ok(table) => table,
         Err(error) => {
             return Err(TurnFailure {
@@ -167,8 +192,9 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
             });
         }
     };
+    let system = with_index(input.system, input.skills);
     let layers = Prompt {
-        system: input.system,
+        system: &system,
         tools: &specs,
         history: input.history,
         scratch: &[],
@@ -178,13 +204,15 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
             session: input.session,
             turn: input.turn,
         },
-        system: input.system,
+        system: &system,
         history: input.history,
         workspace: input.workspace,
         specs: &specs,
         retention: &retention,
         invalidates: &invalidates,
         compaction: settings.compaction,
+        skills: input.skills,
+        loaded_skills: Mutex::new(BTreeSet::new()),
         prefix_fingerprint: layers.prefix_fingerprint(),
         history_fingerprint: layers.history_fingerprint(),
     };
@@ -451,9 +479,10 @@ struct ToolTable {
     invalidates: HashMap<String, Vec<PageKey>>,
 }
 
-fn tool_table(external_tools: &[ToolDef]) -> Result<ToolTable, TurnError> {
+fn tool_table(external_tools: &[ToolDef], skills: &[Skill]) -> Result<ToolTable, TurnError> {
     let tools: Vec<ToolDef> = builtin_tools()
         .into_iter()
+        .chain((!skills.is_empty()).then(|| load_skill_tool(skills)))
         .chain(external_tools.iter().cloned())
         .collect();
     let mut retention = HashMap::new();

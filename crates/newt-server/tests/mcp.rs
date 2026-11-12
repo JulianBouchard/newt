@@ -17,7 +17,7 @@ use newt_core::provider::{
 };
 use newt_core::sink::NoSink;
 use newt_core::steering::NoSteering;
-use newt_core::tools::{Retention, ToolHost};
+use newt_core::tools::{CallContext, PageRead, Retention, ToolHost};
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
 use newt_server::mcp::{McpAuth, McpServer, Toolset};
@@ -185,6 +185,13 @@ async fn connect(calls: &Arc<Calls>, outward_idempotent: bool) -> Result<Toolset
     .await
 }
 
+fn key(idempotency_key: &str) -> CallContext {
+    CallContext {
+        idempotency_key: idempotency_key.into(),
+        ..CallContext::default()
+    }
+}
+
 fn call(id: &str, name: &str, arguments: Value) -> ToolCall {
     ToolCall {
         id: id.into(),
@@ -237,7 +244,14 @@ async fn a_call_sends_the_session_and_idempotency_key_and_reads_result_meta() {
     let output = host
         .call(
             &call("c1", "send_message", json!({ "text": "Hi Maria" })),
-            "customer-7:t1:c1",
+            &CallContext {
+                idempotency_key: "customer-7:t1:c1".into(),
+                skills_loaded: vec!["writing".into()],
+                pages_read: vec![PageRead {
+                    path: "profile.md".into(),
+                    version: "3".into(),
+                }],
+            },
         )
         .await;
     assert!(!output.is_error);
@@ -255,12 +269,21 @@ async fn a_call_sends_the_session_and_idempotency_key_and_reads_result_meta() {
     let seen = calls.seen.lock().unwrap().clone();
     assert_eq!(seen[0].1["newt/session"], "customer-7");
     assert_eq!(seen[0].1["newt/idempotency_key"], "customer-7:t1:c1");
+    assert_eq!(seen[0].1["newt/skills_loaded"], json!(["writing"]));
+    assert_eq!(
+        seen[0].1["newt/pages_read"],
+        json!([{ "path": "profile.md", "version": "3" }])
+    );
 
-    let failed = host.call(&call("c2", "lookup_role", json!({})), "k2").await;
+    let failed = host
+        .call(&call("c2", "lookup_role", json!({})), &key("k2"))
+        .await;
     assert!(failed.is_error);
-    let not_an_object = host.call(&call("c3", "plain_tool", json!([1])), "k3").await;
+    let not_an_object = host
+        .call(&call("c3", "plain_tool", json!([1])), &key("k3"))
+        .await;
     assert!(not_an_object.is_error);
-    let unknown = host.call(&call("c4", "nope", json!({})), "k4").await;
+    let unknown = host.call(&call("c4", "nope", json!({})), &key("k4")).await;
     assert!(unknown.is_error);
 }
 
@@ -362,6 +385,7 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
             external_tools: &toolset.tools,
             history: &[],
             context: None,
+            skills: &[],
             events: vec![Message::user_text("Berlin works too.")],
             workspace: &workspace,
             replay: Vec::new(),
@@ -395,7 +419,7 @@ async fn invalid_result_metadata_is_loud_and_marks_every_page_stale() {
     let toolset = connect(&calls, true).await.unwrap();
     let output = toolset
         .host("customer-7")
-        .call(&call("c1", "bad_meta", json!({})), "k1")
+        .call(&call("c1", "bad_meta", json!({})), &key("k1"))
         .await;
     assert_eq!(output.pages, Vec::<Page>::new());
     assert_eq!(output.invalidate, vec![Vec::<String>::new()]);
@@ -458,7 +482,10 @@ async fn a_lost_connection_marks_the_toolset_broken_and_says_the_outcome_is_unkn
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let output = toolset
         .host("customer-7")
-        .call(&call("c1", "send_message", json!({ "text": "Hi" })), "k1")
+        .call(
+            &call("c1", "send_message", json!({ "text": "Hi" })),
+            &key("k1"),
+        )
         .await;
     assert!(output.is_error);
     assert!(

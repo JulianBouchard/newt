@@ -65,11 +65,24 @@ impl ToolOutput {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct PageRead {
+    pub path: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct CallContext {
+    pub idempotency_key: String,
+    pub skills_loaded: Vec<String>,
+    pub pages_read: Vec<PageRead>,
+}
+
 pub trait ToolHost: Send + Sync {
     fn call(
         &self,
         call: &ToolCall,
-        idempotency_key: &str,
+        context: &CallContext,
     ) -> impl Future<Output = ToolOutput> + Send;
 }
 
@@ -80,7 +93,7 @@ impl ToolHost for NoTools {
     fn call(
         &self,
         call: &ToolCall,
-        _idempotency_key: &str,
+        _context: &CallContext,
     ) -> impl Future<Output = ToolOutput> + Send {
         std::future::ready(ToolOutput::error(format!("unknown tool `{}`", call.name)))
     }

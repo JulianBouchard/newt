@@ -10,9 +10,10 @@ use crate::event::{Event, EventKind};
 use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{ToolCall, ToolResult};
 use crate::sink::EventSink;
+use crate::skills::{self, LOAD_SKILL};
 use crate::tools::{
-    END_TURN, EndTurn, REMEMBER, Retention, ToolHost, ToolOutput, is_workspace_tool, remember,
-    run_workspace_tool,
+    CallContext, END_TURN, EndTurn, REMEMBER, Retention, ToolHost, ToolOutput, is_workspace_tool,
+    remember, run_workspace_tool,
 };
 use crate::turn::{TurnContext, TurnDeps};
 
@@ -87,7 +88,17 @@ fn plan_calls(
                 return Plan::Done(output.clone(), 0);
             }
             if let Some(output) = replay.output(&call.id) {
+                if call.name == LOAD_SKILL && !output.is_error {
+                    context.mark_skill_loaded(call);
+                }
                 return Plan::Done(output.clone(), 0);
+            }
+            if call.name == LOAD_SKILL {
+                let output = skills::load(call, context.skills);
+                if !output.is_error {
+                    context.mark_skill_loaded(call);
+                }
+                return Plan::Done(output, 0);
             }
             if call.name == CHECKPOINT {
                 return Plan::Done(plan_checkpoint(call, tool_calls.len(), context, &mut checkpoint), 0);
@@ -198,13 +209,14 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         }
     }
 
-    let keys: Vec<String> = tool_calls
+    let contexts: Vec<CallContext> = concurrent
         .iter()
-        .map(|call| idempotency_key(context, call))
+        .map(|&slot| call_context(context, &tool_calls[slot]))
         .collect();
     let calls: Vec<_> = concurrent
         .iter()
-        .map(|&slot| timed_call(host, &tool_calls[slot], &keys[slot]))
+        .zip(&contexts)
+        .map(|(&slot, call_context)| timed_call(host, &tool_calls[slot], call_context))
         .collect();
     let reads: Vec<_> = workspace_reads
         .iter()
@@ -222,10 +234,7 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         slots[slot] = Some(output);
     }
 
-    run_outward(
-        tool_calls, &outward, &keys, &mut slots, context, deps, replay,
-    )
-    .await;
+    run_outward(tool_calls, &outward, &mut slots, context, deps, replay).await;
 
     let mut outputs: Vec<(ToolOutput, u64)> = slots
         .into_iter()
@@ -329,7 +338,6 @@ fn finish_batch(
 async fn run_outward<M, H: ToolHost, S, J: Journal>(
     tool_calls: &[ToolCall],
     outward: &[usize],
-    keys: &[String],
     slots: &mut [Option<Timed>],
     context: &TurnContext<'_>,
     deps: &TurnDeps<'_, M, H, S, J>,
@@ -360,7 +368,7 @@ async fn run_outward<M, H: ToolHost, S, J: Journal>(
         let output = if let Some(reason) = &skip_reason {
             (failure(reason.clone()), 0)
         } else {
-            let output = timed_call(deps.host, call, &keys[slot]).await;
+            let output = timed_call(deps.host, call, &call_context(context, call)).await;
             record_output(deps.journal, call, &output.0);
             if output.0.is_error {
                 skip_reason = Some(OUTWARD_SKIPPED.to_owned());
@@ -416,14 +424,22 @@ async fn timed_read(context: &TurnContext<'_>, call: &ToolCall) -> (ToolOutput, 
     (output, elapsed_ms(started))
 }
 
-async fn timed_call<H: ToolHost>(host: &H, call: &ToolCall, key: &str) -> (ToolOutput, u64) {
+async fn timed_call<H: ToolHost>(
+    host: &H,
+    call: &ToolCall,
+    call_context: &CallContext,
+) -> (ToolOutput, u64) {
     let started = Instant::now();
-    let output = host.call(call, key).await;
+    let output = host.call(call, call_context).await;
     (output, elapsed_ms(started))
 }
 
-fn idempotency_key(context: &TurnContext<'_>, call: &ToolCall) -> String {
-    format!("{}:{}:{}", context.ids.session, context.ids.turn, call.id)
+fn call_context(context: &TurnContext<'_>, call: &ToolCall) -> CallContext {
+    CallContext {
+        idempotency_key: format!("{}:{}:{}", context.ids.session, context.ids.turn, call.id),
+        skills_loaded: context.skills_loaded(),
+        pages_read: context.workspace.pages_read(),
+    }
 }
 
 fn record_output<J: Journal>(journal: &J, call: &ToolCall, output: &ToolOutput) {

@@ -17,7 +17,7 @@ use newt_core::provider::{
 };
 use newt_core::sink::EventSink;
 use newt_core::steering::NoSteering;
-use newt_core::tools::{Retention, ToolDef, ToolHost, ToolOutput};
+use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::turn::{
     Compaction, TurnDeps, TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings, run_turn,
 };
@@ -89,7 +89,11 @@ struct RecordingHost {
 }
 
 impl ToolHost for RecordingHost {
-    fn call(&self, call: &ToolCall, _key: &str) -> impl Future<Output = ToolOutput> + Send {
+    fn call(
+        &self,
+        call: &ToolCall,
+        _context: &CallContext,
+    ) -> impl Future<Output = ToolOutput> + Send {
         self.calls.lock().unwrap().push(call.name.clone());
         let output = match call.name.as_str() {
             "save_note" => ToolOutput {
@@ -213,6 +217,7 @@ async fn run_with(
             external_tools: tools,
             history: &history,
             context,
+            skills: &[],
             events: vec![Message::user_text("Only remote roles please.")],
             workspace: &workspace,
             replay: Vec::new(),
@@ -508,6 +513,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             external_tools: &external_tools(),
             history: &[],
             context: None,
+            skills: &[],
             events: vec![Message::user_text("Stop.")],
             workspace: &workspace,
             replay: Vec::new(),
