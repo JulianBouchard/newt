@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use sqlx::types::Json;
-use sqlx::{PgConnection, PgPool};
 
 pub const LIVE_CHANNEL: &str = "newt_live";
 pub const INBOX_CHANNEL: &str = "newt_inbox";
@@ -115,55 +115,23 @@ impl Store {
         key: &str,
         event: &InboundEvent,
     ) -> Result<Accepted, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("insert into sessions (agent, key) values ($1, $2) on conflict do nothing")
-            .bind(agent)
-            .bind(key)
-            .execute(&mut *tx)
-            .await?;
-        let inserted: Option<i64> = sqlx::query_scalar(
-            "insert into inbox (agent, key, event_id, kind, policy, priority, payload) \
-             values ($1, $2, $3, $4, $5, $6, $7) \
-             on conflict (agent, key, event_id) do nothing returning id",
-        )
-        .bind(agent)
-        .bind(key)
-        .bind(&event.id)
-        .bind(event.kind.as_str())
-        .bind(event.policy.as_str())
-        .bind(event.priority.rank())
-        .bind(Json(json!({ "text": event.text, "meta": event.meta })))
-        .fetch_optional(&mut *tx)
-        .await?;
-        let accepted = if let Some(inbox_id) = inserted {
-            let received =
-                json!({ "type": "received", "event_id": event.id, "inbox_id": inbox_id });
-            append_live_in(&mut tx, agent, key, &received).await?;
-            sqlx::query("select pg_notify($1, $2)")
-                .bind(INBOX_CHANNEL)
-                .bind(live_topic(agent, key))
-                .execute(&mut *tx)
-                .await?;
-            Accepted {
-                inbox_id,
-                duplicate: false,
-            }
-        } else {
-            let inbox_id: i64 = sqlx::query_scalar(
-                "select id from inbox where agent = $1 and key = $2 and event_id = $3",
-            )
+        let (inbox_id, fresh, _received, _notified): (i64, bool, i64, i64) = sqlx::query_as(ACCEPT)
             .bind(agent)
             .bind(key)
             .bind(&event.id)
-            .fetch_one(&mut *tx)
+            .bind(event.kind.as_str())
+            .bind(event.policy.as_str())
+            .bind(event.priority.rank())
+            .bind(Json(json!({ "text": event.text, "meta": event.meta })))
+            .bind(INBOX_CHANNEL)
+            .bind(LIVE_CHANNEL)
+            .bind(live_topic(agent, key))
+            .fetch_one(&self.pool)
             .await?;
-            Accepted {
-                inbox_id,
-                duplicate: true,
-            }
-        };
-        tx.commit().await?;
-        Ok(accepted)
+        Ok(Accepted {
+            inbox_id,
+            duplicate: !fresh,
+        })
     }
 
     pub async fn append_live_batch(
@@ -255,34 +223,25 @@ impl Store {
     }
 }
 
-async fn append_live_in(
-    connection: &mut PgConnection,
-    agent: &str,
-    key: &str,
-    event: &Value,
-) -> Result<i64, sqlx::Error> {
-    let seq: i64 = sqlx::query_scalar(
-        "update sessions set next_live_seq = next_live_seq + 1 \
-         where agent = $1 and key = $2 returning next_live_seq",
-    )
-    .bind(agent)
-    .bind(key)
-    .fetch_one(&mut *connection)
-    .await?;
-    sqlx::query("insert into live_events (agent, key, seq, event) values ($1, $2, $3, $4)")
-        .bind(agent)
-        .bind(key)
-        .bind(seq)
-        .bind(Json(event))
-        .execute(&mut *connection)
-        .await?;
-    sqlx::query("select pg_notify($1, $2)")
-        .bind(LIVE_CHANNEL)
-        .bind(live_topic(agent, key))
-        .execute(&mut *connection)
-        .await?;
-    Ok(seq)
-}
+const ACCEPT: &str = "with added as ( \
+       insert into inbox (agent, key, event_id, kind, policy, priority, payload) \
+       values ($1, $2, $3, $4, $5, $6, $7) \
+       on conflict (agent, key, event_id) do nothing returning id), \
+     session as ( \
+       insert into sessions (agent, key, next_live_seq) values ($1, $2, 1) \
+       on conflict (agent, key) do update set next_live_seq = sessions.next_live_seq + 1 \
+         where exists (select 1 from added) \
+       returning next_live_seq), \
+     existing as (select id from inbox where agent = $1 and key = $2 and event_id = $3), \
+     received as ( \
+       insert into live_events (agent, key, seq, event) \
+       select $1, $2, session.next_live_seq, \
+         jsonb_build_object('type', 'received', 'event_id', $3::text, 'inbox_id', added.id) \
+       from session, added returning 1), \
+     notified as (select pg_notify($8, $10), pg_notify($9, $10) from added) \
+     select coalesce((select id from added), (select id from existing)), \
+       exists (select 1 from added), (select count(*) from received), \
+       (select count(*) from notified)";
 
 const APPEND_LIVE: &str = "with relaxed as (select set_config('synchronous_commit', 'off', true)), \
      bumped as ( \

@@ -18,6 +18,13 @@ const FENCED_INSERT: &str = "insert into turn_journal (agent, key, turn_id, seq,
        where agent = $1 and key = $2 and lease_owner = $7 and lease_epoch = $8 for share) \
      returning 1";
 
+const FENCED_BATCH: &str = "insert into turn_journal (agent, key, turn_id, seq, kind, payload) \
+     select $1, $2, $3, $4 + entry.ordinality::int - 1, entry.kind, entry.payload \
+     from unnest($5::text[], $6::jsonb[]) with ordinality as entry(kind, payload, ordinality) \
+     where exists (select 1 from sessions \
+       where agent = $1 and key = $2 and lease_owner = $7 and lease_epoch = $8 for share) \
+     returning 1";
+
 fn entry_kind(entry: &JournalEntry) -> &'static str {
     match entry {
         JournalEntry::Steered { .. } => "steered",
@@ -49,29 +56,32 @@ impl Store {
         })
     }
 
-    pub fn append_journal(
+    pub fn append_journal_batch(
         &self,
         lease: &Lease,
         turn_id: &str,
-        seq: i32,
-        entry: JournalEntry,
+        first_seq: i32,
+        entries: &[JournalEntry],
     ) -> Owned<bool> {
         let pool = self.pool().clone();
         let lease = lease.clone();
         let turn_id = turn_id.to_owned();
+        let kinds: Vec<&'static str> = entries.iter().map(entry_kind).collect();
+        let payloads: Vec<Json<JournalEntry>> = entries.iter().cloned().map(Json).collect();
+        let expected = entries.len();
         Box::pin(async move {
-            let written: Option<i32> = sqlx::query_scalar(FENCED_INSERT)
+            let written: Vec<i32> = sqlx::query_scalar(FENCED_BATCH)
                 .bind(&lease.agent)
                 .bind(&lease.key)
                 .bind(&turn_id)
-                .bind(seq)
-                .bind(entry_kind(&entry))
-                .bind(Json(&entry))
+                .bind(first_seq)
+                .bind(kinds)
+                .bind(payloads)
                 .bind(&lease.owner)
                 .bind(lease.epoch)
-                .fetch_optional(&pool)
+                .fetch_all(&pool)
                 .await?;
-            Ok(written.is_some())
+            Ok(written.len() == expected)
         })
     }
 

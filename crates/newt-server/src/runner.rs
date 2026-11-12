@@ -191,30 +191,55 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
     }
 
     pub fn spawn_loops(&self) -> JoinHandle<()> {
-        let runner = self.clone();
-        let mut topics = self.inner.notifications.subscribe();
+        let nudge = Arc::new(tokio::sync::Notify::new());
+        let wakes = self.clone().wake_on_notify(Arc::clone(&nudge));
+        let sweeps = self.clone().sweep_periodically(nudge);
+        let heartbeats = self.clone().heartbeat_periodically();
         tokio::spawn(async move {
-            let mut sweep = tokio::time::interval(runner.inner.config.sweep_every);
-            let mut heartbeat = tokio::time::interval(runner.inner.config.lease_ttl / 3);
-            loop {
-                tokio::select! {
-                    () = runner.inner.stopping.cancelled() => return,
-                    _ = sweep.tick() => runner.sweep().await,
-                    _ = heartbeat.tick() => runner.heartbeat().await,
-                    topic = topics.recv() => match topic {
-                        Ok(notification) => {
-                            if notification.channel == Channel::Inbox
-                                && let Some((agent, key)) = notification.topic.split_once('/')
-                            {
-                                runner.wake_from(agent, key, WakeSource::Notify);
-                            }
-                        }
-                        Err(broadcast::error::RecvError::Lagged(_)) => runner.sweep().await,
-                        Err(broadcast::error::RecvError::Closed) => return,
-                    },
-                }
-            }
+            tokio::join!(wakes, sweeps, heartbeats);
         })
+    }
+
+    async fn wake_on_notify(self, nudge: Arc<tokio::sync::Notify>) {
+        let mut topics = self.inner.notifications.subscribe();
+        loop {
+            tokio::select! {
+                () = self.inner.stopping.cancelled() => return,
+                topic = topics.recv() => match topic {
+                    Ok(notification) => {
+                        if notification.channel == Channel::Inbox
+                            && let Some((agent, key)) = notification.topic.split_once('/')
+                        {
+                            self.wake_from(agent, key, WakeSource::Notify);
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => nudge.notify_one(),
+                    Err(broadcast::error::RecvError::Closed) => return,
+                },
+            }
+        }
+    }
+
+    async fn sweep_periodically(self, nudge: Arc<tokio::sync::Notify>) {
+        let mut every = tokio::time::interval(self.inner.config.sweep_every);
+        loop {
+            tokio::select! {
+                () = self.inner.stopping.cancelled() => return,
+                _ = every.tick() => {}
+                () = nudge.notified() => {}
+            }
+            self.sweep().await;
+        }
+    }
+
+    async fn heartbeat_periodically(self) {
+        let mut every = tokio::time::interval(self.inner.config.lease_ttl / 3);
+        loop {
+            tokio::select! {
+                () = self.inner.stopping.cancelled() => return,
+                _ = every.tick() => self.heartbeat().await,
+            }
+        }
     }
 
     pub async fn sweep(&self) {

@@ -5,7 +5,7 @@ use newt_core::prompt::Lane;
 use newt_core::provider::{Model, ProviderError};
 use newt_core::turn::{TurnDeps, TurnError, TurnInput, TurnSettings, run_turn};
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Prepared};
 use crate::journal::TurnJournal;
 use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{CommitError, Lease, PendingEvent};
@@ -94,29 +94,14 @@ async fn run_one_turn<B: Backend, M: Model>(
     lease: &Lease,
     plan: TurnPlan,
 ) -> anyhow::Result<bool> {
-    let preparing = std::time::Instant::now();
-    let prepared = match inner.backend.prepare(&lease.agent, &lease.key).await {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn preparation failed");
-            inner
-                .store
-                .release_with_backoff(lease, inner.config.backoff_base.as_secs_f64())
-                .await?;
-            return Ok(false);
-        }
-    };
-    let consumed: Vec<i64> = plan.events.iter().map(|event| event.inbox_id).collect();
-    if plan.fresh
-        && !inner
-            .store
-            .start_turn(lease, &plan.turn_id, &consumed)
-            .await?
-    {
-        tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before the turn started");
+    let Some(Ready {
+        prepared,
+        history,
+        consumed,
+    }) = ready_turn(inner, lease, &plan).await?
+    else {
         return Ok(false);
-    }
-    let history = load_history(inner, lease, &plan.turn_id, elapsed_ms(preparing)).await?;
+    };
     let (events, lane) = event_messages(&plan.events);
     let steered_before = plan.replay.iter().filter_map(|entry| match entry {
         JournalEntry::Steered { id, .. } => id.parse::<i64>().ok(),
@@ -204,21 +189,68 @@ fn event_messages(events: &[PendingEvent]) -> (Vec<Message>, Lane) {
     (messages, lane)
 }
 
-async fn load_history<B: Backend, M: Model>(
+struct Ready<H> {
+    prepared: Prepared<H>,
+    history: Vec<Message>,
+    consumed: Vec<i64>,
+}
+
+async fn ready_turn<B: Backend, M: Model>(
+    inner: &Inner<B, M>,
+    lease: &Lease,
+    plan: &TurnPlan,
+) -> anyhow::Result<Option<Ready<B::Host>>> {
+    let consumed: Vec<i64> = plan.events.iter().map(|event| event.inbox_id).collect();
+    let timed_prepare = async {
+        let started = std::time::Instant::now();
+        let prepared = inner.backend.prepare(&lease.agent, &lease.key).await;
+        (prepared, elapsed_ms(started))
+    };
+    let ((prepared, prepare_ms), begun) = tokio::join!(
+        timed_prepare,
+        begin_turn(inner, lease, &plan.turn_id, &consumed, plan.fresh)
+    );
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn preparation failed");
+            inner
+                .store
+                .release_with_backoff(lease, inner.config.backoff_base.as_secs_f64())
+                .await?;
+            return Ok(None);
+        }
+    };
+    let Some((history, history_ms)) = begun? else {
+        tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before the turn started");
+        return Ok(None);
+    };
+    inner.emit(EventKind::TurnPrepared {
+        session: format!("{}/{}", lease.agent, lease.key),
+        turn: plan.turn_id.clone(),
+        prepare_ms,
+        history_ms,
+    });
+    Ok(Some(Ready {
+        prepared,
+        history,
+        consumed,
+    }))
+}
+
+async fn begin_turn<B: Backend, M: Model>(
     inner: &Inner<B, M>,
     lease: &Lease,
     turn_id: &str,
-    prepare_ms: u64,
-) -> anyhow::Result<Vec<Message>> {
-    let loading = std::time::Instant::now();
+    consumed: &[i64],
+    fresh: bool,
+) -> anyhow::Result<Option<(Vec<Message>, u64)>> {
+    let started = std::time::Instant::now();
+    if fresh && !inner.store.start_turn(lease, turn_id, consumed).await? {
+        return Ok(None);
+    }
     let history = inner.store.history(lease).await?;
-    inner.emit(EventKind::TurnPrepared {
-        session: format!("{}/{}", lease.agent, lease.key),
-        turn: turn_id.to_owned(),
-        prepare_ms,
-        history_ms: elapsed_ms(loading),
-    });
-    Ok(history)
+    Ok(Some((history, elapsed_ms(started))))
 }
 
 async fn finish_turn<B: Backend, M: Model>(

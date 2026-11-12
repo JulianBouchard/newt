@@ -11,6 +11,7 @@ use crate::sessions::Lease;
 use crate::store::Store;
 
 const JOURNAL_BUFFER: usize = 1024;
+const JOURNAL_BATCH: usize = 128;
 const BROKEN: &str = "an earlier journal entry was lost, so nothing more can be sent safely";
 
 type Ack = oneshot::Sender<Result<(), String>>;
@@ -34,8 +35,14 @@ impl TurnJournal {
         let flag = Arc::clone(&broken);
         let writer = tokio::spawn(async move {
             let mut seq = next_seq;
-            while let Some((entry, ack)) = receiver.recv().await {
-                let result = match store.append_journal(&lease, &turn_id, seq, entry).await {
+            let mut batch = Vec::with_capacity(JOURNAL_BATCH);
+            while receiver.recv_many(&mut batch, JOURNAL_BATCH).await > 0 {
+                let (entries, acks): (Vec<JournalEntry>, Vec<Option<Ack>>) =
+                    batch.drain(..).unzip();
+                let result = match store
+                    .append_journal_batch(&lease, &turn_id, seq, &entries)
+                    .await
+                {
                     Ok(true) => Ok(()),
                     Ok(false) => {
                         lease_lost.cancel();
@@ -43,15 +50,15 @@ impl TurnJournal {
                     }
                     Err(error) => Err(error.to_string()),
                 };
-                seq += 1;
+                seq += i32::try_from(entries.len()).unwrap_or(i32::MAX);
                 if let Err(error) = &result {
                     flag.store(true, Ordering::Relaxed);
-                    tracing::warn!(%error, "journal entry not written");
+                    tracing::warn!(%error, entries = entries.len(), "journal entries not written");
                 }
-                if let Some(ack) = ack
-                    && ack.send(result).is_err()
-                {
-                    tracing::warn!("journal acknowledgement had no listener");
+                for ack in acks.into_iter().flatten() {
+                    if ack.send(result.clone()).is_err() {
+                        tracing::warn!("journal acknowledgement had no listener");
+                    }
                 }
             }
         });
