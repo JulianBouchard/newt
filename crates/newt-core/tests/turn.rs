@@ -99,16 +99,19 @@ impl ToolHost for RecordingHost {
                     "Saved: {}",
                     call.arguments["text"].as_str().unwrap()
                 )),
+                ..ToolOutput::default()
             },
             "send_message" => ToolOutput {
                 content: "{\"delivered\":true}".into(),
                 is_error: false,
                 summary: Some("Sent message".into()),
+                ..ToolOutput::default()
             },
             _ => ToolOutput {
                 content: "provider down".into(),
                 is_error: true,
                 summary: None,
+                ..ToolOutput::default()
             },
         };
         std::future::ready(output)
@@ -134,6 +137,7 @@ fn external_tools() -> Vec<ToolDef> {
             input_schema: json!({ "type": "object" }),
         },
         retention,
+        invalidates: Vec::new(),
     };
     vec![
         tool("save_note", Retention::Durable),

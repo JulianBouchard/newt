@@ -1,16 +1,21 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use futures_util::future::join_all;
 use futures_util::stream::{self, StreamExt};
 
 use crate::event::{Event, EventKind};
 use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{ToolCall, ToolResult};
 use crate::sink::EventSink;
-use crate::tools::{END_TURN, EndTurn, Retention, ToolHost, ToolOutput, run_workspace_tool};
+use crate::tools::{
+    END_TURN, EndTurn, Retention, ToolHost, ToolOutput, is_workspace_tool, run_workspace_tool,
+};
 use crate::turn::{TurnContext, TurnDeps};
 
 const TOOL_CONCURRENCY: usize = 5;
+
+type Timed = (ToolOutput, u64);
 const END_TURN_BLOCKED: &str = "Turn not ended: a tool call in this batch failed. Deal with the failure, then call end_turn again.";
 const END_TURN_REPEATED: &str = "Only one end_turn per batch; this one was ignored.";
 const OUTWARD_SKIPPED: &str =
@@ -26,24 +31,17 @@ pub(crate) struct Batch {
 
 enum Plan {
     Done(ToolOutput, u64),
+    Workspace,
     Concurrent,
     Outward,
 }
 
 fn failure(content: impl Into<String>) -> ToolOutput {
-    ToolOutput {
-        content: content.into(),
-        is_error: true,
-        summary: None,
-    }
+    ToolOutput::error(content)
 }
 
 fn success(content: impl Into<String>) -> ToolOutput {
-    ToolOutput {
-        content: content.into(),
-        is_error: false,
-        summary: None,
-    }
+    ToolOutput::ok(content)
 }
 
 fn plan_calls(
@@ -85,9 +83,8 @@ fn plan_calls(
                     0,
                 );
             }
-            let started = Instant::now();
-            if let Some(output) = run_workspace_tool(call, context.workspace) {
-                return Plan::Done(output, elapsed_ms(started));
+            if is_workspace_tool(&call.name) {
+                return Plan::Workspace;
             }
             match context.retention.get(&call.name) {
                 Some(Retention::Outward) => Plan::Outward,
@@ -109,11 +106,16 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     let (plans, mut end, end_slot) = plan_calls(tool_calls, context, replay);
 
     let mut slots: Vec<Option<(ToolOutput, u64)>> = Vec::with_capacity(plans.len());
+    let mut workspace_reads = Vec::new();
     let mut concurrent = Vec::new();
     let mut outward = Vec::new();
     for (slot, plan) in plans.into_iter().enumerate() {
         match plan {
             Plan::Done(output, ms) => slots.push(Some((output, ms))),
+            Plan::Workspace => {
+                workspace_reads.push(slot);
+                slots.push(None);
+            }
             Plan::Concurrent => {
                 concurrent.push(slot);
                 slots.push(None);
@@ -133,10 +135,17 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         .iter()
         .map(|&slot| timed_call(host, &tool_calls[slot], &keys[slot]))
         .collect();
-    let outputs: Vec<(ToolOutput, u64)> = stream::iter(calls)
-        .buffered(TOOL_CONCURRENCY)
-        .collect()
-        .await;
+    let reads: Vec<_> = workspace_reads
+        .iter()
+        .map(|&slot| timed_read(context, &tool_calls[slot]))
+        .collect();
+    let (read_outputs, outputs): (Vec<Timed>, Vec<Timed>) = futures_util::join!(
+        join_all(reads),
+        stream::iter(calls).buffered(TOOL_CONCURRENCY).collect()
+    );
+    for (&slot, output) in workspace_reads.iter().zip(read_outputs) {
+        slots[slot] = Some(output);
+    }
     for (&slot, output) in concurrent.iter().zip(outputs) {
         record_output(journal, &tool_calls[slot], &output.0);
         slots[slot] = Some(output);
@@ -194,6 +203,7 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         entry.0 = failure(END_TURN_BLOCKED);
     }
 
+    apply_workspace_changes(tool_calls, &mut outputs, context);
     finish_batch(tool_calls, outputs, end, context, deps.sink)
 }
 
@@ -244,6 +254,47 @@ fn finish_batch(
         end,
         effects,
     }
+}
+
+fn apply_workspace_changes(
+    tool_calls: &[ToolCall],
+    outputs: &mut [(ToolOutput, u64)],
+    context: &TurnContext<'_>,
+) {
+    let workspace = context.workspace;
+    let mut changed = false;
+    for (call, (output, _)) in tool_calls.iter().zip(outputs.iter_mut()) {
+        if output.is_error {
+            continue;
+        }
+        let mut prefixes = std::mem::take(&mut output.invalidate);
+        if let Some(declared) = context.invalidates.get(&call.name) {
+            prefixes.extend(declared.iter().cloned());
+        }
+        let mut touched = workspace.invalidate(&prefixes);
+        touched.extend(workspace.put(std::mem::take(&mut output.pages)));
+        if touched.is_empty() {
+            continue;
+        }
+        changed = true;
+        touched.sort();
+        touched.dedup();
+        output.content.push_str(
+            "
+(workspace pages changed: ",
+        );
+        output.content.push_str(&touched.join(", "));
+        output.content.push(')');
+    }
+    if changed {
+        workspace.refresh_read_pages_in_background();
+    }
+}
+
+async fn timed_read(context: &TurnContext<'_>, call: &ToolCall) -> (ToolOutput, u64) {
+    let started = Instant::now();
+    let output = run_workspace_tool(call, context.workspace).await;
+    (output, elapsed_ms(started))
 }
 
 async fn timed_call<H: ToolHost>(host: &H, call: &ToolCall, key: &str) -> (ToolOutput, u64) {

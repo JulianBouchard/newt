@@ -14,7 +14,7 @@ use crate::provider::{
 use crate::sink::EventSink;
 use crate::steering::Steering;
 use crate::tools::{EndTurn, Retention, ToolDef, ToolHost, builtin_tools};
-use crate::workspace::Workspace;
+use crate::workspace::{PageKey, Workspace};
 
 const END_TURN_REMINDER: &str =
     "Every turn ends with a call to end_turn. Call it now if you are done, or keep working.";
@@ -91,6 +91,7 @@ pub(crate) struct TurnContext<'a> {
     pub(crate) workspace: &'a Workspace,
     specs: &'a [ToolSpec],
     pub(crate) retention: &'a HashMap<String, Retention>,
+    pub(crate) invalidates: &'a HashMap<String, Vec<PageKey>>,
     prefix_fingerprint: LayerFingerprint,
     history_fingerprint: LayerFingerprint,
 }
@@ -136,7 +137,11 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     settings: &TurnSettings<'_>,
 ) -> Result<TurnOutcome, TurnFailure> {
     let sink = deps.sink;
-    let (specs, retention) = match tool_table(input.external_tools) {
+    let ToolTable {
+        specs,
+        retention,
+        invalidates,
+    } = match tool_table(input.external_tools) {
         Ok(table) => table,
         Err(error) => {
             return Err(TurnFailure {
@@ -164,6 +169,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         workspace: input.workspace,
         specs: &specs,
         retention: &retention,
+        invalidates: &invalidates,
         prefix_fingerprint: layers.prefix_fingerprint(),
         history_fingerprint: layers.history_fingerprint(),
     };
@@ -355,14 +361,19 @@ async fn next_response<M: Model, H: ToolHost, S: Steering, J: Journal>(
     }
 }
 
-fn tool_table(
-    external_tools: &[ToolDef],
-) -> Result<(Vec<ToolSpec>, HashMap<String, Retention>), TurnError> {
+struct ToolTable {
+    specs: Vec<ToolSpec>,
+    retention: HashMap<String, Retention>,
+    invalidates: HashMap<String, Vec<PageKey>>,
+}
+
+fn tool_table(external_tools: &[ToolDef]) -> Result<ToolTable, TurnError> {
     let tools: Vec<ToolDef> = builtin_tools()
         .into_iter()
         .chain(external_tools.iter().cloned())
         .collect();
     let mut retention = HashMap::new();
+    let mut invalidates = HashMap::new();
     for tool in &tools {
         if retention
             .insert(tool.spec.name.clone(), tool.retention)
@@ -370,9 +381,16 @@ fn tool_table(
         {
             return Err(TurnError::DuplicateTool(tool.spec.name.clone()));
         }
+        if !tool.invalidates.is_empty() {
+            invalidates.insert(tool.spec.name.clone(), tool.invalidates.clone());
+        }
     }
     let specs = tools.into_iter().map(|tool| tool.spec).collect();
-    Ok((specs, retention))
+    Ok(ToolTable {
+        specs,
+        retention,
+        invalidates,
+    })
 }
 
 async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(

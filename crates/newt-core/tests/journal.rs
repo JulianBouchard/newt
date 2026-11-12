@@ -63,6 +63,7 @@ impl ToolHost for Host {
             content: "{}".into(),
             is_error: false,
             summary: Some(format!("{} done", call.name)),
+            ..ToolOutput::default()
         })
     }
 }
@@ -129,6 +130,7 @@ fn tools() -> Vec<ToolDef> {
             input_schema: json!({ "type": "object" }),
         },
         retention,
+        invalidates: Vec::new(),
     };
     vec![
         tool("save_note", Retention::Durable),

@@ -45,6 +45,7 @@ impl World {
                 content: "already sent".into(),
                 is_error: false,
                 summary: Some("Sent".into()),
+                ..ToolOutput::default()
             };
         }
         let crash = self.crash.lock().unwrap().take();
@@ -66,6 +67,7 @@ impl World {
             content: "sent".into(),
             is_error: false,
             summary: Some("Sent".into()),
+            ..ToolOutput::default()
         }
     }
 }
@@ -97,6 +99,7 @@ impl Backend for WorldBackend {
                     input_schema: json!({ "type": "object" }),
                 },
                 retention: Retention::Outward,
+                invalidates: Vec::new(),
             }],
             workspace: Workspace::default(),
             model: "test".into(),

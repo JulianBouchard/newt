@@ -13,6 +13,13 @@ pub trait EventSink: Send + Sync {
     fn emit(&self, event: Event);
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoSink;
+
+impl EventSink for NoSink {
+    fn emit(&self, _event: Event) {}
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SinkError {
     #[error("event sink io failed")]

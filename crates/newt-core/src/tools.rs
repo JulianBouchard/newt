@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::message::ToolCall;
 use crate::prompt::ToolSpec;
-use crate::workspace::Workspace;
+use crate::workspace::{Page, PageKey, Workspace};
 
 pub const END_TURN: &str = "end_turn";
 const GREP_LIMIT: usize = 200;
@@ -22,13 +22,45 @@ pub enum Retention {
 pub struct ToolDef {
     pub spec: ToolSpec,
     pub retention: Retention,
+    pub invalidates: Vec<PageKey>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl ToolDef {
+    pub fn new(spec: ToolSpec, retention: Retention) -> Self {
+        Self {
+            spec,
+            retention,
+            invalidates: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invalidate: Vec<PageKey>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<Page>,
+}
+
+impl ToolOutput {
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            ..Self::default()
+        }
+    }
 }
 
 pub trait ToolHost: Send + Sync {
@@ -48,11 +80,7 @@ impl ToolHost for NoTools {
         call: &ToolCall,
         _idempotency_key: &str,
     ) -> impl Future<Output = ToolOutput> + Send {
-        std::future::ready(ToolOutput {
-            content: format!("unknown tool `{}`", call.name),
-            is_error: true,
-            summary: None,
-        })
+        std::future::ready(ToolOutput::error(format!("unknown tool `{}`", call.name)))
     }
 }
 
@@ -84,13 +112,15 @@ impl EndTurn {
 }
 
 pub fn builtin_tools() -> Vec<ToolDef> {
-    let ephemeral = |name: &str, description: &str, input_schema| ToolDef {
-        spec: ToolSpec {
-            name: name.to_owned(),
-            description: description.to_owned(),
-            input_schema,
-        },
-        retention: Retention::Ephemeral,
+    let ephemeral = |name: &str, description: &str, input_schema| {
+        ToolDef::new(
+            ToolSpec {
+                name: name.to_owned(),
+                description: description.to_owned(),
+                input_schema,
+            },
+            Retention::Ephemeral,
+        )
     };
     vec![
         ephemeral(
@@ -151,22 +181,27 @@ struct GrepArgs {
     glob: Option<String>,
 }
 
-pub(crate) fn run_workspace_tool(call: &ToolCall, workspace: &Workspace) -> Option<ToolOutput> {
+pub(crate) fn is_workspace_tool(name: &str) -> bool {
+    matches!(name, "read_file" | "glob" | "grep")
+}
+
+pub(crate) async fn run_workspace_tool(call: &ToolCall, workspace: &Workspace) -> ToolOutput {
     let outcome = match call.name.as_str() {
-        "read_file" => parse(call).and_then(|args: ReadFileArgs| read_file(workspace, &args.paths)),
+        "read_file" => match parse::<ReadFileArgs>(call) {
+            Ok(args) => read_file(workspace, &args.paths).await,
+            Err(message) => Err(message),
+        },
         "glob" => parse(call).and_then(|args: GlobArgs| glob(workspace, &args.pattern)),
-        "grep" => parse(call).and_then(|args: GrepArgs| grep(workspace, &args)),
-        _ => return None,
+        "grep" => match parse::<GrepArgs>(call) {
+            Ok(args) => grep(workspace, &args).await,
+            Err(message) => Err(message),
+        },
+        other => Err(format!("`{other}` is not a workspace tool")),
     };
-    let (content, is_error) = match outcome {
-        Ok(content) => (content, false),
-        Err(message) => (message, true),
-    };
-    Some(ToolOutput {
-        content,
-        is_error,
-        summary: None,
-    })
+    match outcome {
+        Ok(content) => ToolOutput::ok(content),
+        Err(message) => ToolOutput::error(message),
+    }
 }
 
 fn parse<'a, T: Deserialize<'a>>(call: &'a ToolCall) -> Result<T, String> {
@@ -174,18 +209,22 @@ fn parse<'a, T: Deserialize<'a>>(call: &'a ToolCall) -> Result<T, String> {
         .map_err(|error| format!("invalid arguments for {}: {error}", call.name))
 }
 
-fn read_file(workspace: &Workspace, paths: &[String]) -> Result<String, String> {
+async fn read_file(workspace: &Workspace, paths: &[String]) -> Result<String, String> {
     if paths.is_empty() {
         return Err("read_file needs at least one path".to_owned());
     }
-    Ok(paths
-        .iter()
-        .map(|path| {
-            let content = workspace.read(path).unwrap_or("(no such page)");
-            format!("--- {path} ---\n{content}\n")
-        })
-        .collect::<Vec<_>>()
-        .concat())
+    let mut out = String::new();
+    for path in paths {
+        let content = workspace
+            .read(path)
+            .await
+            .map_err(|error| error.to_string())?;
+        let content = content.as_deref().unwrap_or("(no such page)");
+        for piece in ["--- ", path, " ---\n", content, "\n"] {
+            out.push_str(piece);
+        }
+    }
+    Ok(out)
 }
 
 fn glob(workspace: &Workspace, pattern: &str) -> Result<String, String> {
@@ -196,9 +235,10 @@ fn glob(workspace: &Workspace, pattern: &str) -> Result<String, String> {
     Ok(paths.join("\n"))
 }
 
-fn grep(workspace: &Workspace, args: &GrepArgs) -> Result<String, String> {
+async fn grep(workspace: &Workspace, args: &GrepArgs) -> Result<String, String> {
     let matches = workspace
         .grep(&args.pattern, args.glob.as_deref(), GREP_LIMIT + 1)
+        .await
         .map_err(|error| error.to_string())?;
     if matches.is_empty() {
         return Ok("(no matches)".to_owned());
@@ -217,8 +257,6 @@ fn grep(workspace: &Workspace, args: &GrepArgs) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
-
     use std::collections::BTreeMap;
 
     use super::*;
@@ -238,13 +276,13 @@ mod tests {
         )]))
     }
 
-    #[test]
-    fn read_file_reads_several_pages_and_marks_missing_ones() {
+    #[tokio::test]
+    async fn read_file_reads_several_pages_and_marks_missing_ones() {
         let result = run_workspace_tool(
             &call("read_file", json!({ "paths": ["profile.md", "nope.md"] })),
             &workspace(),
         )
-        .unwrap();
+        .await;
         assert!(!result.is_error);
         assert_eq!(
             result.content,
@@ -252,35 +290,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn read_file_without_paths_is_an_error() {
+    #[tokio::test]
+    async fn read_file_without_paths_is_an_error() {
         let result =
-            run_workspace_tool(&call("read_file", json!({ "paths": [] })), &workspace()).unwrap();
+            run_workspace_tool(&call("read_file", json!({ "paths": [] })), &workspace()).await;
         assert!(result.is_error);
     }
 
-    #[test]
-    fn grep_says_when_matches_were_cut_off() {
+    #[tokio::test]
+    async fn grep_says_when_matches_were_cut_off() {
         let many = "hit\n".repeat(GREP_LIMIT + 5);
         let workspace = Workspace::new(BTreeMap::from([("big.md".into(), many)]));
         let result =
-            run_workspace_tool(&call("grep", json!({ "pattern": "hit" })), &workspace).unwrap();
+            run_workspace_tool(&call("grep", json!({ "pattern": "hit" })), &workspace).await;
         assert_eq!(result.content.lines().count(), GREP_LIMIT + 1);
         assert!(result.content.contains("more matches not shown"));
     }
 
-    #[test]
-    fn bad_arguments_become_error_results() {
+    #[tokio::test]
+    async fn bad_arguments_become_error_results() {
         let result =
-            run_workspace_tool(&call("grep", json!({ "pattern": "(" })), &workspace()).unwrap();
+            run_workspace_tool(&call("grep", json!({ "pattern": "(" })), &workspace()).await;
         assert!(result.is_error);
-        let result = run_workspace_tool(&call("glob", json!({})), &workspace()).unwrap();
+        let result = run_workspace_tool(&call("glob", json!({})), &workspace()).await;
         assert!(result.is_error);
     }
 
     #[test]
-    fn non_workspace_tools_are_not_handled_here() {
-        assert!(run_workspace_tool(&call("send_message", json!({})), &workspace()).is_none());
+    fn only_read_glob_and_grep_are_workspace_tools() {
+        assert!(is_workspace_tool("grep"));
+        assert!(!is_workspace_tool("send_message"));
     }
 
     #[test]
