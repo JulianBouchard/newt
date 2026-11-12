@@ -35,6 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let client = ProviderClient::new(protocol, env("NEWT_BASE_URL")?, env("NEWT_API_KEY")?)?;
     let model = env("NEWT_MODEL")?;
+    let system = match std::env::var("NEWT_SYSTEM_FILE") {
+        Ok(path) => std::fs::read_to_string(path)?,
+        Err(_) => SYSTEM.to_owned(),
+    };
     let workspace = Workspace::new(BTreeMap::from([
         (
             "profile.md".to_owned(),
@@ -68,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             TurnInput {
                 session: "demo-session",
                 turn: &turn,
-                system: SYSTEM,
+                system: &system,
                 external_tools: &[],
                 history: &history,
                 events: vec![Message::user_text(ask)],

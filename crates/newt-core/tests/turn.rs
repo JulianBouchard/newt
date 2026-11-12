@@ -1,4 +1,8 @@
-#![expect(clippy::unwrap_used, clippy::panic, reason = "tests fail loudly on setup errors")]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "tests fail loudly on setup errors"
+)]
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
