@@ -7,6 +7,10 @@ edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0 OR MIT"
 publish = false
+repository = "https://github.com/JulianBouchard/newt"
+readme = "README.md"
+keywords = ["agent", "llm", "runtime", "mcp", "postgres"]
+categories = ["asynchronous", "web-programming::http-server"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

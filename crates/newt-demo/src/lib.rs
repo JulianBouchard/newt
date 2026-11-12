@@ -1,3 +1,6 @@
+//! A small reference app for newt: a context provider and an MCP tool server for a
+//! to-do assistant, used by the quickstart and the integration tests.
+
 mod provider;
 mod tools;
 

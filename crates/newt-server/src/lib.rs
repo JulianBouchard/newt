@@ -1,3 +1,10 @@
+//! The newt server: an HTTP event API, a Postgres-backed runner and the adapters that feed
+//! turns from a context provider and MCP tool servers.
+//!
+//! Events land in a per-session inbox; the runner leases sessions, runs turns with
+//! [`newt_core`], and commits history and journal entries in Postgres. See `docs/` in the
+//! repository for the protocol, configuration and design.
+
 pub mod backend;
 pub mod checkpoints;
 mod compaction;
