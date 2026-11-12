@@ -8,6 +8,7 @@ pub mod cache;
 pub mod driver;
 pub mod fake_model;
 pub mod mock_app;
+mod plan;
 pub mod profile;
 pub mod report;
 pub mod sample;

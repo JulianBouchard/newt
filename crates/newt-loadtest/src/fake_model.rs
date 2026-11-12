@@ -13,14 +13,13 @@ use axum::routing::get;
 use futures_util::stream;
 use serde_json::{Value, json};
 
-use crate::args::arguments_for;
 use crate::audit::Audit;
 use crate::cache::{CacheRules, CacheScope, PrefixCache, Router, prompt_bytes};
-use crate::profile::{Kind, ModelTiming, Profile};
+use crate::plan::{Call, Turn, finish, pick_tools, read_turn, seed_of};
+use crate::profile::{ModelTiming, Profile};
 use crate::sample::Rng;
 
 const CACHE_TTL: Duration = Duration::from_mins(5);
-const COMPACTING: &str = "Newt is compacting";
 
 #[derive(Debug, Default)]
 pub struct Stats {
@@ -139,134 +138,6 @@ async fn stats(State(model): State<Arc<FakeModel>>) -> Json<Value> {
     Json(snapshot)
 }
 
-struct Turn {
-    done_calls: usize,
-    last_user: String,
-    compacting: bool,
-}
-
-fn user_text(item: &Value) -> String {
-    match item.get("content") {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(parts)) => parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect(),
-        _ => String::new(),
-    }
-}
-
-fn is_user(item: &Value) -> bool {
-    item.get("role").and_then(Value::as_str) == Some("user")
-}
-
-fn read_turn(input: &[Value], marker: Option<&str>) -> Turn {
-    let last_user = marker
-        .and_then(|marker| {
-            input
-                .iter()
-                .rposition(|item| is_user(item) && user_text(item).contains(marker))
-        })
-        .or_else(|| input.iter().rposition(is_user));
-    let start = last_user.map_or(0, |index| index + 1);
-    let compacting = input
-        .iter()
-        .filter(|item| is_user(item))
-        .any(|item| user_text(item).starts_with(COMPACTING));
-    Turn {
-        done_calls: input
-            .get(start..)
-            .unwrap_or_default()
-            .iter()
-            .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call_output"))
-            .count(),
-        last_user: last_user
-            .and_then(|index| input.get(index))
-            .map(user_text)
-            .unwrap_or_default(),
-        compacting,
-    }
-}
-
-fn seed_of(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
-struct Call {
-    name: String,
-    arguments: Value,
-}
-
-fn pick_tools(model: &FakeModel, tools: &HashMap<String, Value>, count: usize) -> Vec<Call> {
-    let available: Vec<_> = model
-        .profile
-        .tools
-        .iter()
-        .filter(|tool| !matches!(tool.kind, Kind::End))
-        .filter(|tool| {
-            tools.contains_key(&tool.name)
-                || (tool.kind == Kind::Skill
-                    && model
-                        .profile
-                        .skill_tools
-                        .iter()
-                        .any(|name| tools.contains_key(name)))
-        })
-        .collect();
-    let total: f64 = available.iter().map(|tool| tool.share).sum();
-    let mut calls = Vec::with_capacity(count);
-    let mut sent = false;
-    while calls.len() < count && total > 0.0 {
-        let mut roll = model.rng.unit() * total;
-        let Some(tool) = available.iter().find(|tool| {
-            roll -= tool.share;
-            roll <= 0.0
-        }) else {
-            break;
-        };
-        if tool.kind == Kind::Send && std::mem::replace(&mut sent, true) {
-            continue;
-        }
-        let name = if tool.kind == Kind::Skill {
-            let Some(name) = model
-                .profile
-                .skill_tools
-                .iter()
-                .find(|name| tools.contains_key(*name))
-            else {
-                continue;
-            };
-            name
-        } else {
-            tool.name.as_str()
-        };
-        let schema = tools.get(name).cloned().unwrap_or(Value::Null);
-        calls.push(Call {
-            name: name.to_owned(),
-            arguments: arguments_for(name, tool.kind, &schema, &model.rng, &model.profile),
-        });
-    }
-    calls
-}
-
-fn finish(tools: &HashMap<String, Value>, compacting: bool) -> Vec<Call> {
-    if compacting && tools.contains_key("checkpoint") {
-        return vec![Call {
-            name: "checkpoint".into(),
-            arguments: json!({ "memory": ["load test"], "open_threads": [], "commitments": [], "decisions": [], "tone": "short" }),
-        }];
-    }
-    if tools.contains_key("end_turn") {
-        return vec![Call {
-            name: "end_turn".into(),
-            arguments: json!({ "nothing_new": "load test turn" }),
-        }];
-    }
-    Vec::new()
-}
-
 async fn record_shape(model: &FakeModel, body: &Value) {
     let size = |field: &str| {
         u64::try_from(body.get(field).map_or(0, |value| value.to_string().len())).unwrap_or(0)
@@ -374,7 +245,7 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
             .tool_calls_per_step
             .count(&model.rng)
             .min(target - turn.done_calls);
-        pick_tools(&model, &tools, step.max(1))
+        pick_tools(&model.profile, &model.rng, &tools, step.max(1))
     };
     audit_reply(&model, &body, &tools, &turn, target, &calls);
     let (input_tokens, cached) = (lookup.input_tokens, lookup.cached_tokens);
