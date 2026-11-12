@@ -7,4 +7,5 @@ pub mod models;
 pub mod runner;
 pub mod sessions;
 pub mod sinks;
+pub mod steering;
 pub mod store;

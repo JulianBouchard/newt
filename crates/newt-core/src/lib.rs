@@ -1,3 +1,4 @@
+mod batch;
 mod commit;
 pub mod event;
 pub mod message;
@@ -5,6 +6,7 @@ pub mod prompt;
 pub mod provider;
 pub mod sink;
 pub mod sse;
+pub mod steering;
 pub mod tools;
 pub mod turn;
 pub mod workspace;

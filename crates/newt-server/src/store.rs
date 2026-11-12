@@ -4,6 +4,7 @@ use sqlx::types::Json;
 use sqlx::{PgConnection, PgPool};
 
 pub const LIVE_CHANNEL: &str = "newt_live";
+pub const INBOX_CHANNEL: &str = "newt_inbox";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -138,6 +139,11 @@ impl Store {
             let received =
                 json!({ "type": "received", "event_id": event.id, "inbox_id": inbox_id });
             append_live_in(&mut tx, agent, key, &received).await?;
+            sqlx::query("select pg_notify($1, $2)")
+                .bind(INBOX_CHANNEL)
+                .bind(live_topic(agent, key))
+                .execute(&mut *tx)
+                .await?;
             Accepted {
                 inbox_id,
                 duplicate: false,

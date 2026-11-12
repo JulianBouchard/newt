@@ -12,7 +12,7 @@ use newt_core::provider::{
 use newt_core::workspace::Workspace;
 use newt_server::backend::StaticBackend;
 use newt_server::http::{AppState, router};
-use newt_server::live::spawn_listener;
+use newt_server::live::{Notification, spawn_listener};
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, SessionStatus, Store};
 use serde_json::json;
@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 struct ScriptedModel {
     script: Mutex<VecDeque<Message>>,
     steal_lease: Option<PgPool>,
+    delay: Duration,
 }
 
 fn respond(message: Message) -> ModelResponse {
@@ -52,6 +53,7 @@ impl Model for ScriptedModel {
             .await
             .unwrap();
         }
+        tokio::time::sleep(self.delay).await;
         let next = self.script.lock().unwrap().pop_front();
         next.map(respond)
             .ok_or_else(|| ProviderError::Protocol("script exhausted".into()))
@@ -88,6 +90,17 @@ fn runner(
     pool: &PgPool,
     script: Vec<Message>,
     steal: bool,
+    notifications: broadcast::Sender<Notification>,
+) -> Runner<StaticBackend, ScriptedModel> {
+    slow_runner(pool, script, steal, notifications, Duration::ZERO)
+}
+
+fn slow_runner(
+    pool: &PgPool,
+    script: Vec<Message>,
+    steal: bool,
+    notifications: broadcast::Sender<Notification>,
+    delay: Duration,
 ) -> Runner<StaticBackend, ScriptedModel> {
     Runner::new(
         Store::new(pool.clone()),
@@ -99,9 +112,11 @@ fn runner(
         ScriptedModel {
             script: Mutex::new(script.into()),
             steal_lease: steal.then(|| pool.clone()),
+            delay,
         },
         fast(),
         None,
+        notifications,
     )
 }
 
@@ -128,8 +143,8 @@ async fn wait_for(
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_posted_event_runs_a_turn_and_commits_it(pool: PgPool) {
     let (live, _listener) = spawn_listener(pool.clone());
-    let runner = runner(&pool, vec![reply_and_end("Hello!")], false);
-    let _loops = runner.spawn_loops(live.subscribe());
+    let runner = runner(&pool, vec![reply_and_end("Hello!")], false, live.clone());
+    let _loops = runner.spawn_loops();
     let state = AppState {
         store: Store::new(pool.clone()),
         tokens: Arc::new(HashMap::from([(
@@ -182,7 +197,12 @@ async fn queued_events_are_all_processed(pool: PgPool) {
         .accept_event("assistant", "t2", &event("e2", "two"))
         .await
         .unwrap();
-    let runner = runner(&pool, vec![reply_and_end("a"), reply_and_end("b")], false);
+    let runner = runner(
+        &pool,
+        vec![reply_and_end("a"), reply_and_end("b")],
+        false,
+        broadcast::channel(16).0,
+    );
 
     runner.wake("assistant", "t2");
     let status = wait_for(&store, "t2", |s| {
@@ -200,7 +220,7 @@ async fn a_failing_turn_backs_off_and_keeps_its_events(pool: PgPool) {
         .accept_event("assistant", "t3", &event("e1", "hi"))
         .await
         .unwrap();
-    let runner = runner(&pool, Vec::new(), false);
+    let runner = runner(&pool, Vec::new(), false, broadcast::channel(16).0);
 
     runner.wake("assistant", "t3");
     runner.idle().await;
@@ -230,7 +250,12 @@ async fn a_runner_that_lost_its_lease_cannot_commit(pool: PgPool) {
         .accept_event("assistant", "t4", &event("e1", "hi"))
         .await
         .unwrap();
-    let runner = runner(&pool, vec![reply_and_end("too late")], true);
+    let runner = runner(
+        &pool,
+        vec![reply_and_end("too late")],
+        true,
+        broadcast::channel(16).0,
+    );
 
     runner.wake("assistant", "t4");
     runner.idle().await;
@@ -259,10 +284,14 @@ async fn the_sweeper_picks_up_an_orphaned_session(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
-    let runner = runner(&pool, vec![reply_and_end("recovered")], false);
-    let (_never, quiet) = broadcast::channel(1);
+    let runner = runner(
+        &pool,
+        vec![reply_and_end("recovered")],
+        false,
+        broadcast::channel(16).0,
+    );
 
-    let _loops = runner.spawn_loops(quiet);
+    let _loops = runner.spawn_loops();
     let status = wait_for(&store, "t5", |s| {
         s.pending_events == 0 && s.lease_owner.is_none()
     })
@@ -270,4 +299,55 @@ async fn the_sweeper_picks_up_an_orphaned_session(pool: PgPool) {
 
     assert_eq!(status.history_entries, 2);
     assert_eq!(status.lease_epoch, 8);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_message_sent_mid_turn_joins_that_turn(pool: PgPool) {
+    let (live, _listener) = spawn_listener(pool.clone());
+    let store = Store::new(pool.clone());
+    let runner = slow_runner(
+        &pool,
+        vec![reply_and_end("Berlin it is")],
+        false,
+        live,
+        Duration::from_millis(400),
+    );
+    store
+        .accept_event("assistant", "t6", &event("e1", "roles in Lisbon"))
+        .await
+        .unwrap();
+
+    runner.wake("assistant", "t6");
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    store
+        .accept_event("assistant", "t6", &event("e2", "actually Berlin"))
+        .await
+        .unwrap();
+    let status = wait_for(&store, "t6", |s| {
+        s.pending_events == 0 && s.lease_owner.is_none()
+    })
+    .await;
+
+    assert_eq!(status.history_entries, 3);
+    let turns: Vec<String> =
+        sqlx::query_scalar("select distinct turn_id from history where key = 't6'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(turns.len(), 1);
+    let kinds: Vec<String> = store
+        .live_since("assistant", "t6", 0, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|event| event.event["type"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(kinds.iter().any(|kind| kind == "turn_steered"), "{kinds:?}");
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| *kind == "turn_completed")
+            .count(),
+        1
+    );
 }

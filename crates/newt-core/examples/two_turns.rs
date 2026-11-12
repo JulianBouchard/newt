@@ -6,6 +6,7 @@ use newt_core::message::Message;
 use newt_core::prompt::{Effort, Lane};
 use newt_core::provider::{Protocol, ProviderClient};
 use newt_core::sink::JsonlSink;
+use newt_core::steering::NoSteering;
 use newt_core::tools::NoTools;
 use newt_core::turn::{TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
@@ -74,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let outcome = run_turn(
             &client,
             &NoTools,
+            &NoSteering,
             TurnInput {
                 session: &session,
                 turn: &turn,

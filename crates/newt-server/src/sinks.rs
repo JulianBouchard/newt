@@ -39,6 +39,7 @@ fn is_live(kind: &EventKind) -> bool {
     matches!(
         kind,
         EventKind::TurnStarted { .. }
+            | EventKind::TurnSteered { .. }
             | EventKind::ToolStarted { .. }
             | EventKind::ToolFinished { .. }
             | EventKind::TurnCompleted { .. }

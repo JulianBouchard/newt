@@ -1,30 +1,22 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use futures_util::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::commit::{CommitRules, committed_messages};
 use crate::event::{Event, EventKind};
-use crate::message::{Message, Part, Role, ToolCall, ToolResult};
+use crate::message::{Message, Part, Role, ToolCall};
 use crate::prompt::{Effort, Lane, LayerFingerprint, ModelRequest, Prompt, ToolSpec};
 use crate::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
 use crate::sink::EventSink;
-use crate::tools::{
-    END_TURN, EndTurn, Retention, ToolDef, ToolHost, ToolOutput, builtin_tools, run_workspace_tool,
-};
+use crate::steering::Steering;
+use crate::tools::{EndTurn, Retention, ToolDef, ToolHost, builtin_tools};
 use crate::workspace::Workspace;
 
-const TOOL_CONCURRENCY: usize = 5;
 const END_TURN_REMINDER: &str =
     "Every turn ends with a call to end_turn. Call it now if you are done, or keep working.";
-const END_TURN_BLOCKED: &str = "Turn not ended: a tool call in this batch failed. Deal with the failure, then call end_turn again.";
-const END_TURN_REPEATED: &str = "Only one end_turn per batch; this one was ignored.";
-const OUTWARD_SKIPPED: &str =
-    "Not run: an earlier outward call in this batch failed, so later ones were skipped.";
-const OUTWARD_CANCELLED: &str = "Not run: the turn was cancelled before this call started.";
 
 #[derive(Debug)]
 pub struct TurnInput<'a> {
@@ -59,6 +51,7 @@ pub struct TurnOutcome {
     pub committed: Vec<Message>,
     pub end: EndTurn,
     pub calls: Vec<CallReport>,
+    pub steered: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,34 +73,54 @@ pub struct TurnFailure {
     pub error: TurnError,
     pub committed: Vec<Message>,
     pub calls: Vec<CallReport>,
+    pub steered: Vec<String>,
 }
 
-struct TurnIds<'a> {
-    session: &'a str,
-    turn: &'a str,
+pub(crate) struct TurnIds<'a> {
+    pub(crate) session: &'a str,
+    pub(crate) turn: &'a str,
 }
 
-struct TurnContext<'a> {
-    ids: TurnIds<'a>,
+pub(crate) struct TurnContext<'a> {
+    pub(crate) ids: TurnIds<'a>,
     system: &'a str,
     history: &'a [Message],
-    workspace: &'a Workspace,
+    pub(crate) workspace: &'a Workspace,
     specs: &'a [ToolSpec],
-    retention: &'a HashMap<String, Retention>,
+    pub(crate) retention: &'a HashMap<String, Retention>,
     prefix_fingerprint: LayerFingerprint,
     history_fingerprint: LayerFingerprint,
 }
 
+struct Deps<'a, M, H, S> {
+    model: &'a M,
+    host: &'a H,
+    steering: &'a S,
+    sink: &'a dyn EventSink,
+    cancel: &'a CancellationToken,
+}
+
+enum CallResult {
+    Response(Box<ModelResponse>),
+    Interrupted,
+}
+
 struct TurnState {
+    steered: Vec<String>,
     scratch: Vec<Message>,
     summaries: HashMap<String, String>,
     harness_notes: HashSet<usize>,
     calls: Vec<CallReport>,
 }
 
-pub async fn run_turn<M: Model, H: ToolHost>(
+#[expect(
+    clippy::result_large_err,
+    reason = "a failed turn is rare and must hand back what it committed"
+)]
+pub async fn run_turn<M: Model, H: ToolHost, S: Steering>(
     model: &M,
     host: &H,
+    steering: &S,
     input: TurnInput<'_>,
     settings: &TurnSettings<'_>,
     sink: &dyn EventSink,
@@ -120,6 +133,7 @@ pub async fn run_turn<M: Model, H: ToolHost>(
                 error,
                 committed: input.events,
                 calls: Vec::new(),
+                steered: Vec::new(),
             });
         }
     };
@@ -149,13 +163,21 @@ pub async fn run_turn<M: Model, H: ToolHost>(
         events: input.events.len(),
     }));
     let mut state = TurnState {
+        steered: Vec::new(),
         scratch: input.events,
         summaries: HashMap::new(),
         harness_notes: HashSet::new(),
         calls: Vec::new(),
     };
 
-    let result = drive(model, host, &context, settings, &mut state, sink, cancel).await;
+    let deps = Deps {
+        model,
+        host,
+        steering,
+        sink,
+        cancel,
+    };
+    let result = drive(&deps, &context, settings, &mut state).await;
     let committed = committed_messages(
         state.scratch,
         &CommitRules {
@@ -177,6 +199,7 @@ pub async fn run_turn<M: Model, H: ToolHost>(
                 committed,
                 end,
                 calls: state.calls,
+                steered: state.steered,
             })
         }
         Err(error) => {
@@ -190,22 +213,32 @@ pub async fn run_turn<M: Model, H: ToolHost>(
                 error,
                 committed,
                 calls: state.calls,
+                steered: state.steered,
             })
         }
     }
 }
 
-async fn drive<M: Model, H: ToolHost>(
-    model: &M,
-    host: &H,
+async fn drive<M: Model, H: ToolHost, S: Steering>(
+    deps: &Deps<'_, M, H, S>,
     context: &TurnContext<'_>,
     settings: &TurnSettings<'_>,
     state: &mut TurnState,
-    sink: &dyn EventSink,
-    cancel: &CancellationToken,
 ) -> Result<EndTurn, TurnError> {
     let mut reminded = false;
     for call in 0..settings.max_model_calls {
+        let arrived = deps.steering.take_new().await;
+        if !arrived.is_empty() {
+            deps.sink.emit(Event::now(EventKind::TurnSteered {
+                session: context.ids.session.to_owned(),
+                turn: context.ids.turn.to_owned(),
+                events: arrived.len(),
+            }));
+            for steered in arrived {
+                state.scratch.push(steered.message);
+                state.steered.push(steered.id);
+            }
+        }
         let request = ModelRequest {
             model: settings.model,
             prompt: Prompt {
@@ -223,7 +256,10 @@ async fn drive<M: Model, H: ToolHost>(
             cache_key: context.ids.session,
             lane: settings.lane,
         };
-        let response = call_model(model, &request, call, context, sink, cancel).await?;
+        let response = match call_model(deps, &request, call, context).await? {
+            CallResult::Response(response) => *response,
+            CallResult::Interrupted => continue,
+        };
         state.calls.push(CallReport {
             usage: response.usage,
             timing: response.timing,
@@ -244,7 +280,8 @@ async fn drive<M: Model, H: ToolHost>(
             continue;
         }
 
-        let batch = run_tools(&tool_calls, context, host, sink, cancel).await;
+        let batch =
+            crate::batch::run_tools(&tool_calls, context, deps.host, deps.sink, deps.cancel).await;
         state.summaries.extend(batch.summaries);
         state.scratch.push(Message {
             role: Role::User,
@@ -277,15 +314,14 @@ fn tool_table(
     Ok((specs, retention))
 }
 
-async fn call_model<M: Model>(
-    model: &M,
+async fn call_model<M: Model, H: ToolHost, S: Steering>(
+    deps: &Deps<'_, M, H, S>,
     request: &ModelRequest<'_>,
     call: u32,
     context: &TurnContext<'_>,
-    sink: &dyn EventSink,
-    cancel: &CancellationToken,
-) -> Result<ModelResponse, TurnError> {
+) -> Result<CallResult, TurnError> {
     let ids = &context.ids;
+    let sink = deps.sink;
     sink.emit(Event::now(EventKind::ModelCallStarted {
         session: ids.session.to_owned(),
         turn: ids.turn.to_owned(),
@@ -296,7 +332,9 @@ async fn call_model<M: Model>(
         history: context.history_fingerprint.clone(),
         scratch: request.prompt.scratch_fingerprint(),
     }));
+    let output_started = AtomicBool::new(false);
     let mut on_event = |event: StreamEvent| {
+        output_started.store(true, Ordering::Relaxed);
         if let StreamEvent::ToolCallStarted { id, name } = event {
             sink.emit(Event::now(EventKind::ToolStarted {
                 session: ids.session.to_owned(),
@@ -306,7 +344,29 @@ async fn call_model<M: Model>(
             }));
         }
     };
-    match model.stream(request, cancel, &mut on_event).await {
+    let stream = deps.model.stream(request, deps.cancel, &mut on_event);
+    tokio::pin!(stream);
+    let arrived = deps.steering.arrived();
+    tokio::pin!(arrived);
+    let mut listening = true;
+    let result = loop {
+        tokio::select! {
+            result = &mut stream => break result,
+            () = &mut arrived, if listening => {
+                if output_started.load(Ordering::Relaxed) {
+                    listening = false;
+                } else {
+                    sink.emit(Event::now(EventKind::ModelCallInterrupted {
+                        session: ids.session.to_owned(),
+                        turn: ids.turn.to_owned(),
+                        call,
+                    }));
+                    return Ok(CallResult::Interrupted);
+                }
+            }
+        }
+    };
+    match result {
         Ok(response) => {
             sink.emit(Event::now(EventKind::ModelCallFinished {
                 session: ids.session.to_owned(),
@@ -318,7 +378,7 @@ async fn call_model<M: Model>(
                 response_id: response.response_id.clone(),
                 request_ids: response.request_ids.clone(),
             }));
-            Ok(response)
+            Ok(CallResult::Response(Box::new(response)))
         }
         Err(error) => {
             sink.emit(Event::now(EventKind::ModelCallFailed {
@@ -330,208 +390,4 @@ async fn call_model<M: Model>(
             Err(error.into())
         }
     }
-}
-
-struct Batch {
-    results: Vec<ToolResult>,
-    summaries: HashMap<String, String>,
-    end: Option<EndTurn>,
-}
-
-enum Plan {
-    Done(ToolOutput, u64),
-    Concurrent,
-    Outward,
-}
-
-fn failure(content: impl Into<String>) -> ToolOutput {
-    ToolOutput {
-        content: content.into(),
-        is_error: true,
-        summary: None,
-    }
-}
-
-fn success(content: impl Into<String>) -> ToolOutput {
-    ToolOutput {
-        content: content.into(),
-        is_error: false,
-        summary: None,
-    }
-}
-
-fn plan_calls(
-    tool_calls: &[ToolCall],
-    context: &TurnContext<'_>,
-) -> (Vec<Plan>, Option<EndTurn>, Option<usize>) {
-    let mut end = None;
-    let mut end_slot = None;
-    let plans = tool_calls
-        .iter()
-        .enumerate()
-        .map(|(slot, call)| {
-            if let Some(raw) = call.invalid_arguments() {
-                return Plan::Done(
-                    failure(format!(
-                        "The arguments for {} were not a complete JSON object (possibly cut off by the output limit): call it again. Received: {raw}",
-                        call.name
-                    )),
-                    0,
-                );
-            }
-            if call.name == END_TURN {
-                if end_slot.is_some() {
-                    return Plan::Done(failure(END_TURN_REPEATED), 0);
-                }
-                end_slot = Some(slot);
-                return Plan::Done(
-                    match EndTurn::parse(&call.arguments) {
-                        Ok(parsed) => {
-                            end = Some(parsed);
-                            success("Turn ended.")
-                        }
-                        Err(message) => failure(message),
-                    },
-                    0,
-                );
-            }
-            let started = Instant::now();
-            if let Some(output) = run_workspace_tool(call, context.workspace) {
-                return Plan::Done(output, elapsed_ms(started));
-            }
-            match context.retention.get(&call.name) {
-                Some(Retention::Outward) => Plan::Outward,
-                Some(_) => Plan::Concurrent,
-                None => Plan::Done(failure(format!("unknown tool `{}`", call.name)), 0),
-            }
-        })
-        .collect();
-    (plans, end, end_slot)
-}
-
-async fn run_tools<H: ToolHost>(
-    tool_calls: &[ToolCall],
-    context: &TurnContext<'_>,
-    host: &H,
-    sink: &dyn EventSink,
-    cancel: &CancellationToken,
-) -> Batch {
-    let (plans, mut end, end_slot) = plan_calls(tool_calls, context);
-
-    let mut slots: Vec<Option<(ToolOutput, u64)>> = Vec::with_capacity(plans.len());
-    let mut concurrent = Vec::new();
-    let mut outward = Vec::new();
-    for (slot, plan) in plans.into_iter().enumerate() {
-        match plan {
-            Plan::Done(output, ms) => slots.push(Some((output, ms))),
-            Plan::Concurrent => {
-                concurrent.push(slot);
-                slots.push(None);
-            }
-            Plan::Outward => {
-                outward.push(slot);
-                slots.push(None);
-            }
-        }
-    }
-
-    let calls: Vec<_> = concurrent
-        .iter()
-        .map(|&slot| timed_call(host, &tool_calls[slot]))
-        .collect();
-    let outputs: Vec<(ToolOutput, u64)> = stream::iter(calls)
-        .buffered(TOOL_CONCURRENCY)
-        .collect()
-        .await;
-    for (&slot, output) in concurrent.iter().zip(outputs) {
-        slots[slot] = Some(output);
-    }
-
-    let mut skip_reason = None;
-    for slot in outward {
-        if skip_reason.is_none() && cancel.is_cancelled() {
-            skip_reason = Some(OUTWARD_CANCELLED);
-        }
-        let output = if let Some(reason) = skip_reason {
-            (failure(reason), 0)
-        } else {
-            let output = timed_call(host, &tool_calls[slot]).await;
-            if output.0.is_error {
-                skip_reason = Some(OUTWARD_SKIPPED);
-            }
-            output
-        };
-        slots[slot] = Some(output);
-    }
-
-    let mut outputs: Vec<(ToolOutput, u64)> = slots
-        .into_iter()
-        .map(|slot| {
-            slot.unwrap_or_else(|| (failure("internal error: tool was never scheduled"), 0))
-        })
-        .collect();
-    let batch_failed = outputs
-        .iter()
-        .enumerate()
-        .any(|(slot, (output, _))| output.is_error && Some(slot) != end_slot);
-    if batch_failed
-        && end.take().is_some()
-        && let Some(slot) = end_slot
-        && let Some(entry) = outputs.get_mut(slot)
-    {
-        entry.0 = failure(END_TURN_BLOCKED);
-    }
-
-    finish_batch(tool_calls, outputs, end, context, sink)
-}
-
-fn finish_batch(
-    tool_calls: &[ToolCall],
-    outputs: Vec<(ToolOutput, u64)>,
-    end: Option<EndTurn>,
-    context: &TurnContext<'_>,
-    sink: &dyn EventSink,
-) -> Batch {
-    let mut summaries = HashMap::new();
-    let mut results = Vec::with_capacity(outputs.len());
-    for (call, (output, ms)) in tool_calls.iter().zip(outputs) {
-        sink.emit(Event::now(EventKind::ToolFinished {
-            session: context.ids.session.to_owned(),
-            turn: context.ids.turn.to_owned(),
-            call_id: call.id.clone(),
-            name: call.name.clone(),
-            retention: context
-                .retention
-                .get(&call.name)
-                .copied()
-                .unwrap_or(Retention::Ephemeral),
-            is_error: output.is_error,
-            ms,
-        }));
-        if !output.is_error
-            && let Some(summary) = output.summary
-        {
-            summaries.insert(call.id.clone(), summary);
-        }
-        results.push(ToolResult {
-            call_id: call.id.clone(),
-            content: output.content,
-            is_error: output.is_error,
-        });
-    }
-    Batch {
-        results,
-        summaries,
-        end,
-    }
-}
-
-async fn timed_call<H: ToolHost>(host: &H, call: &ToolCall) -> (ToolOutput, u64) {
-    let started = Instant::now();
-    let output = host.call(call).await;
-    (output, elapsed_ms(started))
-}
-
-fn elapsed_ms(started: Instant) -> u64 {
-    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }

@@ -25,6 +25,7 @@ struct Call {
     usage: Usage,
     response_id: Option<String>,
     failed: Option<String>,
+    interrupted: bool,
 }
 
 #[derive(Debug)]
@@ -100,10 +101,14 @@ fn call_mut(turn: &mut TurnReport, call: u32) -> &mut Call {
     &mut turn.calls[index]
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat match over every event kind reads better than splitting it"
+)]
 fn apply(turns: &mut Vec<TurnReport>, event: Event) {
     let at = event.at;
     match event.kind {
-        EventKind::ServerReady { .. } => {}
+        EventKind::ServerReady { .. } | EventKind::TurnSteered { .. } => {}
         EventKind::TurnStarted { session, turn, .. } => {
             turn_mut(turns, &session, &turn).started_at = Some(at);
         }
@@ -138,6 +143,15 @@ fn apply(turns: &mut Vec<TurnReport>, event: Event) {
             entry.usage = usage;
             entry.timing = timing;
             entry.response_id = response_id;
+            entry.finished_at = Some(at);
+        }
+        EventKind::ModelCallInterrupted {
+            session,
+            turn,
+            call,
+        } => {
+            let entry = call_mut(turn_mut(turns, &session, &turn), call);
+            entry.interrupted = true;
             entry.finished_at = Some(at);
         }
         EventKind::ModelCallFailed {
@@ -246,9 +260,11 @@ fn print_turn(out: &mut impl Write, turn: &TurnReport) -> std::io::Result<()> {
             call.history_bytes / 1024,
             call.scratch_bytes / 1024,
             call.response_id.as_deref().unwrap_or("-"),
-            call.failed
-                .as_ref()
-                .map_or_else(String::new, |error| format!("  FAILED: {error}")),
+            match (&call.failed, call.interrupted) {
+                (Some(error), _) => format!("  FAILED: {error}"),
+                (None, true) => "  interrupted by a new event".to_owned(),
+                (None, false) => String::new(),
+            },
         )?;
     }
     for tool in &turn.tools {

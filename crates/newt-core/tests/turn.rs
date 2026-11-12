@@ -15,6 +15,7 @@ use newt_core::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
 use newt_core::sink::EventSink;
+use newt_core::steering::NoSteering;
 use newt_core::tools::{Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::turn::{TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
@@ -180,6 +181,7 @@ async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> R
     let outcome = run_turn(
         &model,
         &host,
+        &NoSteering,
         TurnInput {
             session: "customer-1",
             turn: "turn-9",
@@ -465,6 +467,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
     let outcome = run_turn(
         &model,
         &host,
+        &NoSteering,
         TurnInput {
             session: "customer-1",
             turn: "turn-10",

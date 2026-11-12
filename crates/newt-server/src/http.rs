@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast;
 
+use crate::live::{Channel, Notification};
 use crate::store::{InboundEvent, InboundKind, LiveEvent, Store, live_topic};
 
 const LIVE_PAGE: i64 = 100;
@@ -24,7 +25,7 @@ const LIVE_POLL: Duration = Duration::from_secs(5);
 pub struct AppState {
     pub store: Store,
     pub tokens: Arc<HashMap<String, String>>,
-    pub live: broadcast::Sender<String>,
+    pub live: broadcast::Sender<Notification>,
 }
 
 pub fn router(state: AppState) -> axum::Router {
@@ -155,7 +156,7 @@ struct LiveFeed {
     key: String,
     topic: String,
     cursor: i64,
-    receiver: broadcast::Receiver<String>,
+    receiver: broadcast::Receiver<Notification>,
     buffer: VecDeque<LiveEvent>,
 }
 
@@ -195,7 +196,8 @@ impl LiveFeed {
             tokio::select! {
                 () = &mut deadline => return,
                 received = self.receiver.recv() => match received {
-                    Ok(topic) if topic != self.topic => {}
+                    Ok(notification)
+                        if notification.channel != Channel::Live || notification.topic != self.topic => {}
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => return,
                     Err(broadcast::error::RecvError::Closed) => {
                         deadline.as_mut().await;

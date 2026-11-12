@@ -23,6 +23,7 @@ pub struct PendingEvent {
     pub inbox_id: i64,
     pub event_id: String,
     pub interactive: bool,
+    pub steer: bool,
     pub text: String,
 }
 
@@ -78,8 +79,8 @@ impl Store {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
-            let rows: Vec<(i64, String, i16, Option<String>)> = sqlx::query_as(
-                "select id, event_id, priority, payload->>'text' from inbox \
+            let rows: Vec<(i64, String, i16, String, Option<String>)> = sqlx::query_as(
+                "select id, event_id, priority, policy, payload->>'text' from inbox \
                  where agent = $1 and key = $2 and consumed_at is null order by id",
             )
             .bind(&lease.agent)
@@ -88,12 +89,15 @@ impl Store {
             .await?;
             Ok(rows
                 .into_iter()
-                .map(|(inbox_id, event_id, priority, text)| PendingEvent {
-                    inbox_id,
-                    event_id,
-                    interactive: priority == 0,
-                    text: text.unwrap_or_default(),
-                })
+                .map(
+                    |(inbox_id, event_id, priority, policy, text)| PendingEvent {
+                        inbox_id,
+                        event_id,
+                        interactive: priority == 0,
+                        steer: policy == "steer",
+                        text: text.unwrap_or_default(),
+                    },
+                )
                 .collect())
         })
     }

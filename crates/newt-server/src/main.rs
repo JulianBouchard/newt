@@ -87,8 +87,9 @@ async fn main() -> anyhow::Result<()> {
         Routes::from_config(&config)?,
         RunnerConfig::default(),
         instrumentation,
+        live_topics.clone(),
     );
-    let loops = runner.spawn_loops(live_topics.subscribe());
+    let loops = runner.spawn_loops();
     let state = AppState {
         store: Store::new(pool),
         tokens: Arc::new(tokens),

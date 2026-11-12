@@ -13,8 +13,10 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::backend::Backend;
+use crate::live::{Channel, Notification};
 use crate::sessions::{CommitError, Lease, PendingEvent};
 use crate::sinks::{LiveSink, TeeSink};
+use crate::steering::SessionSteering;
 use crate::store::Store;
 
 const SWEEP_LIMIT: i64 = 100;
@@ -64,6 +66,7 @@ struct Inner<B, M> {
     owner: String,
     config: RunnerConfig,
     instrumentation: Option<Arc<dyn EventSink>>,
+    notifications: broadcast::Sender<Notification>,
     in_flight: Mutex<HashSet<(String, String)>>,
     tasks: TaskTracker,
     stopping: CancellationToken,
@@ -77,6 +80,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         model: M,
         config: RunnerConfig,
         instrumentation: Option<Arc<dyn EventSink>>,
+        notifications: broadcast::Sender<Notification>,
     ) -> Self {
         let owner = format!(
             "{}-{}-{}",
@@ -92,6 +96,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 owner,
                 config,
                 instrumentation,
+                notifications,
                 in_flight: Mutex::new(HashSet::new()),
                 tasks: TaskTracker::new(),
                 stopping: CancellationToken::new(),
@@ -128,8 +133,9 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         });
     }
 
-    pub fn spawn_loops(&self, mut topics: broadcast::Receiver<String>) -> JoinHandle<()> {
+    pub fn spawn_loops(&self) -> JoinHandle<()> {
         let runner = self.clone();
+        let mut topics = self.inner.notifications.subscribe();
         tokio::spawn(async move {
             let mut sweep = tokio::time::interval(runner.inner.config.sweep_every);
             let mut heartbeat = tokio::time::interval(runner.inner.config.lease_ttl / 3);
@@ -139,8 +145,10 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                     _ = sweep.tick() => runner.sweep().await,
                     _ = heartbeat.tick() => runner.heartbeat().await,
                     topic = topics.recv() => match topic {
-                        Ok(topic) => {
-                            if let Some((agent, key)) = topic.split_once('/') {
+                        Ok(notification) => {
+                            if notification.channel == Channel::Inbox
+                                && let Some((agent, key)) = notification.topic.split_once('/')
+                            {
                                 runner.wake(agent, key);
                             }
                         }
@@ -263,11 +271,18 @@ async fn run_one_turn<B: Backend, M: Model>(
         lane,
     };
 
+    let steering = SessionSteering::new(
+        inner.store.clone(),
+        lease.clone(),
+        consumed.iter().copied(),
+        inner.notifications.subscribe(),
+    );
     let (live, live_writer) =
         LiveSink::spawn(inner.store.clone(), lease.agent.clone(), lease.key.clone());
     let result = run_turn(
         &inner.model,
         &prepared.host,
+        &steering,
         TurnInput {
             session: &cache_key,
             turn: &turn_id,
@@ -288,11 +303,13 @@ async fn run_one_turn<B: Backend, M: Model>(
     drop(live);
     live_writer.await?;
 
-    let (committed, failure) = match result {
-        Ok(outcome) => (outcome.committed, None),
-        Err(failure) => (failure.committed, Some(failure.error)),
+    let (committed, steered, failure) = match result {
+        Ok(outcome) => (outcome.committed, outcome.steered, None),
+        Err(failure) => (failure.committed, failure.steered, Some(failure.error)),
     };
-    let acted = committed.len() > pending.len();
+    let acted = committed.len() > pending.len() + steered.len();
+    let mut consumed = consumed;
+    consumed.extend(steered.iter().filter_map(|id| id.parse::<i64>().ok()));
     if failure.is_none() || acted {
         match inner
             .store
