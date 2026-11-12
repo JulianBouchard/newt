@@ -17,6 +17,7 @@ const TOKEN: &str = "provider-test-token";
 #[derive(Default)]
 struct Provider {
     version: Mutex<String>,
+    turn_extras: Mutex<Value>,
     bootstrap: Mutex<Value>,
     profile: Mutex<String>,
     bootstraps: AtomicUsize,
@@ -78,9 +79,13 @@ async fn turn(
         .unwrap()
         .push(body["session"].as_str().unwrap().to_owned());
     let version = provider.version.lock().unwrap().clone();
-    Ok(Json(
-        json!({ "version": version, "pages": [provider.page()] }),
-    ))
+    let mut response = json!({ "version": version, "pages": [provider.page()] });
+    if let Value::Object(extras) = provider.turn_extras.lock().unwrap().clone() {
+        for (key, value) in extras {
+            response[key] = value;
+        }
+    }
+    Ok(Json(response))
 }
 
 async fn pages(
@@ -245,4 +250,33 @@ fn the_provider_token_never_appears_in_debug_output() {
         token: "super-secret-token".into(),
     };
     assert!(!format!("{endpoint:?}").contains("super-secret-token"));
+}
+
+#[tokio::test]
+async fn per_turn_instructions_and_constraints_become_turn_context() {
+    let provider = Provider::new();
+    let backend = serve(&provider, TOKEN).await;
+    assert_eq!(
+        backend
+            .prepare("assistant", "customer-7")
+            .await
+            .unwrap()
+            .context,
+        None
+    );
+
+    *provider.turn_extras.lock().unwrap() = json!({
+        "instructions": "Reply on WhatsApp.",
+        "constraints": ["Travelling until Dec 2: hold intros", " "],
+    });
+    let context = backend
+        .prepare("assistant", "customer-7")
+        .await
+        .unwrap()
+        .context
+        .unwrap();
+    assert_eq!(
+        context,
+        "<turn_context>\n<instructions>\nReply on WhatsApp.\n</instructions>\n<active_constraints>\n- Travelling until Dec 2: hold intros\n</active_constraints>\n</turn_context>"
+    );
 }

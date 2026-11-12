@@ -26,6 +26,7 @@ pub struct TurnInput<'a> {
     pub system: &'a str,
     pub external_tools: &'a [ToolDef],
     pub history: &'a [Message],
+    pub context: Option<String>,
     pub events: Vec<Message>,
     pub workspace: &'a Workspace,
     pub replay: Vec<JournalEntry>,
@@ -180,14 +181,15 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         history_messages: input.history.len(),
         events: input.events.len(),
     }));
+    let (scratch, harness_notes) = initial_scratch(input.context, input.events);
     let mut state = TurnState {
         effects: false,
         replay: Replay::new(input.replay),
         steered: Vec::new(),
-        scratch: input.events,
+        scratch,
         summaries: HashMap::new(),
         kept: HashSet::new(),
-        harness_notes: HashSet::new(),
+        harness_notes,
         calls: Vec::new(),
     };
 
@@ -363,6 +365,20 @@ async fn next_response<M: Model, H: ToolHost, S: Steering, J: Journal>(
         }
         CallResult::Interrupted => Ok(None),
     }
+}
+
+fn initial_scratch(
+    context: Option<String>,
+    events: Vec<Message>,
+) -> (Vec<Message>, HashSet<usize>) {
+    let mut scratch = Vec::with_capacity(events.len() + 1);
+    let mut harness_notes = HashSet::new();
+    if let Some(context) = context.filter(|context| !context.trim().is_empty()) {
+        harness_notes.insert(0);
+        scratch.push(Message::user_text(context));
+    }
+    scratch.extend(events);
+    (scratch, harness_notes)
 }
 
 struct ToolTable {

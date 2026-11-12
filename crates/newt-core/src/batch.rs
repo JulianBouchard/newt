@@ -10,7 +10,8 @@ use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{ToolCall, ToolResult};
 use crate::sink::EventSink;
 use crate::tools::{
-    END_TURN, EndTurn, Retention, ToolHost, ToolOutput, is_workspace_tool, run_workspace_tool,
+    END_TURN, EndTurn, REMEMBER, Retention, ToolHost, ToolOutput, is_workspace_tool, remember,
+    run_workspace_tool,
 };
 use crate::turn::{TurnContext, TurnDeps};
 
@@ -88,6 +89,9 @@ fn plan_calls(
                     },
                     0,
                 );
+            }
+            if call.name == REMEMBER {
+                return Plan::Done(remember(call), 0);
             }
             if is_workspace_tool(&call.name) {
                 return Plan::Workspace;

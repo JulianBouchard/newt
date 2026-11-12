@@ -88,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 system: &system,
                 external_tools: &[],
                 history: &history,
+                context: None,
                 events: vec![Message::user_text(ask)],
                 workspace: &workspace,
                 replay: Vec::new(),

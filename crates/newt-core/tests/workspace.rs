@@ -364,6 +364,7 @@ async fn write_then_read_with(
             system: "You are a helpful agent.",
             external_tools: &[save],
             history: &[],
+            context: None,
             events: vec![Message::user_text("Berlin works too.")],
             workspace: &workspace,
             replay,

@@ -361,6 +361,7 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
             system: "You help one customer.",
             external_tools: &toolset.tools,
             history: &[],
+            context: None,
             events: vec![Message::user_text("Berlin works too.")],
             workspace: &workspace,
             replay: Vec::new(),

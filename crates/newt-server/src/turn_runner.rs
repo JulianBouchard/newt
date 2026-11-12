@@ -158,6 +158,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             system: &prepared.system,
             external_tools: &prepared.tools,
             history: &history,
+            context: prepared.context.clone(),
             events,
             workspace: &prepared.workspace,
             replay: plan.replay,

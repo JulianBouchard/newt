@@ -23,10 +23,10 @@ Each agent in `server.toml` names a `context_provider` base URL and a `token_env
 | Call | When | Request | Response |
 |---|---|---|---|
 | `GET {base}/bootstrap` | first turn, then whenever the version changes | none | `{ version, instructions, model, first_call_effort?, effort?, max_output_tokens?, max_model_calls?, mcp_servers? }` |
-| `POST {base}/turn` | start of every turn | `{ session }` | `{ version, pages: [Page] }` |
+| `POST {base}/turn` | start of every turn | `{ session }` | `{ version, pages: [Page], instructions?, constraints? }` |
 | `POST {base}/pages` | a read of a page a tool invalidated | `{ session, keys: [PageKey] }` | `{ pages: [Page] }` |
 
-A `Page` is `{ key: ["customer", "profile"], path: "profile.md", version, content }`. Tools invalidate pages by key prefix; the next read refetches them, and a page missing from the response is gone. `model` must be a `[models]` alias from `server.toml`. Unknown fields, an unknown model or a version mismatch fail the turn loudly.
+A `Page` is `{ key: ["customer", "profile"], path: "profile.md", version, content }`. Tools invalidate pages by key prefix; the next read refetches them, and a page missing from the response is gone. `instructions` and `constraints` reach the model at the start of that turn only and never enter history; put anything that must hold until it changes (a hold, a dealbreaker) in `constraints`, and enforce it in your tool handlers too, since the model can still get it wrong. `model` must be a `[models]` alias from `server.toml`. Unknown fields, an unknown model or a version mismatch fail the turn loudly.
 
 ## Tools over MCP
 

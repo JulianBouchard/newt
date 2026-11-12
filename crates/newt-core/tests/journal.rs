@@ -159,6 +159,7 @@ async fn run(
             system: "You are a helpful agent.",
             external_tools: &tools(),
             history: &[],
+            context: None,
             events: vec![Message::user_text("Remote only.")],
             workspace: &Workspace::default(),
             replay,

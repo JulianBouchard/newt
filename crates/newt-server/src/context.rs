@@ -51,6 +51,46 @@ const fn default_max_model_calls() -> u32 {
 struct TurnContext {
     version: String,
     pages: Vec<Page>,
+    #[serde(default)]
+    instructions: Option<String>,
+    #[serde(default)]
+    constraints: Vec<String>,
+}
+
+impl TurnContext {
+    fn render(&self) -> Option<String> {
+        let instructions = self
+            .instructions
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        let constraints: Vec<&str> = self
+            .constraints
+            .iter()
+            .map(|constraint| constraint.trim())
+            .filter(|constraint| !constraint.is_empty())
+            .collect();
+        if instructions.is_none() && constraints.is_empty() {
+            return None;
+        }
+        let mut out = String::from("<turn_context>\n");
+        if let Some(instructions) = instructions {
+            out.push_str("<instructions>\n");
+            out.push_str(instructions);
+            out.push_str("\n</instructions>\n");
+        }
+        if !constraints.is_empty() {
+            out.push_str("<active_constraints>\n");
+            for constraint in constraints {
+                out.push_str("- ");
+                out.push_str(constraint);
+                out.push('\n');
+            }
+            out.push_str("</active_constraints>\n");
+        }
+        out.push_str("</turn_context>");
+        Some(out)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,6 +293,7 @@ impl ContextProviderBackend {
         Ok(Prepared {
             system: bootstrap.instructions.clone(),
             tools: loaded.toolset.tools.clone(),
+            context: turn.render(),
             workspace: Workspace::with_source(turn.pages, Arc::new(source)),
             model: bootstrap.model.clone(),
             first_call_effort: bootstrap.first_call_effort,

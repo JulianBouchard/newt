@@ -8,6 +8,7 @@ use newt_core::workspace::Workspace;
 pub struct Prepared<H> {
     pub system: String,
     pub tools: Vec<ToolDef>,
+    pub context: Option<String>,
     pub workspace: Workspace,
     pub model: String,
     pub first_call_effort: Option<Effort>,
@@ -49,6 +50,7 @@ impl Backend for StaticBackend {
         std::future::ready(Ok(Prepared {
             system: self.system.clone(),
             tools: Vec::new(),
+            context: None,
             workspace: self.workspace.clone(),
             model: self.model.clone(),
             first_call_effort: Some(Effort::Low),

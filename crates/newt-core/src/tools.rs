@@ -8,6 +8,8 @@ use crate::prompt::ToolSpec;
 use crate::workspace::{Page, PageKey, Workspace};
 
 pub const END_TURN: &str = "end_turn";
+pub const REMEMBER: &str = "remember";
+pub const REMEMBER_LIMIT: usize = 1000;
 const GREP_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +163,20 @@ pub fn builtin_tools() -> Vec<ToolDef> {
                 },
             }),
         ),
+        ToolDef::new(
+            ToolSpec {
+                name: REMEMBER.to_owned(),
+                description: format!(
+                    "Save one durable fact worth keeping across turns: a preference, a constraint in the person's words, a commitment you made. One fact per call, at most {REMEMBER_LIMIT} characters. Facts the workspace already shows need no saving."
+                ),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "note": { "type": "string" } },
+                    "required": ["note"],
+                }),
+            },
+            Retention::Durable,
+        ),
         crate::batch_tool::batch_tool(),
     ]
 }
@@ -180,6 +196,27 @@ struct GrepArgs {
     pattern: String,
     #[serde(default)]
     glob: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RememberArgs {
+    note: String,
+}
+
+pub(crate) fn remember(call: &ToolCall) -> ToolOutput {
+    match parse::<RememberArgs>(call) {
+        Ok(args) if args.note.trim().is_empty() => {
+            ToolOutput::error("remember needs a non-empty note")
+        }
+        Ok(args) if args.note.chars().count() > REMEMBER_LIMIT => ToolOutput::error(format!(
+            "A note holds at most {REMEMBER_LIMIT} characters: save the fact, not the conversation."
+        )),
+        Ok(_) => ToolOutput {
+            summary: Some("Remembered.".to_owned()),
+            ..ToolOutput::ok("Remembered.")
+        },
+        Err(message) => ToolOutput::error(message),
+    }
 }
 
 pub(crate) fn is_workspace_tool(name: &str) -> bool {

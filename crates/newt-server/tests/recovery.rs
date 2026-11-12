@@ -101,6 +101,7 @@ impl Backend for WorldBackend {
                 retention: Retention::Outward,
                 invalidates: Vec::new(),
             }],
+            context: None,
             workspace: Workspace::default(),
             model: "test".into(),
             first_call_effort: None,

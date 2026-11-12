@@ -161,6 +161,7 @@ async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) 
             system: "You are a helpful agent.",
             external_tools: &[],
             history: &[],
+            context: None,
             events: vec![Message::user_text("Find me roles in Lisbon.")],
             workspace: &Workspace::default(),
             replay: Vec::new(),

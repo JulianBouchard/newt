@@ -179,6 +179,15 @@ struct Run {
 }
 
 async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> Run {
+    run_with(script, max_model_calls, tools, None).await
+}
+
+async fn run_with(
+    script: Vec<Message>,
+    max_model_calls: u32,
+    tools: &[ToolDef],
+    context: Option<String>,
+) -> Run {
     let model = ScriptedModel::new(script);
     let host = RecordingHost::default();
     let sink = CollectingSink::default();
@@ -202,6 +211,7 @@ async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> R
             system: "You are a helpful agent.",
             external_tools: tools,
             history: &history,
+            context,
             events: vec![Message::user_text("Only remote roles please.")],
             workspace: &workspace,
             replay: Vec::new(),
@@ -492,6 +502,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             system: "You are a helpful agent.",
             external_tools: &external_tools(),
             history: &[],
+            context: None,
             events: vec![Message::user_text("Stop.")],
             workspace: &workspace,
             replay: Vec::new(),
@@ -689,4 +700,79 @@ async fn a_batch_whose_send_failed_still_leaves_a_trace_in_history() {
         committed.contains("fail_send failed: provider down"),
         "{committed}"
     );
+}
+
+#[tokio::test]
+async fn remembered_facts_reach_history_and_bad_notes_are_refused() {
+    let long = "x".repeat(1001);
+    let script = vec![
+        assistant(vec![
+            call(
+                "m1",
+                "remember",
+                json!({ "note": "Travelling until Dec 2, hold intros" }),
+            ),
+            call("m2", "remember", json!({ "note": long })),
+            call("m3", "remember", json!({ "note": " " })),
+        ]),
+        assistant(vec![call(
+            "m4",
+            "remember",
+            json!({ "note": "Prefers async, no calls" }),
+        )]),
+        assistant(vec![call(
+            "e1",
+            "end_turn",
+            json!({ "recorded": ["travel hold", "async"] }),
+        )]),
+    ];
+    let run = run(script, 4, &external_tools()).await;
+    let outcome = run.outcome.unwrap();
+    let committed = format!("{:?}", outcome.committed);
+    assert!(
+        committed.contains("Travelling until Dec 2, hold intros"),
+        "{committed}"
+    );
+    assert!(committed.contains("Prefers async, no calls"), "{committed}");
+    let results: Vec<(String, bool)> = run.model.seen.lock().unwrap()[1]
+        .scratch
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            Part::ToolResult(result) => Some((result.call_id.clone(), result.is_error)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results,
+        vec![
+            ("m1".into(), false),
+            ("m2".into(), true),
+            ("m3".into(), true)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn turn_context_reaches_the_model_first_and_is_never_committed() {
+    let script = vec![assistant(vec![call(
+        "e1",
+        "end_turn",
+        json!({ "nothing_new": "nothing to save" }),
+    )])];
+    let run = run_with(
+        script,
+        2,
+        &external_tools(),
+        Some("<turn_context>no sends before 9am</turn_context>".into()),
+    )
+    .await;
+    let outcome = run.outcome.unwrap();
+    let first = &run.model.seen.lock().unwrap()[0].scratch;
+    assert_eq!(
+        first[0],
+        Message::user_text("<turn_context>no sends before 9am</turn_context>")
+    );
+    assert_eq!(first[1], Message::user_text("Only remote roles please."));
+    assert!(!format!("{:?}", outcome.committed).contains("9am"));
 }
