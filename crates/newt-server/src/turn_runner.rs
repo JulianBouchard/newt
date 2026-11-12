@@ -117,16 +117,7 @@ async fn run_one_turn<B: Backend, M: Model>(
         return Ok(false);
     }
     let history = load_history(inner, lease, &plan.turn_id, elapsed_ms(preparing)).await?;
-    let events: Vec<Message> = plan
-        .events
-        .iter()
-        .map(|event| Message::user_text(event.text.clone()))
-        .collect();
-    let lane = if plan.events.iter().any(|event| event.interactive) {
-        Lane::Interactive
-    } else {
-        Lane::Background
-    };
+    let (events, lane) = event_messages(&plan.events);
     let steered_before = plan.replay.iter().filter_map(|entry| match entry {
         JournalEntry::Steered { id, .. } => id.parse::<i64>().ok(),
         _ => None,
@@ -145,8 +136,12 @@ async fn run_one_turn<B: Backend, M: Model>(
         plan.next_seq,
         turn_cancel.clone(),
     );
-    let (live, live_writer) =
-        LiveSink::spawn(inner.store.clone(), lease.agent.clone(), lease.key.clone());
+    let (live, live_writer) = LiveSink::spawn(
+        inner.store.clone(),
+        inner.notifications.clone(),
+        lease.agent.clone(),
+        lease.key.clone(),
+    );
     let cache_key = format!("{}/{}", lease.agent, lease.key);
 
     let result = run_turn(
@@ -194,6 +189,19 @@ async fn run_one_turn<B: Backend, M: Model>(
         crate::compaction::compact_if_over_budget(inner, lease, &prepared).await?;
     }
     Ok(committed)
+}
+
+fn event_messages(events: &[PendingEvent]) -> (Vec<Message>, Lane) {
+    let messages = events
+        .iter()
+        .map(|event| Message::user_text(event.text.clone()))
+        .collect();
+    let lane = if events.iter().any(|event| event.interactive) {
+        Lane::Interactive
+    } else {
+        Lane::Background
+    };
+    (messages, lane)
 }
 
 async fn load_history<B: Backend, M: Model>(

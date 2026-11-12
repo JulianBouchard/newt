@@ -166,16 +166,42 @@ impl Store {
         Ok(accepted)
     }
 
-    pub async fn append_live(
+    pub async fn append_live_batch(
         &self,
         agent: &str,
         key: &str,
-        event: &Value,
-    ) -> Result<i64, sqlx::Error> {
-        let mut tx = self.pool.begin().await?;
-        let seq = append_live_in(&mut tx, agent, key, event).await?;
-        tx.commit().await?;
-        Ok(seq)
+        events: Vec<Value>,
+        notify_remote: bool,
+    ) -> Result<(), sqlx::Error> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let count = i64::try_from(events.len()).unwrap_or(i64::MAX);
+        let events: Vec<Json<Value>> = events.into_iter().map(Json).collect();
+        let statement = if notify_remote {
+            APPEND_LIVE_AND_NOTIFY
+        } else {
+            APPEND_LIVE
+        };
+        let mut query = sqlx::query(statement)
+            .bind(agent)
+            .bind(key)
+            .bind(count)
+            .bind(events);
+        if notify_remote {
+            query = query.bind(LIVE_CHANNEL).bind(live_topic(agent, key));
+        }
+        query.execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn notify_live(&self, agent: &str, key: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("select pg_notify($1, $2)")
+            .bind(LIVE_CHANNEL)
+            .bind(live_topic(agent, key))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn live_since(
@@ -257,6 +283,28 @@ async fn append_live_in(
         .await?;
     Ok(seq)
 }
+
+const APPEND_LIVE: &str = "with relaxed as (select set_config('synchronous_commit', 'off', true)), \
+     bumped as ( \
+       update sessions set next_live_seq = next_live_seq + $3 \
+       where agent = $1 and key = $2 returning next_live_seq), \
+     added as ( \
+       insert into live_events (agent, key, seq, event) \
+       select $1, $2, (select next_live_seq from bumped) - $3 + ordinality, event \
+       from unnest($4::jsonb[]) with ordinality as batch(event, ordinality) \
+       returning 1) \
+     select (select count(*) from relaxed), (select count(*) from added)";
+
+const APPEND_LIVE_AND_NOTIFY: &str = "with relaxed as (select set_config('synchronous_commit', 'off', true)), \
+     bumped as ( \
+       update sessions set next_live_seq = next_live_seq + $3 \
+       where agent = $1 and key = $2 returning next_live_seq), \
+     added as ( \
+       insert into live_events (agent, key, seq, event) \
+       select $1, $2, (select next_live_seq from bumped) - $3 + ordinality, event \
+       from unnest($4::jsonb[]) with ordinality as batch(event, ordinality) \
+       returning 1) \
+     select (select count(*) from relaxed), (select count(*) from added), pg_notify($5, $6)";
 
 pub fn live_topic(agent: &str, key: &str) -> String {
     format!("{agent}/{key}")
