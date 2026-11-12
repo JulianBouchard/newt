@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use newt_core::sse::SseParser;
 use serde_json::{Value, json};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, oneshot};
+
+const SIGNAL_BUFFER: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
@@ -48,7 +50,8 @@ impl NewtTarget {
         &self,
         http: reqwest::Client,
         key: String,
-        signals: mpsc::UnboundedSender<Signal>,
+        connected: oneshot::Sender<()>,
+        signals: mpsc::Sender<Signal>,
     ) {
         let request = http
             .get(format!(
@@ -61,6 +64,9 @@ impl NewtTarget {
         let Ok(response) = request else {
             return;
         };
+        if connected.send(()).is_err() {
+            return;
+        }
         let mut body = response.bytes_stream();
         let mut parser = SseParser::default();
         while let Some(Ok(chunk)) = body.next().await {
@@ -77,7 +83,7 @@ impl NewtTarget {
                     Some("turn_failed") => Signal::Finished { ok: false },
                     _ => continue,
                 };
-                if signals.send(signal).is_err() {
+                if signals.send(signal).await.is_err() {
                     return;
                 }
             }
@@ -114,15 +120,26 @@ async fn run_session(
     plan: LoadPlan,
     seed: usize,
 ) -> Vec<TurnSample> {
-    let (sender, mut signals) = mpsc::unbounded_channel();
+    let (sender, mut signals) = mpsc::channel(SIGNAL_BUFFER);
+    let (connected, follower_ready) = oneshot::channel();
     let follower = tokio::spawn({
         let target = Arc::clone(&target);
         let http = http.clone();
         let key = key.clone();
-        async move { target.follow(http, key, sender).await }
+        async move { target.follow(http, key, connected, sender).await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
     let mut samples = Vec::with_capacity(plan.turns);
+    if !matches!(
+        tokio::time::timeout(plan.timeout, follower_ready).await,
+        Ok(Ok(()))
+    ) {
+        follower.abort();
+        samples.push(TurnSample {
+            error: Some("could not open the live feed".into()),
+            ..TurnSample::default()
+        });
+        return samples;
+    }
     for turn in 0..plan.turns {
         let posted = Instant::now();
         let text = format!("load message {seed}-{turn}: any news on the role?");
