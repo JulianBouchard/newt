@@ -366,7 +366,8 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
     let text = calls
         .is_empty()
         .then(|| model.rng.words(timing.text_tokens.count(&model.rng)));
-    let calls = calls_json(&calls);
+    let calls = calls_json(&model, &calls);
+    model.audit.emitted(&calls, turn.done_calls, target);
     let events = crate::stream::response_events(
         &model,
         crate::stream::Reply {
@@ -432,9 +433,15 @@ fn audit_reply(
     }));
 }
 
-fn calls_json(calls: &[Call]) -> Vec<(String, String)> {
+fn calls_json(model: &FakeModel, calls: &[Call]) -> Vec<(String, String, String)> {
     calls
         .iter()
-        .map(|call| (call.name.clone(), call.arguments.to_string()))
+        .map(|call| {
+            (
+                call.name.clone(),
+                call.arguments.to_string(),
+                format!("call_{:016x}", model.next_id()),
+            )
+        })
         .collect()
 }

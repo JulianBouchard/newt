@@ -23,7 +23,7 @@ fn numbered(events: Vec<(usize, &'static str, Value)>) -> Vec<(usize, Event)> {
 
 pub(crate) struct Reply<'a> {
     pub(crate) model_name: &'a str,
-    pub(crate) calls: &'a [(String, String)],
+    pub(crate) calls: &'a [(String, String, String)],
     pub(crate) text: Option<String>,
     pub(crate) input_tokens: u64,
     pub(crate) cached: u64,
@@ -66,10 +66,9 @@ pub(crate) fn response_events(model: &FakeModel, reply: Reply<'_>) -> Vec<(usize
         output.push(item);
     }
     let offset = output.len();
-    for (index, (name, arguments)) in reply.calls.iter().enumerate() {
+    for (index, (name, arguments, call_id)) in reply.calls.iter().enumerate() {
         let index = index + offset;
         let item_id = format!("fc_{:016x}", model_id(model));
-        let call_id = format!("call_{:016x}", model_id(model));
         let tokens = arguments.len() / 4 + 8;
         output_tokens += tokens;
         events.push((0, "response.output_item.added", json!({
