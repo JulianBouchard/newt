@@ -11,6 +11,7 @@ The owner is learning Rust and reviews what you write. Write code a TypeScript e
 
 ```sh
 docker compose up -d --wait          # local Postgres on :55432
+export DATABASE_URL=postgres://newt:newt@localhost:55432/newt   # server tests create a database per test
 cargo fmt
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

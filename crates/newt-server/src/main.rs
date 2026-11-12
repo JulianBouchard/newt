@@ -1,8 +1,6 @@
-mod config;
-mod db;
-mod http;
-
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -11,7 +9,10 @@ use newt_core::sink::{EventSink, JsonlSink};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
-use crate::config::ServerConfig;
+use newt_server::config::ServerConfig;
+use newt_server::http::{self, AppState};
+use newt_server::store::Store;
+use newt_server::{db, live};
 
 const EVENT_BUFFER: usize = 1024;
 
@@ -64,7 +65,23 @@ async fn main() -> anyhow::Result<()> {
         sink.emit(Event::now(EventKind::ServerReady { boot_ms }));
     }
 
-    axum::serve(listener, http::router(pool))
+    let tokens: HashMap<String, String> = config
+        .agents
+        .iter()
+        .map(|(name, agent)| {
+            let token = std::env::var(&agent.token_env)
+                .with_context(|| format!("environment variable {} is not set", agent.token_env))?;
+            Ok((name.clone(), token))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let (live_topics, _listener_task) = live::spawn_listener(pool.clone());
+    let state = AppState {
+        store: Store::new(pool),
+        tokens: Arc::new(tokens),
+        live: live_topics,
+    };
+
+    axum::serve(listener, http::router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("serving http")?;

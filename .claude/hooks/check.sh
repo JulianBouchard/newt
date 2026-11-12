@@ -12,6 +12,7 @@ if [ -z "$(git status --porcelain -- crates migrations Cargo.toml Cargo.lock 2>/
 fi
 
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+export DATABASE_URL="${DATABASE_URL:-postgres://newt:newt@localhost:55432/newt}"
 
 fail() {
   printf '%s\n\n%s\n' "$1" "$2" | tail -n 60 >&2
