@@ -1,4 +1,4 @@
-# newt
+<h1 align="center"><img src="assets/logo/newt-lockup.svg" alt="newt" width="260"></h1>
 
 An agent runtime for products: a long-lived agent per customer, your backend as its world, and a database's discipline about context.
 
