@@ -1,15 +1,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::Duration;
 
 use newt_core::prompt::Effort;
-use newt_core::tools::NoTools;
 use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::backend::{Backend, BackendError, Prepared};
+use crate::mcp::{McpHost, McpServer, Toolset};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const ERROR_BODY_LIMIT: usize = 300;
@@ -28,6 +28,14 @@ pub struct Bootstrap {
     pub max_output_tokens: u32,
     #[serde(default = "default_max_model_calls")]
     pub max_model_calls: u32,
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServer>,
+}
+
+#[derive(Debug)]
+struct Loaded {
+    bootstrap: Bootstrap,
+    toolset: Toolset,
 }
 
 const fn default_max_output_tokens() -> u32 {
@@ -126,7 +134,7 @@ pub struct ContextProviderBackend {
     http: reqwest::Client,
     agents: HashMap<String, Arc<ProviderEndpoint>>,
     models: HashSet<String>,
-    bootstraps: Mutex<HashMap<String, Arc<Bootstrap>>>,
+    loaded: HashMap<String, tokio::sync::Mutex<Option<Arc<Loaded>>>>,
 }
 
 impl std::fmt::Debug for ContextProviderBackend {
@@ -145,34 +153,34 @@ impl ContextProviderBackend {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             http: reqwest::Client::builder().build()?,
+            loaded: agents
+                .keys()
+                .map(|name| (name.clone(), tokio::sync::Mutex::new(None)))
+                .collect(),
             agents: agents
                 .into_iter()
                 .map(|(name, endpoint)| (name, Arc::new(endpoint)))
                 .collect(),
             models: models.into_iter().collect(),
-            bootstraps: Mutex::new(HashMap::new()),
         })
     }
 
-    fn cache(&self) -> MutexGuard<'_, HashMap<String, Arc<Bootstrap>>> {
-        match self.bootstraps.lock() {
-            Ok(cache) => cache,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
-
-    async fn bootstrap(
+    async fn load(
         &self,
         agent: &str,
         client: &Client,
         version: &str,
-    ) -> Result<Arc<Bootstrap>, String> {
-        if let Some(cached) = self
-            .cache()
+    ) -> Result<Arc<Loaded>, String> {
+        let slot = self
+            .loaded
             .get(agent)
-            .filter(|cached| cached.version == version)
+            .ok_or_else(|| format!("agent `{agent}` is not in server.toml"))?;
+        let mut slot = slot.lock().await;
+        if let Some(loaded) = slot
+            .as_ref()
+            .filter(|loaded| loaded.bootstrap.version == version)
         {
-            return Ok(Arc::clone(cached));
+            return Ok(Arc::clone(loaded));
         }
         let bootstrap: Bootstrap = client.call("bootstrap", None).await?;
         self.check_bootstrap(&bootstrap)?;
@@ -182,11 +190,16 @@ impl ContextProviderBackend {
                 bootstrap.version
             ));
         }
-        tracing::info!(agent, version, "loaded agent bootstrap");
-        let bootstrap = Arc::new(bootstrap);
-        self.cache()
-            .insert(agent.to_owned(), Arc::clone(&bootstrap));
-        Ok(bootstrap)
+        let toolset = Toolset::connect(&bootstrap.mcp_servers, &client.endpoint.token).await?;
+        tracing::info!(
+            agent,
+            version,
+            tools = toolset.tools.len(),
+            "loaded agent bootstrap"
+        );
+        let loaded = Arc::new(Loaded { bootstrap, toolset });
+        *slot = Some(Arc::clone(&loaded));
+        Ok(loaded)
     }
 
     fn check_bootstrap(&self, bootstrap: &Bootstrap) -> Result<(), String> {
@@ -210,7 +223,7 @@ impl ContextProviderBackend {
         Ok(())
     }
 
-    async fn prepare_turn(&self, agent: &str, key: &str) -> Result<Prepared<NoTools>, String> {
+    async fn prepare_turn(&self, agent: &str, key: &str) -> Result<Prepared<McpHost>, String> {
         let endpoint = self
             .agents
             .get(agent)
@@ -221,29 +234,30 @@ impl ContextProviderBackend {
         };
         let turn: TurnContext = client.call("turn", Some(json!({ "session": key }))).await?;
         check_pages(&turn.pages)?;
-        let bootstrap = self.bootstrap(agent, &client, &turn.version).await?;
+        let loaded = self.load(agent, &client, &turn.version).await?;
+        let bootstrap = &loaded.bootstrap;
         let source = ProviderPages {
             client,
             session: key.to_owned(),
         };
         Ok(Prepared {
             system: bootstrap.instructions.clone(),
-            tools: Vec::new(),
+            tools: loaded.toolset.tools.clone(),
             workspace: Workspace::with_source(turn.pages, Arc::new(source)),
             model: bootstrap.model.clone(),
             first_call_effort: bootstrap.first_call_effort,
             effort: bootstrap.effort,
             max_output_tokens: bootstrap.max_output_tokens,
             max_model_calls: bootstrap.max_model_calls,
-            host: NoTools,
+            host: loaded.toolset.host(key),
         })
     }
 }
 
 impl Backend for ContextProviderBackend {
-    type Host = NoTools;
+    type Host = McpHost;
 
-    async fn prepare(&self, agent: &str, key: &str) -> Result<Prepared<NoTools>, BackendError> {
+    async fn prepare(&self, agent: &str, key: &str) -> Result<Prepared<McpHost>, BackendError> {
         self.prepare_turn(agent, key)
             .await
             .map_err(|error| BackendError(format!("context provider for `{agent}`: {error}")))

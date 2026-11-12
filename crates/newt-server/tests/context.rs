@@ -228,3 +228,12 @@ async fn an_unknown_agent_fails_loudly() {
         .to_string();
     assert!(error.contains("not in server.toml"), "{error}");
 }
+
+#[tokio::test]
+async fn an_unreachable_mcp_server_in_the_bootstrap_fails_loudly() {
+    let provider = Provider::new();
+    provider.bootstrap.lock().unwrap()["mcp_servers"] =
+        json!([{ "name": "app", "url": "http://127.0.0.1:9/mcp" }]);
+    let error = prepare_error(&provider, TOKEN).await;
+    assert!(error.contains("MCP server `app`"), "{error}");
+}

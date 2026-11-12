@@ -6,6 +6,7 @@ pub mod http;
 pub mod journal;
 pub mod journal_store;
 pub mod live;
+pub mod mcp;
 pub mod models;
 pub mod runner;
 pub mod sessions;

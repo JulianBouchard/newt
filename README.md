@@ -22,11 +22,28 @@ Each agent in `server.toml` names a `context_provider` base URL and a `token_env
 
 | Call | When | Request | Response |
 |---|---|---|---|
-| `GET {base}/bootstrap` | first turn, then whenever the version changes | none | `{ version, instructions, model, first_call_effort?, effort?, max_output_tokens?, max_model_calls? }` |
+| `GET {base}/bootstrap` | first turn, then whenever the version changes | none | `{ version, instructions, model, first_call_effort?, effort?, max_output_tokens?, max_model_calls?, mcp_servers? }` |
 | `POST {base}/turn` | start of every turn | `{ session }` | `{ version, pages: [Page] }` |
 | `POST {base}/pages` | a read of a page a tool invalidated | `{ session, keys: [PageKey] }` | `{ pages: [Page] }` |
 
 A `Page` is `{ key: ["customer", "profile"], path: "profile.md", version, content }`. Tools invalidate pages by key prefix; the next read refetches them, and a page missing from the response is gone. `model` must be a `[models]` alias from `server.toml`. Unknown fields, an unknown model or a version mismatch fail the turn loudly.
+
+## Tools over MCP
+
+Tools come from the MCP servers the bootstrap lists: `{ name, url, headers?, auth? }`, where `auth: "agent_token"` sends the agent's token as the bearer and the default sends none. Headers are static and must not hold secrets. Newt connects once per agent and bootstrap version over Streamable HTTP, lists the tools, and keeps those connections for every session of that version.
+
+Newt reads and writes a few `_meta` fields; a server that ignores them still works, and its tools count as durable with no invalidation.
+
+| Where | Field | Meaning |
+|---|---|---|
+| tool | `newt/retention` | `ephemeral` (result dropped at the end of the turn), `durable` (call kept, result cut to its summary) or `outward` (an effect outside your system, journaled before it runs) |
+| tool | `newt/invalidates` | page key prefixes every successful call makes stale |
+| tool | `newt/idempotent` | must be `true` on outward tools, or newt refuses to load them |
+| call | `newt/session` | the session key |
+| call | `newt/idempotency_key` | stable across retries of the same call; outward handlers must honour it |
+| result | `newt/summary` | what durable history keeps instead of the full result |
+| result | `newt/invalidate` | more page key prefixes to mark stale |
+| result | `newt/pages` | fresh page data, used without a refetch |
 
 ## License
 
