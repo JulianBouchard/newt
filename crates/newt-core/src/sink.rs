@@ -88,9 +88,10 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         let boot_times: Vec<u64> = contents
             .lines()
-            .map(
+            .filter_map(
                 |line| match serde_json::from_str::<Event>(line).unwrap().kind {
-                    EventKind::ServerReady { boot_ms } => boot_ms,
+                    EventKind::ServerReady { boot_ms } => Some(boot_ms),
+                    _ => None,
                 },
             )
             .collect();

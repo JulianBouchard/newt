@@ -11,13 +11,20 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+futures-util = "0.3.34"
+globset = "0.4.21"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "json", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1.54.1", features = ["rt", "sync", "fs", "io-util", "macros"] }
+tokio-util = "0.7.20"
 tracing = "0.1.44"
 
 [dev-dependencies]
+axum = "0.8.9"
+bytes = "1.12.1"
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time"] }
