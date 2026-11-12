@@ -9,6 +9,7 @@ use std::future::Future;
 use std::sync::Mutex;
 
 use newt_core::event::{Event, EventKind};
+use newt_core::journal::NoJournal;
 use newt_core::message::{Message, Part, Role, ToolCall, ToolResult};
 use newt_core::prompt::{Effort, Lane, ModelRequest, ToolSpec};
 use newt_core::provider::{
@@ -17,7 +18,9 @@ use newt_core::provider::{
 use newt_core::sink::EventSink;
 use newt_core::steering::NoSteering;
 use newt_core::tools::{Retention, ToolDef, ToolHost, ToolOutput};
-use newt_core::turn::{TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings, run_turn};
+use newt_core::turn::{
+    TurnDeps, TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings, run_turn,
+};
 use newt_core::workspace::Workspace;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -86,7 +89,7 @@ struct RecordingHost {
 }
 
 impl ToolHost for RecordingHost {
-    fn call(&self, call: &ToolCall) -> impl Future<Output = ToolOutput> + Send {
+    fn call(&self, call: &ToolCall, _key: &str) -> impl Future<Output = ToolOutput> + Send {
         self.calls.lock().unwrap().push(call.name.clone());
         let output = match call.name.as_str() {
             "save_note" => ToolOutput {
@@ -179,9 +182,14 @@ async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> R
     )]));
     let history = vec![Message::user_text("earlier turn")];
     let outcome = run_turn(
-        &model,
-        &host,
-        &NoSteering,
+        &TurnDeps {
+            model: &model,
+            host: &host,
+            steering: &NoSteering,
+            journal: &NoJournal,
+            sink: &sink,
+            cancel: &CancellationToken::new(),
+        },
         TurnInput {
             session: "customer-1",
             turn: "turn-9",
@@ -190,6 +198,7 @@ async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> R
             history: &history,
             events: vec![Message::user_text("Only remote roles please.")],
             workspace: &workspace,
+            replay: Vec::new(),
         },
         &TurnSettings {
             model: "scripted",
@@ -199,8 +208,6 @@ async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> R
             max_model_calls,
             lane: Lane::Interactive,
         },
-        &sink,
-        &CancellationToken::new(),
     )
     .await;
     Run {
@@ -465,9 +472,14 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
     let workspace = Workspace::default();
 
     let outcome = run_turn(
-        &model,
-        &host,
-        &NoSteering,
+        &TurnDeps {
+            model: &model,
+            host: &host,
+            steering: &NoSteering,
+            journal: &NoJournal,
+            sink: &CollectingSink::default(),
+            cancel: &cancel,
+        },
         TurnInput {
             session: "customer-1",
             turn: "turn-10",
@@ -476,6 +488,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             history: &[],
             events: vec![Message::user_text("Stop.")],
             workspace: &workspace,
+            replay: Vec::new(),
         },
         &TurnSettings {
             model: "scripted",
@@ -485,8 +498,6 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             max_model_calls: 1,
             lane: Lane::Interactive,
         },
-        &CollectingSink::default(),
-        &cancel,
     )
     .await;
 

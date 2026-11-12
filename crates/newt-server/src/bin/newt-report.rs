@@ -108,7 +108,9 @@ fn call_mut(turn: &mut TurnReport, call: u32) -> &mut Call {
 fn apply(turns: &mut Vec<TurnReport>, event: Event) {
     let at = event.at;
     match event.kind {
-        EventKind::ServerReady { .. } | EventKind::TurnSteered { .. } => {}
+        EventKind::ServerReady { .. }
+        | EventKind::TurnSteered { .. }
+        | EventKind::ModelCallReplayed { .. } => {}
         EventKind::TurnStarted { session, turn, .. } => {
             turn_mut(turns, &session, &turn).started_at = Some(at);
         }

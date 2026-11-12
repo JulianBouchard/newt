@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use futures_util::stream::{self, StreamExt};
-use tokio_util::sync::CancellationToken;
 
 use crate::event::{Event, EventKind};
+use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{ToolCall, ToolResult};
 use crate::sink::EventSink;
 use crate::tools::{END_TURN, EndTurn, Retention, ToolHost, ToolOutput, run_workspace_tool};
-use crate::turn::TurnContext;
+use crate::turn::{TurnContext, TurnDeps};
 
 const TOOL_CONCURRENCY: usize = 5;
 const END_TURN_BLOCKED: &str = "Turn not ended: a tool call in this batch failed. Deal with the failure, then call end_turn again.";
@@ -48,6 +48,7 @@ fn success(content: impl Into<String>) -> ToolOutput {
 fn plan_calls(
     tool_calls: &[ToolCall],
     context: &TurnContext<'_>,
+    replay: &Replay,
 ) -> (Vec<Plan>, Option<EndTurn>, Option<usize>) {
     let mut end = None;
     let mut end_slot = None;
@@ -63,6 +64,9 @@ fn plan_calls(
                     )),
                     0,
                 );
+            }
+            if let Some(output) = replay.output(&call.id) {
+                return Plan::Done(output.clone(), 0);
             }
             if call.name == END_TURN {
                 if end_slot.is_some() {
@@ -94,14 +98,14 @@ fn plan_calls(
     (plans, end, end_slot)
 }
 
-pub(crate) async fn run_tools<H: ToolHost>(
+pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     tool_calls: &[ToolCall],
     context: &TurnContext<'_>,
-    host: &H,
-    sink: &dyn EventSink,
-    cancel: &CancellationToken,
+    deps: &TurnDeps<'_, M, H, S, J>,
+    replay: &Replay,
 ) -> Batch {
-    let (plans, mut end, end_slot) = plan_calls(tool_calls, context);
+    let (host, journal) = (deps.host, deps.journal);
+    let (plans, mut end, end_slot) = plan_calls(tool_calls, context, replay);
 
     let mut slots: Vec<Option<(ToolOutput, u64)>> = Vec::with_capacity(plans.len());
     let mut concurrent = Vec::new();
@@ -120,29 +124,46 @@ pub(crate) async fn run_tools<H: ToolHost>(
         }
     }
 
+    let keys: Vec<String> = tool_calls
+        .iter()
+        .map(|call| idempotency_key(context, call))
+        .collect();
     let calls: Vec<_> = concurrent
         .iter()
-        .map(|&slot| timed_call(host, &tool_calls[slot]))
+        .map(|&slot| timed_call(host, &tool_calls[slot], &keys[slot]))
         .collect();
     let outputs: Vec<(ToolOutput, u64)> = stream::iter(calls)
         .buffered(TOOL_CONCURRENCY)
         .collect()
         .await;
     for (&slot, output) in concurrent.iter().zip(outputs) {
+        record_output(journal, &tool_calls[slot], &output.0);
         slots[slot] = Some(output);
     }
 
     let mut skip_reason = None;
     for slot in outward {
-        if skip_reason.is_none() && cancel.is_cancelled() {
-            skip_reason = Some(OUTWARD_CANCELLED);
+        let call = &tool_calls[slot];
+        if skip_reason.is_none() && deps.cancel.is_cancelled() {
+            skip_reason = Some(OUTWARD_CANCELLED.to_owned());
         }
-        let output = if let Some(reason) = skip_reason {
-            (failure(reason), 0)
+        if skip_reason.is_none()
+            && !replay.has_intent(&call.id)
+            && let Err(error) = journal
+                .append_and_wait(JournalEntry::OutwardIntent {
+                    call_id: call.id.clone(),
+                })
+                .await
+        {
+            skip_reason = Some(format!("Not sent: {error}"));
+        }
+        let output = if let Some(reason) = &skip_reason {
+            (failure(reason.clone()), 0)
         } else {
-            let output = timed_call(host, &tool_calls[slot]).await;
+            let output = timed_call(host, call, &keys[slot]).await;
+            record_output(journal, call, &output.0);
             if output.0.is_error {
-                skip_reason = Some(OUTWARD_SKIPPED);
+                skip_reason = Some(OUTWARD_SKIPPED.to_owned());
             }
             output
         };
@@ -167,7 +188,7 @@ pub(crate) async fn run_tools<H: ToolHost>(
         entry.0 = failure(END_TURN_BLOCKED);
     }
 
-    finish_batch(tool_calls, outputs, end, context, sink)
+    finish_batch(tool_calls, outputs, end, context, deps.sink)
 }
 
 fn finish_batch(
@@ -211,10 +232,21 @@ fn finish_batch(
     }
 }
 
-async fn timed_call<H: ToolHost>(host: &H, call: &ToolCall) -> (ToolOutput, u64) {
+async fn timed_call<H: ToolHost>(host: &H, call: &ToolCall, key: &str) -> (ToolOutput, u64) {
     let started = Instant::now();
-    let output = host.call(call).await;
+    let output = host.call(call, key).await;
     (output, elapsed_ms(started))
+}
+
+fn idempotency_key(context: &TurnContext<'_>, call: &ToolCall) -> String {
+    format!("{}:{}:{}", context.ids.session, context.ids.turn, call.id)
+}
+
+fn record_output<J: Journal>(journal: &J, call: &ToolCall, output: &ToolOutput) {
+    journal.append(JournalEntry::ToolOutput {
+        call_id: call.id.clone(),
+        output: output.clone(),
+    });
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

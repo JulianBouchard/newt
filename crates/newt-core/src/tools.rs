@@ -24,7 +24,7 @@ pub struct ToolDef {
     pub retention: Retention,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
@@ -32,14 +32,22 @@ pub struct ToolOutput {
 }
 
 pub trait ToolHost: Send + Sync {
-    fn call(&self, call: &ToolCall) -> impl Future<Output = ToolOutput> + Send;
+    fn call(
+        &self,
+        call: &ToolCall,
+        idempotency_key: &str,
+    ) -> impl Future<Output = ToolOutput> + Send;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoTools;
 
 impl ToolHost for NoTools {
-    fn call(&self, call: &ToolCall) -> impl Future<Output = ToolOutput> + Send {
+    fn call(
+        &self,
+        call: &ToolCall,
+        _idempotency_key: &str,
+    ) -> impl Future<Output = ToolOutput> + Send {
         std::future::ready(ToolOutput {
             content: format!("unknown tool `{}`", call.name),
             is_error: true,

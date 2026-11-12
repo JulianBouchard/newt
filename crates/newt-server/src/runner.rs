@@ -2,11 +2,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use newt_core::message::Message;
-use newt_core::prompt::Lane;
-use newt_core::provider::{Model, ProviderError};
+use newt_core::provider::Model;
 use newt_core::sink::EventSink;
-use newt_core::turn::{TurnError, TurnInput, TurnSettings, run_turn};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -14,9 +11,6 @@ use tokio_util::task::TaskTracker;
 
 use crate::backend::Backend;
 use crate::live::{Channel, Notification};
-use crate::sessions::{CommitError, Lease, PendingEvent};
-use crate::sinks::{LiveSink, TeeSink};
-use crate::steering::SessionSteering;
 use crate::store::Store;
 
 const SWEEP_LIMIT: i64 = 100;
@@ -59,18 +53,18 @@ impl<B: Backend, M: Model + 'static> std::fmt::Debug for Runner<B, M> {
     }
 }
 
-struct Inner<B, M> {
-    store: Store,
-    backend: B,
-    model: M,
-    owner: String,
-    config: RunnerConfig,
-    instrumentation: Option<Arc<dyn EventSink>>,
-    notifications: broadcast::Sender<Notification>,
+pub(crate) struct Inner<B, M> {
+    pub(crate) store: Store,
+    pub(crate) backend: B,
+    pub(crate) model: M,
+    pub(crate) owner: String,
+    pub(crate) config: RunnerConfig,
+    pub(crate) instrumentation: Option<Arc<dyn EventSink>>,
+    pub(crate) notifications: broadcast::Sender<Notification>,
     in_flight: Mutex<HashSet<(String, String)>>,
     tasks: TaskTracker,
-    stopping: CancellationToken,
-    turns: CancellationToken,
+    pub(crate) stopping: CancellationToken,
+    pub(crate) turns: CancellationToken,
 }
 
 impl<B: Backend, M: Model + 'static> Runner<B, M> {
@@ -123,7 +117,9 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         }
         let inner = Arc::clone(&self.inner);
         self.inner.tasks.spawn(async move {
-            if let Err(error) = run_session(&inner, &session.0, &session.1).await {
+            if let Err(error) =
+                crate::turn_runner::run_session(&inner, &session.0, &session.1).await
+            {
                 tracing::error!(%error, agent = %session.0, key = %session.1, "session run failed");
             }
             match inner.in_flight.lock() {
@@ -205,135 +201,6 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-}
-
-async fn run_session<B: Backend, M: Model>(
-    inner: &Inner<B, M>,
-    agent: &str,
-    key: &str,
-) -> anyhow::Result<()> {
-    let ttl = inner.config.lease_ttl;
-    let Some(lease) = inner.store.claim(agent, key, &inner.owner, ttl).await? else {
-        return Ok(());
-    };
-    loop {
-        if inner.stopping.is_cancelled() {
-            inner.store.release(&lease).await?;
-            return Ok(());
-        }
-        let pending = inner.store.pending_events(&lease).await?;
-        if pending.is_empty() {
-            if inner.store.release_if_idle(&lease).await? {
-                return Ok(());
-            }
-            continue;
-        }
-        if !run_one_turn(inner, &lease, &pending).await? {
-            return Ok(());
-        }
-    }
-}
-
-async fn run_one_turn<B: Backend, M: Model>(
-    inner: &Inner<B, M>,
-    lease: &Lease,
-    pending: &[PendingEvent],
-) -> anyhow::Result<bool> {
-    let prepared = match inner.backend.prepare(&lease.agent, &lease.key).await {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn preparation failed");
-            inner.store.release_with_backoff(lease).await?;
-            return Ok(false);
-        }
-    };
-    let history = inner.store.history(lease).await?;
-    let events: Vec<Message> = pending
-        .iter()
-        .map(|event| Message::user_text(event.text.clone()))
-        .collect();
-    let consumed: Vec<i64> = pending.iter().map(|event| event.inbox_id).collect();
-    let lane = if pending.iter().any(|event| event.interactive) {
-        Lane::Interactive
-    } else {
-        Lane::Background
-    };
-    let turn_id = uuid::Uuid::now_v7().to_string();
-    let cache_key = format!("{}/{}", lease.agent, lease.key);
-    let settings = TurnSettings {
-        model: &prepared.model,
-        first_call_effort: prepared.first_call_effort,
-        effort: prepared.effort,
-        max_output_tokens: prepared.max_output_tokens,
-        max_model_calls: prepared.max_model_calls,
-        lane,
-    };
-
-    let steering = SessionSteering::new(
-        inner.store.clone(),
-        lease.clone(),
-        consumed.iter().copied(),
-        inner.notifications.subscribe(),
-    );
-    let (live, live_writer) =
-        LiveSink::spawn(inner.store.clone(), lease.agent.clone(), lease.key.clone());
-    let result = run_turn(
-        &inner.model,
-        &prepared.host,
-        &steering,
-        TurnInput {
-            session: &cache_key,
-            turn: &turn_id,
-            system: &prepared.system,
-            external_tools: &prepared.tools,
-            history: &history,
-            events,
-            workspace: &prepared.workspace,
-        },
-        &settings,
-        &TeeSink {
-            live: &live,
-            instrumentation: inner.instrumentation.as_ref(),
-        },
-        &inner.turns,
-    )
-    .await;
-    drop(live);
-    live_writer.await?;
-
-    let (committed, steered, failure) = match result {
-        Ok(outcome) => (outcome.committed, outcome.steered, None),
-        Err(failure) => (failure.committed, failure.steered, Some(failure.error)),
-    };
-    let acted = committed.len() > pending.len() + steered.len();
-    let mut consumed = consumed;
-    consumed.extend(steered.iter().filter_map(|id| id.parse::<i64>().ok()));
-    if failure.is_none() || acted {
-        match inner
-            .store
-            .commit_turn(lease, turn_id, committed, consumed, inner.config.lease_ttl)
-            .await
-        {
-            Ok(()) => {}
-            Err(CommitError::Fenced) => {
-                tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before commit, turn discarded");
-                return Ok(false);
-            }
-            Err(CommitError::Database(error)) => return Err(error.into()),
-        }
-    }
-    match failure {
-        None => Ok(true),
-        Some(TurnError::Provider(ProviderError::Cancelled)) => {
-            inner.store.release(lease).await?;
-            Ok(false)
-        }
-        Some(error) => {
-            tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn failed");
-            inner.store.release_with_backoff(lease).await?;
-            Ok(false)
         }
     }
 }

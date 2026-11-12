@@ -1,10 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
 use crate::commit::{CommitRules, committed_messages};
 use crate::event::{Event, EventKind};
+use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{Message, Part, Role, ToolCall};
 use crate::prompt::{Effort, Lane, LayerFingerprint, ModelRequest, Prompt, ToolSpec};
 use crate::provider::{
@@ -27,6 +28,7 @@ pub struct TurnInput<'a> {
     pub history: &'a [Message],
     pub events: Vec<Message>,
     pub workspace: &'a Workspace,
+    pub replay: Vec<JournalEntry>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -92,12 +94,20 @@ pub(crate) struct TurnContext<'a> {
     history_fingerprint: LayerFingerprint,
 }
 
-struct Deps<'a, M, H, S> {
-    model: &'a M,
-    host: &'a H,
-    steering: &'a S,
-    sink: &'a dyn EventSink,
-    cancel: &'a CancellationToken,
+#[derive(Clone, Copy)]
+pub struct TurnDeps<'a, M, H, S, J> {
+    pub model: &'a M,
+    pub host: &'a H,
+    pub steering: &'a S,
+    pub journal: &'a J,
+    pub sink: &'a dyn EventSink,
+    pub cancel: &'a CancellationToken,
+}
+
+impl<M, H, S, J> std::fmt::Debug for TurnDeps<'_, M, H, S, J> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("TurnDeps").finish_non_exhaustive()
+    }
 }
 
 enum CallResult {
@@ -106,6 +116,7 @@ enum CallResult {
 }
 
 struct TurnState {
+    replay: Replay,
     steered: Vec<String>,
     scratch: Vec<Message>,
     summaries: HashMap<String, String>,
@@ -117,15 +128,12 @@ struct TurnState {
     clippy::result_large_err,
     reason = "a failed turn is rare and must hand back what it committed"
 )]
-pub async fn run_turn<M: Model, H: ToolHost, S: Steering>(
-    model: &M,
-    host: &H,
-    steering: &S,
+pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
+    deps: &TurnDeps<'_, M, H, S, J>,
     input: TurnInput<'_>,
     settings: &TurnSettings<'_>,
-    sink: &dyn EventSink,
-    cancel: &CancellationToken,
 ) -> Result<TurnOutcome, TurnFailure> {
+    let sink = deps.sink;
     let (specs, retention) = match tool_table(input.external_tools) {
         Ok(table) => table,
         Err(error) => {
@@ -163,6 +171,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering>(
         events: input.events.len(),
     }));
     let mut state = TurnState {
+        replay: Replay::new(input.replay),
         steered: Vec::new(),
         scratch: input.events,
         summaries: HashMap::new(),
@@ -170,14 +179,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering>(
         calls: Vec::new(),
     };
 
-    let deps = Deps {
-        model,
-        host,
-        steering,
-        sink,
-        cancel,
-    };
-    let result = drive(&deps, &context, settings, &mut state).await;
+    let result = drive(deps, &context, settings, &mut state).await;
     let committed = committed_messages(
         state.scratch,
         &CommitRules {
@@ -219,15 +221,15 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering>(
     }
 }
 
-async fn drive<M: Model, H: ToolHost, S: Steering>(
-    deps: &Deps<'_, M, H, S>,
+async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
+    deps: &TurnDeps<'_, M, H, S, J>,
     context: &TurnContext<'_>,
     settings: &TurnSettings<'_>,
     state: &mut TurnState,
 ) -> Result<EndTurn, TurnError> {
     let mut reminded = false;
     for call in 0..settings.max_model_calls {
-        let arrived = deps.steering.take_new().await;
+        let arrived = take_arrivals(deps, state).await;
         if !arrived.is_empty() {
             deps.sink.emit(Event::now(EventKind::TurnSteered {
                 session: context.ids.session.to_owned(),
@@ -256,9 +258,10 @@ async fn drive<M: Model, H: ToolHost, S: Steering>(
             cache_key: context.ids.session,
             lane: settings.lane,
         };
-        let response = match call_model(deps, &request, call, context).await? {
-            CallResult::Response(response) => *response,
-            CallResult::Interrupted => continue,
+        let Some(response) =
+            next_response(deps, &request, call, context, &mut state.replay).await?
+        else {
+            continue;
         };
         state.calls.push(CallReport {
             usage: response.usage,
@@ -280,8 +283,7 @@ async fn drive<M: Model, H: ToolHost, S: Steering>(
             continue;
         }
 
-        let batch =
-            crate::batch::run_tools(&tool_calls, context, deps.host, deps.sink, deps.cancel).await;
+        let batch = crate::batch::run_tools(&tool_calls, context, deps, &state.replay).await;
         state.summaries.extend(batch.summaries);
         state.scratch.push(Message {
             role: Role::User,
@@ -292,6 +294,59 @@ async fn drive<M: Model, H: ToolHost, S: Steering>(
         }
     }
     Err(TurnError::TooManyModelCalls(settings.max_model_calls))
+}
+
+async fn take_arrivals<M, H, S: Steering, J: Journal>(
+    deps: &TurnDeps<'_, M, H, S, J>,
+    state: &mut TurnState,
+) -> Vec<crate::steering::Steered> {
+    if !state.replay.exhausted() {
+        return state.replay.take_steered();
+    }
+    let fresh = deps.steering.take_new().await;
+    for steered in &fresh {
+        deps.journal.append(JournalEntry::Steered {
+            id: steered.id.clone(),
+            message: steered.message.clone(),
+        });
+    }
+    fresh
+}
+
+async fn next_response<M: Model, H: ToolHost, S: Steering, J: Journal>(
+    deps: &TurnDeps<'_, M, H, S, J>,
+    request: &ModelRequest<'_>,
+    call: u32,
+    context: &TurnContext<'_>,
+    replay: &mut Replay,
+) -> Result<Option<ModelResponse>, TurnError> {
+    if let Some((message, usage, stop)) = replay.take_response() {
+        deps.sink.emit(Event::now(EventKind::ModelCallReplayed {
+            session: context.ids.session.to_owned(),
+            turn: context.ids.turn.to_owned(),
+            call,
+        }));
+        return Ok(Some(ModelResponse {
+            message,
+            usage,
+            stop,
+            timing: CallTiming::default(),
+            response_id: None,
+            request_ids: BTreeMap::new(),
+        }));
+    }
+    match call_model(deps, request, call, context).await? {
+        CallResult::Response(response) => {
+            deps.journal.append(JournalEntry::ModelResponse {
+                call,
+                message: response.message.clone(),
+                usage: response.usage,
+                stop: response.stop.clone(),
+            });
+            Ok(Some(*response))
+        }
+        CallResult::Interrupted => Ok(None),
+    }
 }
 
 fn tool_table(
@@ -314,8 +369,8 @@ fn tool_table(
     Ok((specs, retention))
 }
 
-async fn call_model<M: Model, H: ToolHost, S: Steering>(
-    deps: &Deps<'_, M, H, S>,
+async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(
+    deps: &TurnDeps<'_, M, H, S, J>,
     request: &ModelRequest<'_>,
     call: u32,
     context: &TurnContext<'_>,

@@ -1,6 +1,7 @@
 mod batch;
 mod commit;
 pub mod event;
+pub mod journal;
 pub mod message;
 pub mod prompt;
 pub mod provider;

@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+use newt_core::journal::NoJournal;
 use newt_core::message::Message;
 use newt_core::prompt::{Effort, Lane};
 use newt_core::provider::{Protocol, ProviderClient};
 use newt_core::sink::JsonlSink;
 use newt_core::steering::NoSteering;
 use newt_core::tools::NoTools;
-use newt_core::turn::{TurnInput, TurnSettings, run_turn};
+use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
 use tokio_util::sync::CancellationToken;
 
@@ -73,9 +74,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (index, ask) in asks.into_iter().enumerate() {
         let turn = format!("turn-{}", index + 1);
         let outcome = run_turn(
-            &client,
-            &NoTools,
-            &NoSteering,
+            &TurnDeps {
+                model: &client,
+                host: &NoTools,
+                steering: &NoSteering,
+                journal: &NoJournal,
+                sink: &sink,
+                cancel: &CancellationToken::new(),
+            },
             TurnInput {
                 session: &session,
                 turn: &turn,
@@ -84,10 +90,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 history: &history,
                 events: vec![Message::user_text(ask)],
                 workspace: &workspace,
+                replay: Vec::new(),
             },
             &settings,
-            &sink,
-            &CancellationToken::new(),
         )
         .await?;
         history.extend(outcome.committed);

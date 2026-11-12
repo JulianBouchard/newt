@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use newt_core::event::{Event, EventKind};
+use newt_core::journal::NoJournal;
 use newt_core::message::{Message, Part, Role, ToolCall};
 use newt_core::prompt::{Lane, ModelRequest};
 use newt_core::provider::{
@@ -15,7 +16,7 @@ use newt_core::provider::{
 use newt_core::sink::EventSink;
 use newt_core::steering::{Steered, Steering};
 use newt_core::tools::NoTools;
-use newt_core::turn::{TurnInput, TurnOutcome, TurnSettings, run_turn};
+use newt_core::turn::{TurnDeps, TurnInput, TurnOutcome, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -146,9 +147,14 @@ fn read_profile() -> Message {
 
 async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) -> TurnOutcome {
     run_turn(
-        model,
-        &NoTools,
-        steering,
+        &TurnDeps {
+            model,
+            host: &NoTools,
+            steering,
+            journal: &NoJournal,
+            sink: events,
+            cancel: &CancellationToken::new(),
+        },
         TurnInput {
             session: "s",
             turn: "t",
@@ -157,6 +163,7 @@ async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) 
             history: &[],
             events: vec![Message::user_text("Find me roles in Lisbon.")],
             workspace: &Workspace::default(),
+            replay: Vec::new(),
         },
         &TurnSettings {
             model: "slow",
@@ -166,8 +173,6 @@ async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) 
             max_model_calls: 6,
             lane: Lane::Interactive,
         },
-        events,
-        &CancellationToken::new(),
     )
     .await
     .unwrap()

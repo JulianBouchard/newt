@@ -56,6 +56,11 @@ pub enum EventKind {
         response_id: Option<String>,
         request_ids: BTreeMap<String, String>,
     },
+    ModelCallReplayed {
+        session: String,
+        turn: String,
+        call: u32,
+    },
     ModelCallInterrupted {
         session: String,
         turn: String,
