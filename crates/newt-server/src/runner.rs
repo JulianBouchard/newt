@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use futures_util::FutureExt;
+use newt_core::event::{Event, EventKind, WakeSource};
 use newt_core::provider::Model;
 use newt_core::sink::EventSink;
 use tokio::sync::{Semaphore, broadcast};
@@ -79,7 +80,17 @@ pub(crate) struct Inner<B, M> {
     pub(crate) turns: CancellationToken,
 }
 
+pub(crate) fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 impl<B, M> Inner<B, M> {
+    pub(crate) fn emit(&self, kind: EventKind) {
+        if let Some(sink) = &self.instrumentation {
+            sink.emit(Event::now(kind));
+        }
+    }
+
     fn running(&self) -> MutexGuard<'_, HashSet<Session>> {
         match self.in_flight.lock() {
             Ok(running) => running,
@@ -141,13 +152,21 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
     }
 
     pub fn wake(&self, agent: &str, key: &str) {
+        self.wake_from(agent, key, WakeSource::Direct);
+    }
+
+    fn wake_from(&self, agent: &str, key: &str, source: WakeSource) -> bool {
         if self.inner.stopping.is_cancelled() {
-            return;
+            return false;
         }
         let session = (agent.to_owned(), key.to_owned());
         if !self.inner.running().insert(session.clone()) {
-            return;
+            return false;
         }
+        self.inner.emit(EventKind::SessionWoken {
+            session: format!("{agent}/{key}"),
+            source,
+        });
         let inner = Arc::clone(&self.inner);
         self.inner.tasks.spawn(async move {
             let _in_flight = InFlight {
@@ -168,6 +187,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 }
             }
         });
+        true
     }
 
     pub fn spawn_loops(&self) -> JoinHandle<()> {
@@ -186,7 +206,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                             if notification.channel == Channel::Inbox
                                 && let Some((agent, key)) = notification.topic.split_once('/')
                             {
-                                runner.wake(agent, key);
+                                runner.wake_from(agent, key, WakeSource::Notify);
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => runner.sweep().await,
@@ -198,14 +218,24 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
     }
 
     pub async fn sweep(&self) {
+        let started = std::time::Instant::now();
+        let mut woken = 0;
         match self.inner.store.sessions_needing_work(SWEEP_LIMIT).await {
             Ok(sessions) => {
                 for (agent, key) in sessions {
-                    self.wake(&agent, &key);
+                    woken += usize::from(self.wake_from(&agent, &key, WakeSource::Sweep));
                 }
             }
             Err(error) => tracing::error!(%error, "sweep could not list sessions"),
         }
+        let pool = self.inner.store.pool();
+        self.inner.emit(EventKind::RunnerSample {
+            running: self.inner.running().len(),
+            pool_size: pool.size(),
+            pool_idle: pool.num_idle(),
+            sweep_ms: elapsed_ms(started),
+            woken,
+        });
     }
 
     async fn heartbeat(&self) {

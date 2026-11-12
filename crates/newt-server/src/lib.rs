@@ -10,6 +10,7 @@ pub mod journal_store;
 pub mod live;
 pub mod mcp;
 pub mod models;
+pub mod profile;
 pub mod runner;
 pub mod sessions;
 pub mod sinks;

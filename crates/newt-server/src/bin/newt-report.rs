@@ -49,9 +49,14 @@ struct TurnReport {
 }
 
 fn main() -> anyhow::Result<()> {
-    let path = std::env::args()
-        .nth(1)
-        .context("usage: newt-report <events.jsonl>")?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let summary = args.iter().any(|arg| arg == "--summary");
+    let path = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .cloned()
+        .context("usage: newt-report [--summary] <events.jsonl>")?;
+    let mut profile = newt_server::profile::Profile::default();
     let file = std::fs::File::open(&path).with_context(|| format!("opening {path}"))?;
     let mut turns: Vec<TurnReport> = Vec::new();
     for (index, line) in BufReader::new(file).lines().enumerate() {
@@ -61,20 +66,26 @@ fn main() -> anyhow::Result<()> {
         }
         let event: Event = serde_json::from_str(&line)
             .with_context(|| format!("line {} is not a newt event", index + 1))?;
+        profile.observe(&event);
         apply(&mut turns, event);
     }
     let mut out = std::io::stdout().lock();
     let mut flags = Vec::new();
     let mut previous_by_session: HashMap<String, (String, OffsetDateTime, u64)> = HashMap::new();
     for turn in &turns {
-        print_turn(&mut out, turn)?;
+        if !summary {
+            print_turn(&mut out, turn)?;
+        }
         flag_turn(turn, &mut previous_by_session, &mut flags);
     }
     flag_slow_starts(&turns, &mut flags);
-    writeln!(out, "\nflags: {}", flags.len())?;
-    for flag in flags {
-        writeln!(out, "  - {flag}")?;
+    writeln!(out, "\nturns: {}; flags: {}", turns.len(), flags.len())?;
+    if !summary {
+        for flag in flags {
+            writeln!(out, "  - {flag}")?;
+        }
     }
+    out.write_all(profile.render().as_bytes())?;
     Ok(())
 }
 
@@ -110,7 +121,13 @@ fn apply(turns: &mut Vec<TurnReport>, event: Event) {
     match event.kind {
         EventKind::ServerReady { .. }
         | EventKind::TurnSteered { .. }
-        | EventKind::ModelCallReplayed { .. } => {}
+        | EventKind::ModelCallReplayed { .. }
+        | EventKind::EventAccepted { .. }
+        | EventKind::SessionWoken { .. }
+        | EventKind::SessionClaimed { .. }
+        | EventKind::TurnPrepared { .. }
+        | EventKind::TurnCommitted { .. }
+        | EventKind::RunnerSample { .. } => {}
         EventKind::TurnStarted { session, turn, .. } => {
             turn_mut(turns, &session, &turn).started_at = Some(at);
         }

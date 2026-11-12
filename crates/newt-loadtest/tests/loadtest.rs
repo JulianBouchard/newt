@@ -83,6 +83,7 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
         tokens: Arc::new(HashMap::from([("assistant".to_owned(), TOKEN.to_owned())])),
         live,
         shutdown: CancellationToken::new(),
+        instrumentation: None,
     }))
     .await;
 

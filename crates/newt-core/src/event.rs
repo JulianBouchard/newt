@@ -134,4 +134,44 @@ pub enum EventKind {
         tokens_before: i64,
         tokens_after: i64,
     },
+    EventAccepted {
+        session: String,
+        inbox_id: i64,
+        accept_ms: u64,
+    },
+    SessionWoken {
+        session: String,
+        source: WakeSource,
+    },
+    SessionClaimed {
+        session: String,
+        claimed: bool,
+        claim_ms: u64,
+    },
+    TurnPrepared {
+        session: String,
+        turn: String,
+        prepare_ms: u64,
+        history_ms: u64,
+    },
+    TurnCommitted {
+        session: String,
+        turn: String,
+        commit_ms: u64,
+    },
+    RunnerSample {
+        running: usize,
+        pool_size: u32,
+        pool_idle: usize,
+        sweep_ms: u64,
+        woken: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeSource {
+    Notify,
+    Sweep,
+    Direct,
 }

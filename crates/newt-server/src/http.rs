@@ -12,6 +12,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::Stream;
 use futures_util::stream;
+use newt_core::event::{Event, EventKind};
+use newt_core::sink::EventSink;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -24,12 +26,23 @@ const LIVE_PAGE: i64 = 100;
 const LIVE_POLL: Duration = Duration::from_secs(5);
 const MAX_NAME_BYTES: usize = 200;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     pub store: Store,
     pub tokens: Arc<HashMap<String, String>>,
     pub live: broadcast::Sender<Notification>,
     pub shutdown: CancellationToken,
+    pub instrumentation: Option<Arc<dyn EventSink>>,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AppState")
+            .field("agents", &self.tokens.len())
+            .field("instrumented", &self.instrumentation.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 pub fn router(state: AppState) -> axum::Router {
@@ -130,7 +143,17 @@ async fn post_event(
     if event.text.trim().is_empty() {
         return Err(ApiError::Invalid("an event needs text"));
     }
+    let started = std::time::Instant::now();
     let accepted = state.store.accept_event(&agent, &key, &event).await?;
+    if let Some(sink) = &state.instrumentation
+        && !accepted.duplicate
+    {
+        sink.emit(Event::now(EventKind::EventAccepted {
+            session: format!("{agent}/{key}"),
+            inbox_id: accepted.inbox_id,
+            accept_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        }));
+    }
     Ok((StatusCode::ACCEPTED, Json(accepted)).into_response())
 }
 

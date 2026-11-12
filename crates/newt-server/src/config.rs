@@ -13,6 +13,8 @@ pub struct ServerConfig {
     #[serde(default)]
     pub events: Events,
     #[serde(default)]
+    pub runner: Runner,
+    #[serde(default)]
     pub routes: BTreeMap<String, Route>,
     #[serde(default)]
     pub models: BTreeMap<String, ModelChain>,
@@ -72,6 +74,25 @@ pub struct Events {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Runner {
+    #[serde(default = "default_max_sessions")]
+    pub max_sessions: usize,
+}
+
+impl Default for Runner {
+    fn default() -> Self {
+        Self {
+            max_sessions: default_max_sessions(),
+        }
+    }
+}
+
+const fn default_max_sessions() -> usize {
+    64
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Route {
     pub protocol: Protocol,
     pub model: String,
@@ -114,6 +135,9 @@ impl ServerConfig {
         config.check_routes()?;
         config.check_model_chains()?;
         config.check_agents()?;
+        if config.runner.max_sessions == 0 {
+            bail!("runner max_sessions must be at least 1");
+        }
         if let Some(tracing) = &config.tracing
             && !is_http_url(&tracing.endpoint)
         {

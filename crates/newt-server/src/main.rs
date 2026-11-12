@@ -79,12 +79,16 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("subscribing to Postgres notifications")?;
     let instrumentation = instrumentation(jsonl.as_ref(), otlp.as_ref());
+    let http_instrumentation = instrumentation.clone();
     let backend = ContextProviderBackend::new(endpoints, config.models.keys().cloned())?;
     let runner = Runner::new(
         Store::new(pool.clone()),
         backend,
         Routes::from_config(&config)?,
-        RunnerConfig::default(),
+        RunnerConfig {
+            max_sessions: config.runner.max_sessions,
+            ..RunnerConfig::default()
+        },
         instrumentation,
         live_topics.clone(),
     );
@@ -95,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         tokens: Arc::new(tokens),
         live: live_topics,
         shutdown: shutdown.clone(),
+        instrumentation: http_instrumentation,
     };
 
     let stopping = runner.clone();

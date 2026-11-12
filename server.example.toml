@@ -1,6 +1,7 @@
 server = { listen = "127.0.0.1:7878" }
 database = { url_env = "NEWT_DATABASE_URL", max_connections = 10 }
 events = { jsonl = "newt-events.jsonl" }
+runner = { max_sessions = 64 }
 
 [routes.openai]
 protocol = "openai-responses"

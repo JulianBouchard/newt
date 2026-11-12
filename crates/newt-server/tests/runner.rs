@@ -168,6 +168,7 @@ async fn a_posted_event_runs_a_turn_and_commits_it(pool: PgPool) {
         )])),
         live,
         shutdown: CancellationToken::new(),
+        instrumentation: None,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

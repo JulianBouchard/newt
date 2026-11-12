@@ -1,3 +1,4 @@
+use newt_core::event::EventKind;
 use newt_core::journal::JournalEntry;
 use newt_core::message::Message;
 use newt_core::prompt::Lane;
@@ -6,7 +7,7 @@ use newt_core::turn::{TurnDeps, TurnError, TurnInput, TurnSettings, run_turn};
 
 use crate::backend::Backend;
 use crate::journal::TurnJournal;
-use crate::runner::Inner;
+use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{CommitError, Lease, PendingEvent};
 use crate::sinks::{LiveSink, TeeSink};
 use crate::steering::SessionSteering;
@@ -25,7 +26,14 @@ pub(crate) async fn run_session<B: Backend, M: Model>(
     key: &str,
 ) -> anyhow::Result<()> {
     let ttl = inner.config.lease_ttl;
-    let Some(lease) = inner.store.claim(agent, key, &inner.owner, ttl).await? else {
+    let started = std::time::Instant::now();
+    let claimed = inner.store.claim(agent, key, &inner.owner, ttl).await?;
+    inner.emit(EventKind::SessionClaimed {
+        session: format!("{agent}/{key}"),
+        claimed: claimed.is_some(),
+        claim_ms: elapsed_ms(started),
+    });
+    let Some(lease) = claimed else {
         return Ok(());
     };
     let result = session_loop(inner, &lease).await;
@@ -86,6 +94,7 @@ async fn run_one_turn<B: Backend, M: Model>(
     lease: &Lease,
     plan: TurnPlan,
 ) -> anyhow::Result<bool> {
+    let preparing = std::time::Instant::now();
     let prepared = match inner.backend.prepare(&lease.agent, &lease.key).await {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -107,7 +116,7 @@ async fn run_one_turn<B: Backend, M: Model>(
         tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before the turn started");
         return Ok(false);
     }
-    let history = inner.store.history(lease).await?;
+    let history = load_history(inner, lease, &plan.turn_id, elapsed_ms(preparing)).await?;
     let events: Vec<Message> = plan
         .events
         .iter()
@@ -187,6 +196,23 @@ async fn run_one_turn<B: Backend, M: Model>(
     Ok(committed)
 }
 
+async fn load_history<B: Backend, M: Model>(
+    inner: &Inner<B, M>,
+    lease: &Lease,
+    turn_id: &str,
+    prepare_ms: u64,
+) -> anyhow::Result<Vec<Message>> {
+    let loading = std::time::Instant::now();
+    let history = inner.store.history(lease).await?;
+    inner.emit(EventKind::TurnPrepared {
+        session: format!("{}/{}", lease.agent, lease.key),
+        turn: turn_id.to_owned(),
+        prepare_ms,
+        history_ms: elapsed_ms(loading),
+    });
+    Ok(history)
+}
+
 async fn finish_turn<B: Backend, M: Model>(
     inner: &Inner<B, M>,
     lease: &Lease,
@@ -209,18 +235,23 @@ async fn finish_turn<B: Backend, M: Model>(
     }
     consumed.extend(steered.iter().filter_map(|id| id.parse::<i64>().ok()));
     if failure.is_none() || effects {
-        match inner
+        let committing = std::time::Instant::now();
+        let commit = inner
             .store
             .commit_turn(
                 lease,
-                turn_id,
+                turn_id.clone(),
                 committed,
                 consumed.clone(),
                 inner.config.lease_ttl,
             )
-            .await
-        {
-            Ok(()) => {}
+            .await;
+        match commit {
+            Ok(()) => inner.emit(EventKind::TurnCommitted {
+                session: format!("{}/{}", lease.agent, lease.key),
+                turn: turn_id,
+                commit_ms: elapsed_ms(committing),
+            }),
             Err(CommitError::Fenced) => {
                 tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before commit, turn discarded");
                 return Ok(false);

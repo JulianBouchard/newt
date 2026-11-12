@@ -188,7 +188,13 @@ impl Assembler {
             | EventKind::TurnSteered { .. }
             | EventKind::ToolStarted { .. }
             | EventKind::ModelCallReplayed { .. }
-            | EventKind::CompactionCompleted { .. } => {}
+            | EventKind::CompactionCompleted { .. }
+            | EventKind::EventAccepted { .. }
+            | EventKind::SessionWoken { .. }
+            | EventKind::SessionClaimed { .. }
+            | EventKind::TurnPrepared { .. }
+            | EventKind::TurnCommitted { .. }
+            | EventKind::RunnerSample { .. } => {}
         }
         None
     }
@@ -245,7 +251,13 @@ fn event_turn(kind: &EventKind) -> Option<(String, String)> {
         EventKind::ServerReady { .. }
         | EventKind::TurnSteered { .. }
         | EventKind::ModelCallReplayed { .. }
-        | EventKind::CompactionCompleted { .. } => None,
+        | EventKind::CompactionCompleted { .. }
+        | EventKind::EventAccepted { .. }
+        | EventKind::SessionWoken { .. }
+        | EventKind::SessionClaimed { .. }
+        | EventKind::TurnPrepared { .. }
+        | EventKind::TurnCommitted { .. }
+        | EventKind::RunnerSample { .. } => None,
     }
 }
 
