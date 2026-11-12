@@ -84,12 +84,11 @@ impl From<sqlx::Error> for ApiError {
 }
 
 fn same_token(expected: &str, presented: &str) -> bool {
-    expected.len() == presented.len()
-        && expected
-            .bytes()
-            .zip(presented.bytes())
-            .fold(0_u8, |difference, (a, b)| difference | (a ^ b))
-            == 0
+    use sha2::{Digest, Sha256};
+    use subtle::ConstantTimeEq;
+    Sha256::digest(expected.as_bytes())
+        .ct_eq(&Sha256::digest(presented.as_bytes()))
+        .into()
 }
 
 fn authorize(
@@ -261,5 +260,18 @@ impl LiveFeed {
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_token;
+
+    #[test]
+    fn tokens_match_only_when_identical() {
+        assert!(same_token("secret-token", "secret-token"));
+        assert!(!same_token("secret-token", "secret-tokem"));
+        assert!(!same_token("secret-token", "secret"));
+        assert!(!same_token("secret-token", ""));
     }
 }

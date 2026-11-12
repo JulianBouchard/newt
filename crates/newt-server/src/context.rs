@@ -155,7 +155,6 @@ impl Client {
         };
         let response = request
             .bearer_auth(&self.endpoint.token)
-            .timeout(REQUEST_TIMEOUT)
             .send()
             .await
             .map_err(|error| format!("{path}: {}", error.without_url()))?;
@@ -214,7 +213,9 @@ impl ContextProviderBackend {
         models: impl IntoIterator<Item = String>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder().build()?,
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()?,
             loaded: agents
                 .keys()
                 .map(|name| (name.clone(), tokio::sync::Mutex::new(None)))
