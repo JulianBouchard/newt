@@ -65,10 +65,20 @@ struct PagesRequest<'a> {
     keys: &'a [PageKey],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderEndpoint {
     pub base_url: String,
     pub token: String,
+}
+
+impl std::fmt::Debug for ProviderEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderEndpoint")
+            .field("base_url", &self.base_url)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -178,7 +188,7 @@ impl ContextProviderBackend {
         let mut slot = slot.lock().await;
         if let Some(loaded) = slot
             .as_ref()
-            .filter(|loaded| loaded.bootstrap.version == version)
+            .filter(|loaded| loaded.bootstrap.version == version && !loaded.toolset.is_broken())
         {
             return Ok(Arc::clone(loaded));
         }
@@ -264,7 +274,7 @@ impl Backend for ContextProviderBackend {
     }
 }
 
-fn check_pages(pages: &[Page]) -> Result<(), String> {
+pub(crate) fn check_pages(pages: &[Page]) -> Result<(), String> {
     let mut paths = HashSet::new();
     for page in pages {
         if page.path.trim().is_empty() || page.key.is_empty() {

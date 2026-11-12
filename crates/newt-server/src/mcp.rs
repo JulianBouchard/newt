@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use newt_core::message::ToolCall;
@@ -14,7 +15,7 @@ use rmcp::model::{
 use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{RoleClient, ServiceExt};
+use rmcp::{RoleClient, ServiceError, ServiceExt};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -29,6 +30,9 @@ pub const META_INVALIDATE: &str = "newt/invalidate";
 pub const META_PAGES: &str = "newt/pages";
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(90);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const OUTCOME_UNKNOWN: &str = "it may or may not have taken effect. Do not repeat it: check the workspace first, and tell the person if you cannot confirm it.";
+const BAD_META: &str = "(newt could not read this tool's workspace metadata, so every page will be refetched before its next read)";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,7 +42,7 @@ pub enum McpAuth {
     AgentToken,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServer {
     pub name: String,
@@ -47,6 +51,18 @@ pub struct McpServer {
     pub headers: BTreeMap<String, String>,
     #[serde(default)]
     pub auth: McpAuth,
+}
+
+impl std::fmt::Debug for McpServer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpServer")
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .field("auth", &self.auth)
+            .finish()
+    }
 }
 
 type Client = RunningService<RoleClient, ClientConfig>;
@@ -59,6 +75,7 @@ struct Remote {
 #[derive(Clone)]
 pub struct McpHost {
     tools: Arc<HashMap<String, Remote>>,
+    broken: Arc<AtomicBool>,
     session: String,
 }
 
@@ -67,6 +84,7 @@ impl std::fmt::Debug for McpHost {
         formatter
             .debug_struct("McpHost")
             .field("tools", &self.tools.len())
+            .field("broken", &self.broken)
             .field("session", &self.session)
             .finish()
     }
@@ -75,6 +93,7 @@ impl std::fmt::Debug for McpHost {
 pub struct Toolset {
     pub tools: Vec<ToolDef>,
     remotes: Arc<HashMap<String, Remote>>,
+    broken: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for Toolset {
@@ -87,14 +106,22 @@ impl std::fmt::Debug for Toolset {
 }
 
 impl Toolset {
-    pub fn empty() -> Self {
-        Self {
-            tools: Vec::new(),
-            remotes: Arc::new(HashMap::new()),
-        }
+    pub async fn connect(servers: &[McpServer], agent_token: &str) -> Result<Self, String> {
+        tokio::time::timeout(CONNECT_TIMEOUT, Self::connect_all(servers, agent_token))
+            .await
+            .map_err(|_| {
+                format!(
+                    "MCP servers did not connect and list their tools within {} seconds",
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?
     }
 
-    pub async fn connect(servers: &[McpServer], agent_token: &str) -> Result<Self, String> {
+    pub fn is_broken(&self) -> bool {
+        self.broken.load(Ordering::Relaxed)
+    }
+
+    async fn connect_all(servers: &[McpServer], agent_token: &str) -> Result<Self, String> {
         let mut tools = Vec::new();
         let mut remotes = HashMap::new();
         for server in servers {
@@ -122,18 +149,26 @@ impl Toolset {
         Ok(Self {
             tools,
             remotes: Arc::new(remotes),
+            broken: Arc::new(AtomicBool::new(false)),
         })
     }
 
     pub fn host(&self, session: &str) -> McpHost {
         McpHost {
             tools: Arc::clone(&self.remotes),
+            broken: Arc::clone(&self.broken),
             session: session.to_owned(),
         }
     }
 }
 
 async fn connect(server: &McpServer, agent_token: &str) -> Result<Client, String> {
+    if !(server.url.starts_with("https://") || server.url.starts_with("http://")) {
+        return Err(format!(
+            "MCP server `{}`: url must start with http:// or https://",
+            server.name
+        ));
+    }
     let mut headers = HashMap::new();
     for (name, value) in &server.headers {
         let header_name = name
@@ -212,12 +247,24 @@ impl McpHost {
         params.meta = Some(meta);
         match tokio::time::timeout(CALL_TIMEOUT, remote.client.call_tool(params)).await {
             Ok(Ok(result)) => tool_output(result),
+            Ok(Err(ServiceError::McpError(error))) => {
+                tracing::warn!(server = %remote.server, tool = %call.name, %error, "MCP call returned an error");
+                ToolOutput::error(format!("The tool call failed: {}", error.message))
+            }
             Ok(Err(error)) => {
-                tracing::warn!(server = %remote.server, tool = %call.name, %error, "MCP call failed");
-                ToolOutput::error(format!("The tool call failed: {error}"))
+                if matches!(
+                    error,
+                    ServiceError::TransportSend(_) | ServiceError::TransportClosed
+                ) {
+                    self.broken.store(true, Ordering::Relaxed);
+                }
+                tracing::warn!(server = %remote.server, tool = %call.name, %error, "MCP call lost its connection");
+                ToolOutput::error(format!(
+                    "The connection to the tool broke during the call, so {OUTCOME_UNKNOWN}"
+                ))
             }
             Err(_) => ToolOutput::error(format!(
-                "The tool call did not finish within {} seconds.",
+                "The tool call did not answer within {} seconds, so {OUTCOME_UNKNOWN}",
                 CALL_TIMEOUT.as_secs()
             )),
         }
@@ -258,7 +305,12 @@ fn tool_output(result: CallToolResult) -> ToolOutput {
     let meta = result.meta.as_deref();
     let summary = meta_field::<String>(meta, META_SUMMARY);
     let invalidate = meta_field::<Vec<PageKey>>(meta, META_INVALIDATE);
-    let pages = meta_field::<Vec<Page>>(meta, META_PAGES);
+    let pages = meta_field::<Vec<Page>>(meta, META_PAGES).and_then(|pages| {
+        if let Some(pages) = &pages {
+            crate::context::check_pages(pages)?;
+        }
+        Ok(pages)
+    });
     match (summary, invalidate, pages) {
         (Ok(summary), Ok(invalidate), Ok(pages)) => {
             output.summary = summary;
@@ -270,7 +322,10 @@ fn tool_output(result: CallToolResult) -> ToolOutput {
                 .into_iter()
                 .flatten()
                 .collect();
-            tracing::error!(problems = %problems.join("; "), "MCP result had invalid newt metadata, ignored it");
+            tracing::error!(problems = %problems.join("; "), "MCP result had invalid newt metadata");
+            output.invalidate = vec![Vec::new()];
+            output.content.push('\n');
+            output.content.push_str(BAD_META);
         }
     }
     output

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use newt_core::journal::NoJournal;
+use newt_core::journal::{JournalEntry, NoJournal};
 use newt_core::message::{Message, Part, Role, ToolCall};
 use newt_core::prompt::{Lane, ModelRequest, ToolSpec};
 use newt_core::provider::{
@@ -178,7 +178,7 @@ async fn a_read_waits_for_the_refetch_already_in_flight() {
 }
 
 #[tokio::test]
-async fn an_invalidation_during_a_refetch_keeps_the_page_stale() {
+async fn an_invalidation_during_a_refetch_triggers_another_fetch() {
     let backing = seeded(Backing::gated());
     let workspace = workspace(&backing);
     workspace.invalidate(&[key(&["customer"])]);
@@ -190,10 +190,15 @@ async fn an_invalidation_during_a_refetch_keeps_the_page_stale() {
     backing.write("profile.md", "Remote or Berlin");
     workspace.invalidate(&[key(&["customer"])]);
     backing.release();
+    until_fetches(&backing, 2).await;
+    assert!(
+        workspace.is_stale("profile.md"),
+        "the first result predates the invalidation"
+    );
+    backing.release();
     refresh.await.unwrap().unwrap();
 
-    assert!(workspace.is_stale("profile.md"));
-    backing.release();
+    assert!(!workspace.is_stale("profile.md"));
     let content = workspace.read("profile.md").await.unwrap();
     assert_eq!(content.as_deref(), Some("Remote or Berlin"));
     assert_eq!(backing.fetches(), 2);
@@ -308,7 +313,17 @@ fn assistant(id: &str, name: &str, arguments: serde_json::Value) -> Message {
 }
 
 async fn write_then_read(return_pages: bool) -> (Vec<Message>, Arc<Backing>) {
+    write_then_read_with(return_pages, Vec::new()).await
+}
+
+async fn write_then_read_with(
+    return_pages: bool,
+    replay: Vec<JournalEntry>,
+) -> (Vec<Message>, Arc<Backing>) {
     let backing = seeded(Backing::default());
+    if !replay.is_empty() {
+        backing.write("profile.md", "Remote or Berlin");
+    }
     let workspace = workspace(&backing);
     let script = vec![
         assistant("r1", "read_file", json!({ "paths": ["profile.md"] })),
@@ -351,7 +366,7 @@ async fn write_then_read(return_pages: bool) -> (Vec<Message>, Arc<Backing>) {
             history: &[],
             events: vec![Message::user_text("Berlin works too.")],
             workspace: &workspace,
-            replay: Vec::new(),
+            replay,
         },
         &TurnSettings {
             model: "scripted",
@@ -386,4 +401,63 @@ async fn a_write_tool_invalidates_a_page_and_the_next_read_sees_the_refetch() {
 async fn pages_returned_by_a_tool_are_used_without_a_fetch() {
     let (_, backing) = write_then_read(true).await;
     assert_eq!(backing.fetches(), 0);
+}
+
+#[tokio::test]
+async fn grep_waits_for_a_refetch_already_in_flight() {
+    let backing = seeded(Backing::gated());
+    let workspace = workspace(&backing);
+    workspace.read("roles/acme.md").await.unwrap();
+    backing.write("roles/acme.md", "Acme: staff engineer");
+    workspace.invalidate(&[key(&["roles"])]);
+    workspace.refresh_read_pages_in_background();
+    until_fetches(&backing, 1).await;
+
+    let search = tokio::spawn({
+        let workspace = workspace.clone();
+        async move { workspace.grep("staff", None, 10).await }
+    });
+    backing.release();
+    let found = search.await.unwrap().unwrap();
+    assert_eq!(found.len(), 1, "grep must search the refetched page");
+    assert_eq!(backing.fetches(), 1);
+}
+
+#[tokio::test]
+async fn a_cancelled_refetch_releases_the_page_for_the_next_read() {
+    let backing = seeded(Backing::gated());
+    let workspace = workspace(&backing);
+    workspace.invalidate(&[key(&["customer"])]);
+    let stuck = tokio::spawn({
+        let workspace = workspace.clone();
+        async move { workspace.read("profile.md").await }
+    });
+    until_fetches(&backing, 1).await;
+    stuck.abort();
+    assert!(stuck.await.unwrap_err().is_cancelled());
+
+    backing.release();
+    let content = tokio::time::timeout(Duration::from_secs(2), workspace.read("profile.md"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(content.as_deref(), Some("Remote only"));
+    assert_eq!(backing.fetches(), 2);
+}
+
+#[tokio::test]
+async fn a_replayed_write_never_restores_its_old_page_data() {
+    let mut stale = ToolOutput::ok("{\"saved\":true}");
+    stale.pages = vec![Page {
+        key: key(&["customer", "profile"]),
+        path: "profile.md".into(),
+        version: "0".into(),
+        content: "written before the crash".into(),
+    }];
+    let replay = vec![JournalEntry::ToolOutput {
+        call_id: "w1".into(),
+        output: stale,
+    }];
+    let (committed, _) = write_then_read_with(false, replay).await;
+    assert!(!format!("{committed:?}").contains("written before the crash"));
 }

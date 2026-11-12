@@ -177,10 +177,10 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
             output.content = project(&output.content, projection);
         }
     }
-    let batch_failed = outputs
+    let batch_failed = tool_calls
         .iter()
-        .enumerate()
-        .any(|(slot, (output, _))| output.is_error && Some(slot) != end_slot);
+        .zip(&outputs)
+        .any(|(call, (output, _))| output.is_error && call.name != END_TURN);
     if batch_failed
         && end.take().is_some()
         && let Some(slot) = end_slot
@@ -189,7 +189,7 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         entry.0 = failure(END_TURN_BLOCKED);
     }
 
-    apply_workspace_changes(tool_calls, &mut outputs, context);
+    apply_workspace_changes(tool_calls, &mut outputs, context, replay);
     finish_batch(&expanded, outputs, end, context, deps.sink)
 }
 
@@ -294,6 +294,7 @@ fn apply_workspace_changes(
     tool_calls: &[ToolCall],
     outputs: &mut [(ToolOutput, u64)],
     context: &TurnContext<'_>,
+    replay: &Replay,
 ) {
     let workspace = context.workspace;
     let mut changed = false;
@@ -306,7 +307,10 @@ fn apply_workspace_changes(
             prefixes.extend(declared.iter().cloned());
         }
         let mut touched = workspace.invalidate(&prefixes);
-        touched.extend(workspace.put(std::mem::take(&mut output.pages)));
+        let pages = std::mem::take(&mut output.pages);
+        if replay.output(&call.id).is_none() {
+            touched.extend(workspace.put(pages));
+        }
         if touched.is_empty() {
             continue;
         }

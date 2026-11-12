@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::message::{Message, Part, ToolResult};
 use crate::tools::Retention;
 
-const UNSUMMARIZED_RESULT_LIMIT: usize = 500;
+pub(crate) const UNSUMMARIZED_RESULT_LIMIT: usize = 500;
 
 pub(crate) struct CommitRules<'a> {
     pub retention: &'a HashMap<String, Retention>,
@@ -61,7 +61,7 @@ fn compact(result: ToolResult, summaries: &HashMap<String, String>) -> ToolResul
     ToolResult { content, ..result }
 }
 
-fn truncate(text: &str, limit: usize) -> String {
+pub(crate) fn truncate(text: &str, limit: usize) -> String {
     match text.char_indices().nth(limit) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_owned(),

@@ -101,6 +101,7 @@ impl ToolHost for RecordingHost {
                 )),
                 ..ToolOutput::default()
             },
+            "save_raw" => ToolOutput::ok("{\"raw\":true}"),
             "send_message" => ToolOutput {
                 content: "{\"delivered\":true}".into(),
                 is_error: false,
@@ -141,6 +142,7 @@ fn external_tools() -> Vec<ToolDef> {
     };
     vec![
         tool("save_note", Retention::Durable),
+        tool("save_raw", Retention::Durable),
         tool("send_message", Retention::Outward),
         tool("fail_send", Retention::Outward),
     ]
@@ -631,4 +633,60 @@ async fn fields_and_limit_trim_what_the_model_sees_from_a_batched_call() {
         })
         .unwrap();
     assert_eq!(folded, "[1] save_note: {\"note\":{\"id\":7}}");
+}
+
+#[tokio::test]
+async fn a_second_end_turn_in_one_message_does_not_cancel_the_first() {
+    let script = vec![assistant(vec![
+        call("e1", "end_turn", json!({ "nothing_new": "done" })),
+        call("e2", "end_turn", json!({ "nothing_new": "done again" })),
+    ])];
+    let outcome = run(script, 2, &external_tools()).await.outcome.unwrap();
+    assert_eq!(outcome.end.nothing_new.as_deref(), Some("done"));
+}
+
+#[tokio::test]
+async fn a_kept_batch_commits_only_its_writes_even_without_summaries() {
+    let script = vec![
+        assistant(vec![batch(
+            "b1",
+            json!([
+                { "name": "read_file", "arguments": { "paths": ["profile.md"] } },
+                { "name": "save_raw", "arguments": {} },
+            ]),
+        )]),
+        assistant(vec![call("e1", "end_turn", json!({ "recorded": ["raw"] }))]),
+    ];
+    let outcome = run(script, 4, &external_tools()).await.outcome.unwrap();
+    let committed = format!("{:?}", outcome.committed);
+    assert!(
+        committed.contains("save_raw: {\\\"raw\\\":true}"),
+        "{committed}"
+    );
+    assert!(!committed.contains("profile.md ---"), "{committed}");
+    assert!(!committed.contains("Prefers remote"), "{committed}");
+}
+
+#[tokio::test]
+async fn a_batch_whose_send_failed_still_leaves_a_trace_in_history() {
+    let script = vec![
+        assistant(vec![batch(
+            "b1",
+            json!([
+                { "name": "read_file", "arguments": { "paths": ["profile.md"] } },
+                { "name": "fail_send", "arguments": {} },
+            ]),
+        )]),
+        assistant(vec![call(
+            "e1",
+            "end_turn",
+            json!({ "nothing_new": "send failed" }),
+        )]),
+    ];
+    let outcome = run(script, 4, &external_tools()).await.outcome.unwrap();
+    let committed = format!("{:?}", outcome.committed);
+    assert!(
+        committed.contains("fail_send failed: provider down"),
+        "{committed}"
+    );
 }

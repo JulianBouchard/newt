@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::commit::{UNSUMMARIZED_RESULT_LIMIT, truncate};
 use crate::message::{ToolCall, ToolResult};
 use crate::prompt::ToolSpec;
 use crate::tools::{END_TURN, Retention, ToolDef, ToolOutput};
@@ -15,7 +16,7 @@ pub(crate) fn batch_tool() -> ToolDef {
         ToolSpec {
             name: BATCH.to_owned(),
             description: format!(
-                "Run up to {MAX_CALLS} tool calls in one step. They run in parallel, except an outward call (one that sends or acts outside), which runs last; at most one per batch. `fields` keeps only those JSON fields of a result (dot paths such as `role.title`), `limit` caps how many list items come back."
+                "Run up to {MAX_CALLS} tool calls in one step. They run in parallel, except an outward call (one that sends or acts outside), which runs last; at most one per batch. Calls see the workspace as it was before the batch, so read a page you change in the next step. `fields` keeps only those JSON fields of a result (dot paths such as `role.title`), `limit` caps how many list items come back."
             ),
             input_schema: json!({
                 "type": "object",
@@ -261,7 +262,7 @@ pub(crate) fn fold(
             }
             Group::Batch { id, inner } => {
                 let mut lines = Vec::with_capacity(inner.len());
-                let mut inner_summaries = Vec::new();
+                let mut kept_lines = Vec::new();
                 let mut failures = 0;
                 for (position, slot) in inner.iter().enumerate() {
                     let Some(result) = results.get_mut(*slot).and_then(Option::take) else {
@@ -271,15 +272,22 @@ pub(crate) fn fold(
                         .calls
                         .get(*slot)
                         .map_or("?", |call| call.name.as_str());
+                    let summary = summaries.remove(&result.call_id);
                     if retention
                         .get(name)
                         .is_some_and(|class| *class != Retention::Ephemeral)
-                        && !result.is_error
                     {
-                        folded.kept.insert(id.clone());
-                    }
-                    if let Some(summary) = summaries.remove(&result.call_id) {
-                        inner_summaries.push(summary);
+                        kept_lines.push(match (&summary, result.is_error) {
+                            (Some(summary), false) => summary.clone(),
+                            (_, true) => format!(
+                                "{name} failed: {}",
+                                truncate(&result.content, UNSUMMARIZED_RESULT_LIMIT)
+                            ),
+                            (None, false) => format!(
+                                "{name}: {}",
+                                truncate(&result.content, UNSUMMARIZED_RESULT_LIMIT)
+                            ),
+                        });
                     }
                     let status = if result.is_error {
                         failures += 1;
@@ -293,10 +301,9 @@ pub(crate) fn fold(
                         result.content
                     ));
                 }
-                if !inner_summaries.is_empty() {
-                    folded
-                        .summaries
-                        .insert(id.clone(), inner_summaries.join("; "));
+                if !kept_lines.is_empty() {
+                    folded.kept.insert(id.clone());
+                    folded.summaries.insert(id.clone(), kept_lines.join("; "));
                 }
                 folded.results.push(ToolResult {
                     call_id: id.clone(),

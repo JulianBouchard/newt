@@ -237,3 +237,12 @@ async fn an_unreachable_mcp_server_in_the_bootstrap_fails_loudly() {
     let error = prepare_error(&provider, TOKEN).await;
     assert!(error.contains("MCP server `app`"), "{error}");
 }
+
+#[test]
+fn the_provider_token_never_appears_in_debug_output() {
+    let endpoint = ProviderEndpoint {
+        base_url: "https://provider.test".into(),
+        token: "super-secret-token".into(),
+    };
+    assert!(!format!("{endpoint:?}").contains("super-secret-token"));
+}

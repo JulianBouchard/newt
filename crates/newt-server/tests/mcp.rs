@@ -94,6 +94,7 @@ impl ServerHandler for Server {
                 "A tool that knows nothing about newt.",
                 schema(),
             ),
+            Tool::new("bad_meta", "Returns broken newt metadata.", schema()),
         ]))
     }
 
@@ -134,6 +135,9 @@ impl ServerHandler for Server {
                 }))),
             ),
             "lookup_role" => CallToolResult::error(vec![ContentBlock::text("no such role")]),
+            "bad_meta" => CallToolResult::success(vec![ContentBlock::text("done")]).with_meta(
+                Some(meta(json!({ "newt/pages": [{ "key": [], "path": "", "version": "1", "content": "" }] }))),
+            ),
             _ => CallToolResult::success(vec![ContentBlock::text("plain")]),
         };
         Ok(result.into())
@@ -141,16 +145,26 @@ impl ServerHandler for Server {
 }
 
 async fn spawn_server(server: Server) -> String {
-    let service: StreamableHttpService<Server, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(server.clone()),
-        Arc::default(),
-        StreamableHttpServerConfig::default(),
-    );
+    spawn_stoppable(server).await.0
+}
+
+async fn spawn_stoppable(server: Server) -> (String, CancellationToken) {
+    let stop = CancellationToken::new();
+    let mut config = StreamableHttpServerConfig::default();
+    config.cancellation_token = stop.clone();
+    let service: StreamableHttpService<Server, LocalSessionManager> =
+        StreamableHttpService::new(move || Ok(server.clone()), Arc::default(), config);
     let router = axum::Router::new().nest_service("/mcp", service);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    format!("http://{address}/mcp")
+    let shutdown = stop.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    (format!("http://{address}/mcp"), stop)
 }
 
 async fn connect(calls: &Arc<Calls>, outward_idempotent: bool) -> Result<Toolset, String> {
@@ -371,4 +385,84 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
     let committed = format!("{:?}", outcome.committed);
     assert!(committed.contains("Saved: Remote or Berlin"), "{committed}");
     assert!(!committed.contains("--- profile.md ---"), "{committed}");
+}
+
+#[tokio::test]
+async fn invalid_result_metadata_is_loud_and_marks_every_page_stale() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect(&calls, true).await.unwrap();
+    let output = toolset
+        .host("customer-7")
+        .call(&call("c1", "bad_meta", json!({})), "k1")
+        .await;
+    assert_eq!(output.pages, Vec::<Page>::new());
+    assert_eq!(output.invalidate, vec![Vec::<String>::new()]);
+    assert!(
+        output.content.contains("every page will be refetched"),
+        "{}",
+        output.content
+    );
+}
+
+#[tokio::test]
+async fn a_server_url_that_is_not_http_is_refused() {
+    let error = Toolset::connect(
+        &[McpServer {
+            name: "app".into(),
+            url: "ftp://example.test/mcp".into(),
+            headers: BTreeMap::new(),
+            auth: McpAuth::AgentToken,
+        }],
+        "agent-token",
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("http"), "{error}");
+}
+
+#[test]
+fn header_values_never_appear_in_debug_output() {
+    let server = McpServer {
+        name: "app".into(),
+        url: "https://example.test/mcp".into(),
+        headers: BTreeMap::from([("x-api-key".to_owned(), "super-secret-value".to_owned())]),
+        auth: McpAuth::None,
+    };
+    let printed = format!("{server:?}");
+    assert!(printed.contains("x-api-key"));
+    assert!(!printed.contains("super-secret-value"));
+}
+
+#[tokio::test]
+async fn a_lost_connection_marks_the_toolset_broken_and_says_the_outcome_is_unknown() {
+    let calls = Arc::new(Calls::default());
+    let (url, stop) = spawn_stoppable(Server {
+        calls: Arc::clone(&calls),
+        outward_idempotent: true,
+    })
+    .await;
+    let toolset = Toolset::connect(
+        &[McpServer {
+            name: "app".into(),
+            url,
+            headers: BTreeMap::new(),
+            auth: McpAuth::None,
+        }],
+        "agent-token",
+    )
+    .await
+    .unwrap();
+    stop.cancel();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let output = toolset
+        .host("customer-7")
+        .call(&call("c1", "send_message", json!({ "text": "Hi" })), "k1")
+        .await;
+    assert!(output.is_error);
+    assert!(
+        output.content.contains("Do not repeat it"),
+        "{}",
+        output.content
+    );
+    assert!(toolset.is_broken());
 }

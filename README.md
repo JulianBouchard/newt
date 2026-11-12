@@ -45,6 +45,8 @@ Newt reads and writes a few `_meta` fields; a server that ignores them still wor
 | result | `newt/invalidate` | more page key prefixes to mark stale |
 | result | `newt/pages` | fresh page data, used without a refetch |
 
+Invalidation only reaches pages newt already has, so a tool that creates a page returns it in `newt/pages`. A result whose newt metadata is malformed marks every page stale. When a call times out or loses its connection, the model is told the outcome is unknown and not to repeat it, and the connections are rebuilt on the next turn.
+
 ## License
 
 Apache-2.0 or MIT, at your option.
