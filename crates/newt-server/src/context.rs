@@ -59,7 +59,8 @@ const fn default_max_model_calls() -> u32 {
 #[serde(deny_unknown_fields)]
 struct TurnContext {
     version: String,
-    pages: Vec<Page>,
+    #[serde(default)]
+    pages: Option<Vec<Page>>,
     #[serde(default)]
     instructions: Option<String>,
     #[serde(default)]
@@ -295,7 +296,9 @@ impl ContextProviderBackend {
             endpoint: Arc::clone(endpoint),
         };
         let turn: TurnContext = client.call("turn", Some(json!({ "session": key }))).await?;
-        check_pages(&turn.pages)?;
+        if let Some(pages) = &turn.pages {
+            check_pages(pages)?;
+        }
         let loaded = self.load(agent, &client, &turn.version).await?;
         let bootstrap = &loaded.bootstrap;
         let source = ProviderPages {
@@ -307,7 +310,10 @@ impl ContextProviderBackend {
             tools: loaded.toolset.tools.clone(),
             context: turn.render(),
             skills: bootstrap.skills.clone(),
-            workspace: Workspace::with_source(turn.pages, Arc::new(source)),
+            workspace: match turn.pages {
+                Some(pages) => Workspace::with_source(pages, Arc::new(source)),
+                None => Workspace::loading(Arc::new(source)),
+            },
             model: bootstrap.model.clone(),
             first_call_effort: bootstrap.first_call_effort,
             effort: bootstrap.effort,

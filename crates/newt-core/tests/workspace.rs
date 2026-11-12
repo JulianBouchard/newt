@@ -99,7 +99,9 @@ impl PageSource for Source {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|(_, (page_key, _, _))| keys.contains(page_key))
+                .filter(|(_, (page_key, _, _))| {
+                    keys.iter().any(|key| key.is_empty() || key == page_key)
+                })
                 .map(|(path, _)| path.clone())
                 .collect();
             Ok(paths.iter().map(|path| backing.page(path)).collect())
@@ -467,4 +469,68 @@ async fn a_replayed_write_never_restores_its_old_page_data() {
     }];
     let (committed, _) = write_then_read_with(false, replay).await;
     assert!(!format!("{committed:?}").contains("written before the crash"));
+}
+
+fn loading(backing: &Arc<Backing>) -> Workspace {
+    Workspace::loading(Arc::new(Source(Arc::clone(backing))))
+}
+
+#[tokio::test]
+async fn a_loading_workspace_serves_reads_after_one_shared_load() {
+    let backing = seeded(Backing::gated());
+    let workspace = loading(&backing);
+    until_fetches(&backing, 1).await;
+    let reads: Vec<_> = (0..3)
+        .map(|_| {
+            let workspace = workspace.clone();
+            tokio::spawn(async move { workspace.read("profile.md").await })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        reads.iter().all(|read| !read.is_finished()),
+        "reads wait for the load"
+    );
+    backing.release();
+    for read in reads {
+        assert_eq!(read.await.unwrap().unwrap().as_deref(), Some("Remote only"));
+    }
+    assert_eq!(backing.fetches(), 1, "one load serves every read");
+    assert_eq!(workspace.glob("*.md").await.unwrap(), vec!["profile.md"]);
+}
+
+#[tokio::test]
+async fn an_invalidation_during_the_load_is_applied_when_it_lands() {
+    let backing = seeded(Backing::gated());
+    let workspace = loading(&backing);
+    until_fetches(&backing, 1).await;
+    workspace.invalidate(&[key(&["customer"])]);
+    backing.write("profile.md", "Remote or Berlin");
+    backing.release();
+    backing.release();
+    let content = workspace.read("profile.md").await.unwrap();
+    assert_eq!(content.as_deref(), Some("Remote or Berlin"));
+    assert_eq!(backing.fetches(), 2);
+}
+
+#[tokio::test]
+async fn data_put_during_the_load_is_not_overwritten_by_it() {
+    let backing = seeded(Backing::gated());
+    let workspace = loading(&backing);
+    until_fetches(&backing, 1).await;
+    let mut fresh = backing.page("profile.md");
+    fresh.content = "Remote or Berlin".into();
+    workspace.put(vec![fresh]);
+    backing.release();
+    let content = workspace.read("profile.md").await.unwrap();
+    assert_eq!(content.as_deref(), Some("Remote or Berlin"));
+}
+
+#[tokio::test]
+async fn a_failed_load_fails_reads_loudly() {
+    let backing = seeded(Backing::default());
+    backing.fail.store(true, Ordering::SeqCst);
+    let workspace = loading(&backing);
+    assert!(workspace.read("profile.md").await.is_err());
+    assert!(workspace.glob("*").await.is_err());
 }

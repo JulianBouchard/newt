@@ -243,7 +243,10 @@ pub(crate) async fn run_workspace_tool(call: &ToolCall, workspace: &Workspace) -
             Ok(args) => read_file(workspace, &args.paths).await,
             Err(message) => Err(message),
         },
-        "glob" => parse(call).and_then(|args: GlobArgs| glob(workspace, &args.pattern)),
+        "glob" => match parse::<GlobArgs>(call) {
+            Ok(args) => glob(workspace, &args.pattern).await,
+            Err(message) => Err(message),
+        },
         "grep" => match parse::<GrepArgs>(call) {
             Ok(args) => grep(workspace, &args).await,
             Err(message) => Err(message),
@@ -279,8 +282,11 @@ async fn read_file(workspace: &Workspace, paths: &[String]) -> Result<String, St
     Ok(out)
 }
 
-fn glob(workspace: &Workspace, pattern: &str) -> Result<String, String> {
-    let paths = workspace.glob(pattern).map_err(|error| error.to_string())?;
+async fn glob(workspace: &Workspace, pattern: &str) -> Result<String, String> {
+    let paths = workspace
+        .glob(pattern)
+        .await
+        .map_err(|error| error.to_string())?;
     if paths.is_empty() {
         return Ok("(no matching pages)".to_owned());
     }

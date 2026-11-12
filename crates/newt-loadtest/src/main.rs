@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
-  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2]
+  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false]
   newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
                     [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--timeout-s 300]
                     [--fake http://127.0.0.1:9100] [--mock http://127.0.0.1:9200]";
@@ -142,6 +142,8 @@ async fn main() -> anyhow::Result<()> {
                 &format!("http://{listen}"),
                 flags.number("speed", 1.0)?,
                 flags.number("seed", 2)?,
+                flags.number("render-ms", 0.0)?,
+                flags.text("lazy-pages", "false") == "true",
             );
             serve(&listen, mock_app::router(app)).await
         }

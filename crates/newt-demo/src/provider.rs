@@ -66,6 +66,9 @@ async fn turn(State(demo): State<Arc<Demo>>, Json(request): Json<TurnRequest>) -
 
 async fn pages(State(demo): State<Arc<Demo>>, Json(request): Json<PagesRequest>) -> Json<Value> {
     let pages: Vec<_> = demo.with(&request.session, |session| {
+        if request.keys.iter().any(Vec::is_empty) {
+            return session.pages();
+        }
         request
             .keys
             .iter()

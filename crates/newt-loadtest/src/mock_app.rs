@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::args::{PAGES, SKILLS};
 use crate::profile::{Kind, ASSISTANT_TOOLS};
-use crate::sample::Rng;
+use crate::sample::{Rng, Spread};
 
 const VERSION: &str = "loadtest-1";
 const PREFIX_BYTES: usize = 30_000;
@@ -27,6 +27,8 @@ const PAGE_BYTES: usize = 1_500;
 pub struct MockApp {
     rng: Rng,
     speed: f64,
+    render: Spread,
+    lazy_pages: bool,
     public_url: String,
     instructions: String,
     pub tool_calls: AtomicU64,
@@ -34,7 +36,13 @@ pub struct MockApp {
 }
 
 impl MockApp {
-    pub fn new(public_url: &str, speed: f64, rng_seed: u64) -> Arc<Self> {
+    pub fn new(
+        public_url: &str,
+        speed: f64,
+        rng_seed: u64,
+        render_ms: f64,
+        lazy_pages: bool,
+    ) -> Arc<Self> {
         let rng = Rng::new(rng_seed);
         let mut instructions = String::from(
             "You are a customer assistant. Read the workspace, act with your tools, then end the turn.\n",
@@ -46,6 +54,8 @@ impl MockApp {
         Arc::new(Self {
             rng,
             speed,
+            render: Spread::new(render_ms, render_ms * 2.0),
+            lazy_pages,
             public_url: public_url.trim_end_matches('/').to_owned(),
             instructions,
             tool_calls: AtomicU64::new(0),
@@ -107,10 +117,15 @@ async fn bootstrap(State(app): State<Arc<MockApp>>) -> Json<Value> {
 }
 
 async fn turn(State(app): State<Arc<MockApp>>) -> Json<Value> {
+    if app.lazy_pages {
+        return Json(json!({ "version": VERSION }));
+    }
+    tokio::time::sleep(app.render.millis(&app.rng, app.speed)).await;
     Json(json!({ "version": VERSION, "pages": app.pages() }))
 }
 
 async fn pages(State(app): State<Arc<MockApp>>, Json(request): Json<PagesRequest>) -> Json<Value> {
+    tokio::time::sleep(app.render.millis(&app.rng, app.speed)).await;
     let wanted: Vec<Value> = app
         .pages()
         .into_iter()

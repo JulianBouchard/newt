@@ -49,6 +49,8 @@ struct State {
     read: HashSet<String>,
     generation: HashMap<String, u64>,
     clock: u64,
+    loading: bool,
+    invalidated_while_loading: Vec<PageKey>,
 }
 
 impl State {
@@ -72,6 +74,7 @@ struct Inner {
     state: Mutex<State>,
     source: Option<Arc<dyn PageSource>>,
     background: Mutex<Vec<tokio::task::AbortHandle>>,
+    initial: tokio::sync::OnceCell<Result<(), String>>,
 }
 
 impl Drop for Inner {
@@ -141,8 +144,67 @@ impl Workspace {
                 state: Mutex::new(state),
                 source,
                 background: Mutex::new(Vec::new()),
+                initial: tokio::sync::OnceCell::new(),
             }),
         }
+    }
+
+    pub fn loading(source: Arc<dyn PageSource>) -> Self {
+        let workspace = Self::from_pages(Vec::new(), Some(source));
+        workspace.lock().loading = true;
+        let weak = Arc::downgrade(&workspace.inner);
+        let task = tokio::spawn(async move {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            if let Err(error) = (Self { inner }).loaded().await {
+                tracing::warn!(%error, "workspace pages did not load; reads will report it");
+            }
+        });
+        workspace.track(task.abort_handle());
+        workspace
+    }
+
+    fn track(&self, handle: tokio::task::AbortHandle) {
+        let mut background = match self.inner.background.lock() {
+            Ok(background) => background,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        background.retain(|handle| !handle.is_finished());
+        background.push(handle);
+    }
+
+    async fn loaded(&self) -> Result<(), WorkspaceError> {
+        if !self.lock().loading {
+            return Ok(());
+        }
+        self.inner
+            .initial
+            .get_or_init(|| self.load_all())
+            .await
+            .clone()
+            .map_err(WorkspaceError::Refresh)
+    }
+
+    async fn load_all(&self) -> Result<(), String> {
+        let source = self
+            .inner
+            .source
+            .clone()
+            .ok_or_else(|| "this workspace has no page source".to_owned())?;
+        let pages = source.fetch(vec![Vec::new()]).await?;
+        let pending = {
+            let mut state = self.lock();
+            for page in pages {
+                if !state.pages.contains_key(&page.path) {
+                    state.pages.insert(page.path.clone(), page);
+                }
+            }
+            state.loading = false;
+            std::mem::take(&mut state.invalidated_while_loading)
+        };
+        self.invalidate(&pending);
+        Ok(())
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -176,6 +238,7 @@ impl Workspace {
     }
 
     pub async fn read(&self, path: &str) -> Result<Option<String>, WorkspaceError> {
+        self.loaded().await?;
         loop {
             let next = {
                 let mut state = self.lock();
@@ -198,8 +261,9 @@ impl Workspace {
         }
     }
 
-    pub fn glob(&self, pattern: &str) -> Result<Vec<String>, WorkspaceError> {
+    pub async fn glob(&self, pattern: &str) -> Result<Vec<String>, WorkspaceError> {
         let matcher = matcher(pattern)?;
+        self.loaded().await?;
         Ok(self
             .lock()
             .pages
@@ -218,6 +282,7 @@ impl Workspace {
         let regex =
             Regex::new(pattern).map_err(|error| WorkspaceError::Regex(error.to_string()))?;
         let within = within.map(matcher).transpose()?;
+        self.loaded().await?;
         let outdated: Vec<String> = self.lock().stale.iter().cloned().collect();
         self.refresh(outdated).await?;
         let state = self.lock();
@@ -275,6 +340,11 @@ impl Workspace {
             state.touch(path);
             state.stale.insert(path.clone());
         }
+        if state.loading {
+            state
+                .invalidated_while_loading
+                .extend(prefixes.iter().cloned());
+        }
         matched
     }
 
@@ -300,12 +370,7 @@ impl Workspace {
                 tracing::warn!(%error, "background page refresh failed; reads will retry");
             }
         });
-        let mut background = match self.inner.background.lock() {
-            Ok(background) => background,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        background.retain(|handle| !handle.is_finished());
-        background.push(task.abort_handle());
+        self.track(task.abort_handle());
     }
 
     pub async fn refresh(&self, paths: Vec<String>) -> Result<(), WorkspaceError> {

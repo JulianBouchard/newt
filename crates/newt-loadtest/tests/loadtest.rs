@@ -35,7 +35,7 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let app_url = format!("http://{}", listener.local_addr().unwrap());
-    let app = MockApp::new(&app_url, SPEED, 12);
+    let app = MockApp::new(&app_url, SPEED, 12, 0.0, false);
     tokio::spawn({
         let router = mock_app::router(Arc::clone(&app));
         async move { axum::serve(listener, router).await.unwrap() }
