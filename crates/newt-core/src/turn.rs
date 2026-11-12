@@ -27,6 +27,7 @@ const CHECKPOINT_REMINDER: &str = "Compaction ends with a call to checkpoint. Ca
 #[derive(Debug)]
 pub struct TurnInput<'a> {
     pub session: &'a str,
+    pub cache_key: &'a str,
     pub turn: &'a str,
     pub system: &'a str,
     pub external_tools: &'a [ToolDef],
@@ -115,6 +116,7 @@ impl TurnContext<'_> {
 
 pub(crate) struct TurnIds<'a> {
     pub(crate) session: &'a str,
+    pub(crate) cache_key: &'a str,
     pub(crate) turn: &'a str,
 }
 
@@ -202,6 +204,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     let context = TurnContext {
         ids: TurnIds {
             session: input.session,
+            cache_key: input.cache_key,
             turn: input.turn,
         },
         system: &system,
@@ -326,7 +329,7 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
                 settings.effort
             },
             max_output_tokens: settings.max_output_tokens,
-            cache_key: context.ids.session,
+            cache_key: context.ids.cache_key,
             lane: settings.lane,
         };
         let next = next_response(

@@ -77,14 +77,21 @@ pub struct Events {
 pub struct Runner {
     #[serde(default = "default_max_sessions")]
     pub max_sessions: usize,
+    #[serde(default = "default_cache_key_buckets")]
+    pub cache_key_buckets: u32,
 }
 
 impl Default for Runner {
     fn default() -> Self {
         Self {
             max_sessions: default_max_sessions(),
+            cache_key_buckets: default_cache_key_buckets(),
         }
     }
+}
+
+const fn default_cache_key_buckets() -> u32 {
+    1
 }
 
 const fn default_max_sessions() -> usize {
@@ -135,6 +142,9 @@ impl ServerConfig {
         config.check_routes()?;
         config.check_model_chains()?;
         config.check_agents()?;
+        if config.runner.cache_key_buckets == 0 {
+            bail!("runner cache_key_buckets must be at least 1");
+        }
         if config.runner.max_sessions == 0 {
             bail!("runner max_sessions must be at least 1");
         }

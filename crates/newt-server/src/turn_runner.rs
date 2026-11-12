@@ -127,7 +127,8 @@ async fn run_one_turn<B: Backend, M: Model>(
         lease.agent.clone(),
         lease.key.clone(),
     );
-    let cache_key = format!("{}/{}", lease.agent, lease.key);
+    let session = format!("{}/{}", lease.agent, lease.key);
+    let cache_key = inner.config.cache_key(&lease.agent, &lease.key);
 
     let result = run_turn(
         &TurnDeps {
@@ -142,7 +143,8 @@ async fn run_one_turn<B: Backend, M: Model>(
             cancel: &turn_cancel,
         },
         TurnInput {
-            session: &cache_key,
+            session: &session,
+            cache_key: &cache_key,
             turn: &plan.turn_id,
             system: &prepared.system,
             external_tools: &prepared.tools,

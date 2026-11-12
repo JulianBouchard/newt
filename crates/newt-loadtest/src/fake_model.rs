@@ -74,7 +74,7 @@ pub struct FakeOptions {
     pub turn_marker: Option<String>,
 }
 
-const DUMP_LIMIT: u64 = 40;
+const DUMP_LIMIT: u64 = 400;
 
 impl FakeModel {
     pub fn new(timing: ModelTiming, options: FakeOptions) -> Arc<Self> {

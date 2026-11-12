@@ -142,6 +142,7 @@ async fn run(
         },
         TurnInput {
             session: "customer-1",
+            cache_key: "customer-1",
             turn: "t1",
             system: "You help one customer.",
             external_tools: &[send],

@@ -48,6 +48,7 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
         },
         TurnInput {
             session: &session,
+            cache_key: &inner.config.cache_key(&lease.agent, &lease.key),
             turn: &turn_id,
             system: &prepared.system,
             external_tools: &prepared.tools,

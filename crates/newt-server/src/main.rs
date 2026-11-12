@@ -87,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
         Routes::from_config(&config)?,
         RunnerConfig {
             max_sessions: config.runner.max_sessions,
+            cache_key_buckets: config.runner.cache_key_buckets,
             ..RunnerConfig::default()
         },
         instrumentation,

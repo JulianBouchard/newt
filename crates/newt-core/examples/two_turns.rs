@@ -119,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             TurnInput {
                 session: &session,
+                cache_key: &session,
                 turn: &turn,
                 system: &system,
                 external_tools: &[],

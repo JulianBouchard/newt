@@ -366,6 +366,7 @@ async fn write_then_read_with(
         },
         TurnInput {
             session: "customer-1",
+            cache_key: "customer-1",
             turn: "turn-1",
             system: "You are a helpful agent.",
             external_tools: &[save],

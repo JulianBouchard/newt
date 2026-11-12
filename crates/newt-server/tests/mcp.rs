@@ -380,6 +380,7 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
         },
         TurnInput {
             session: "customer-7",
+            cache_key: "customer-7",
             turn: "t1",
             system: "You help one customer.",
             external_tools: &toolset.tools,

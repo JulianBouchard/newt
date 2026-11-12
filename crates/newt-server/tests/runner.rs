@@ -84,6 +84,7 @@ fn fast() -> RunnerConfig {
         backoff_base: Duration::from_millis(10),
         max_attempts: 3,
         max_sessions: 8,
+        cache_key_buckets: 1,
     }
 }
 

@@ -212,6 +212,7 @@ async fn run_with(
         },
         TurnInput {
             session: "customer-1",
+            cache_key: "customer-1",
             turn: "turn-9",
             system: "You are a helpful agent.",
             external_tools: tools,
@@ -508,6 +509,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
         },
         TurnInput {
             session: "customer-1",
+            cache_key: "customer-1",
             turn: "turn-10",
             system: "You are a helpful agent.",
             external_tools: &external_tools(),

@@ -178,6 +178,7 @@ fn runner(
             backoff_base: Duration::from_millis(10),
             max_attempts: 5,
             max_sessions: 8,
+            cache_key_buckets: 1,
         },
         None,
         broadcast::channel(16).0,

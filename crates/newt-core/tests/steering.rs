@@ -157,6 +157,7 @@ async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) 
         },
         TurnInput {
             session: "s",
+            cache_key: "s",
             turn: "t",
             system: "You are a helpful agent.",
             external_tools: &[],

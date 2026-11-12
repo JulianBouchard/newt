@@ -160,6 +160,7 @@ async fn run(
         },
         TurnInput {
             session: "customer-1",
+            cache_key: "customer-1",
             turn: "turn-9",
             system: "You are a helpful agent.",
             external_tools: &tools(),
