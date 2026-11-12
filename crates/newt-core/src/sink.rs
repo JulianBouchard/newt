@@ -13,6 +13,29 @@ pub trait EventSink: Send + Sync {
     fn emit(&self, event: Event);
 }
 
+#[derive(Clone, Default)]
+pub struct MultiSink(pub Vec<Arc<dyn EventSink>>);
+
+impl std::fmt::Debug for MultiSink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("MultiSink")
+            .field(&self.0.len())
+            .finish()
+    }
+}
+
+impl EventSink for MultiSink {
+    fn emit(&self, event: Event) {
+        if let Some((last, rest)) = self.0.split_last() {
+            for sink in rest {
+                sink.emit(event.clone());
+            }
+            last.emit(event);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoSink;
 

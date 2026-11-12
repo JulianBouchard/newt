@@ -132,6 +132,7 @@ struct TurnState {
     kept: HashSet<String>,
     harness_notes: HashSet<usize>,
     calls: Vec<CallReport>,
+    traced: usize,
 }
 
 #[expect(
@@ -181,12 +182,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         prefix_fingerprint: layers.prefix_fingerprint(),
         history_fingerprint: layers.history_fingerprint(),
     };
-    sink.emit(Event::now(EventKind::TurnStarted {
-        session: input.session.to_owned(),
-        turn: input.turn.to_owned(),
-        history_messages: input.history.len(),
-        events: input.events.len(),
-    }));
+    sink.emit(turn_started(&input, settings));
     let (scratch, harness_notes) = initial_scratch(input.context, input.events);
     let mut state = TurnState {
         effects: false,
@@ -197,6 +193,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         kept: HashSet::new(),
         harness_notes,
         calls: Vec::new(),
+        traced: 0,
     };
 
     let result = drive(deps, &context, settings, &mut state).await;
@@ -244,6 +241,18 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     }
 }
 
+fn without_reasoning(message: &Message) -> Message {
+    Message {
+        role: message.role,
+        parts: message
+            .parts
+            .iter()
+            .filter(|part| !matches!(part, Part::Reasoning(_)))
+            .cloned()
+            .collect(),
+    }
+}
+
 struct Finish {
     end: EndTurn,
     checkpoint: Option<Checkpoint>,
@@ -286,9 +295,17 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
             cache_key: context.ids.session,
             lane: settings.lane,
         };
-        let Some(response) =
-            next_response(deps, &request, call, context, &mut state.replay).await?
-        else {
+        let next = next_response(
+            deps,
+            &request,
+            call,
+            context,
+            &mut state.replay,
+            state.traced,
+        )
+        .await?;
+        state.traced = state.scratch.len();
+        let Some(response) = next else {
             continue;
         };
         state.calls.push(CallReport {
@@ -367,6 +384,7 @@ async fn next_response<M: Model, H: ToolHost, S: Steering, J: Journal>(
     call: u32,
     context: &TurnContext<'_>,
     replay: &mut Replay,
+    traced: usize,
 ) -> Result<Option<ModelResponse>, TurnError> {
     if let Some((message, usage, stop)) = replay.take_response() {
         deps.sink.emit(Event::now(EventKind::ModelCallReplayed {
@@ -383,7 +401,7 @@ async fn next_response<M: Model, H: ToolHost, S: Steering, J: Journal>(
             request_ids: BTreeMap::new(),
         }));
     }
-    match call_model(deps, request, call, context).await? {
+    match call_model(deps, request, call, context, traced).await? {
         CallResult::Response(response) => {
             deps.journal.append(JournalEntry::ModelResponse {
                 call,
@@ -395,6 +413,16 @@ async fn next_response<M: Model, H: ToolHost, S: Steering, J: Journal>(
         }
         CallResult::Interrupted => Ok(None),
     }
+}
+
+fn turn_started(input: &TurnInput<'_>, settings: &TurnSettings<'_>) -> Event {
+    Event::now(EventKind::TurnStarted {
+        session: input.session.to_owned(),
+        turn: input.turn.to_owned(),
+        history_messages: input.history.len(),
+        events: input.events.len(),
+        compaction: settings.compaction.is_some(),
+    })
 }
 
 fn initial_scratch(
@@ -448,6 +476,7 @@ async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(
     request: &ModelRequest<'_>,
     call: u32,
     context: &TurnContext<'_>,
+    traced: usize,
 ) -> Result<CallResult, TurnError> {
     let ids = &context.ids;
     let sink = deps.sink;
@@ -460,6 +489,12 @@ async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(
         prefix: context.prefix_fingerprint.clone(),
         history: context.history_fingerprint.clone(),
         scratch: request.prompt.scratch_fingerprint(),
+        input: request
+            .prompt
+            .scratch
+            .get(traced..)
+            .unwrap_or_default()
+            .to_vec(),
     }));
     let output_started = AtomicBool::new(false);
     let mut on_event = |event: StreamEvent| {
@@ -506,6 +541,7 @@ async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(
                 stop: response.stop.clone(),
                 response_id: response.response_id.clone(),
                 request_ids: response.request_ids.clone(),
+                output: without_reasoning(&response.message),
             }));
             Ok(CallResult::Response(Box::new(response)))
         }

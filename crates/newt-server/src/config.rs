@@ -18,6 +18,30 @@ pub struct ServerConfig {
     pub models: BTreeMap<String, ModelChain>,
     #[serde(default)]
     pub agents: BTreeMap<String, Agent>,
+    #[serde(default)]
+    pub tracing: Option<Tracing>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tracing {
+    pub endpoint: String,
+    #[serde(default)]
+    pub profile: newt_core::otlp::Profile,
+    #[serde(default)]
+    pub headers_env: Option<String>,
+    #[serde(default = "default_true")]
+    pub capture_content: bool,
+    #[serde(default = "default_service_name")]
+    pub service_name: String,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+fn default_service_name() -> String {
+    "newt".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,14 +112,24 @@ impl ServerConfig {
         config.check_routes()?;
         config.check_model_chains()?;
         config.check_agents()?;
+        if let Some(tracing) = &config.tracing
+            && !is_http_url(&tracing.endpoint)
+        {
+            bail!("tracing endpoint must start with http:// or https://");
+        }
         Ok(config)
     }
 
     pub fn missing_secrets(&self) -> Vec<&str> {
         let route_keys = self.routes.values().map(|route| route.key_env.as_str());
         let agent_tokens = self.agents.values().map(|agent| agent.token_env.as_str());
+        let tracing_headers = self
+            .tracing
+            .iter()
+            .filter_map(|tracing| tracing.headers_env.as_deref());
         route_keys
             .chain(agent_tokens)
+            .chain(tracing_headers)
             .filter(|name| std::env::var_os(name).is_none())
             .collect()
     }

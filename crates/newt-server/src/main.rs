@@ -5,8 +5,10 @@ use std::time::Instant;
 
 use anyhow::Context;
 use newt_core::event::{Event, EventKind};
-use newt_core::sink::{EventSink, JsonlSink};
+use newt_core::otlp::{Hooks, OtlpConfig, OtlpSink, parse_headers};
+use newt_core::sink::{EventSink, JsonlSink, MultiSink, SinkError};
 use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -51,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         .jsonl
         .clone()
         .map(|path| JsonlSink::spawn(path, EVENT_BUFFER));
+    let otlp = otlp_sink(&config)?;
 
     let pool = db::connect_and_migrate(&config.database).await?;
     let listener = TcpListener::bind(config.server.listen)
@@ -73,9 +76,7 @@ async fn main() -> anyhow::Result<()> {
     let (live_topics, _listener_task) = live::spawn_listener(pool.clone())
         .await
         .context("subscribing to Postgres notifications")?;
-    let instrumentation = jsonl
-        .as_ref()
-        .map(|(sink, _)| Arc::new(sink.clone()) as Arc<dyn EventSink>);
+    let instrumentation = instrumentation(jsonl.as_ref(), otlp.as_ref());
     let backend = ContextProviderBackend::new(endpoints, config.models.keys().cloned())?;
     let runner = Runner::new(
         Store::new(pool.clone()),
@@ -110,7 +111,48 @@ async fn main() -> anyhow::Result<()> {
         drop(sink);
         writer.await.context("event writer panicked")??;
     }
+    if let Some((sink, exporter)) = otlp {
+        drop(sink);
+        exporter.await.context("trace exporter panicked")?;
+    }
     Ok(())
+}
+
+fn otlp_sink(config: &ServerConfig) -> anyhow::Result<Option<(OtlpSink, JoinHandle<()>)>> {
+    let Some(tracing) = &config.tracing else {
+        return Ok(None);
+    };
+    let headers = match &tracing.headers_env {
+        Some(name) => parse_headers(
+            &std::env::var(name)
+                .with_context(|| format!("environment variable {name} is not set"))?,
+        )
+        .map_err(|error| anyhow::anyhow!("{name}: {error}"))?,
+        None => Vec::new(),
+    };
+    let otlp = OtlpConfig {
+        endpoint: tracing.endpoint.clone(),
+        headers,
+        profile: tracing.profile,
+        capture_content: tracing.capture_content,
+        service_name: tracing.service_name.clone(),
+    };
+    tracing::info!(endpoint = %otlp.endpoint, profile = ?otlp.profile, "exporting traces");
+    Ok(Some(OtlpSink::spawn(otlp, Hooks::default(), EVENT_BUFFER)))
+}
+
+fn instrumentation(
+    jsonl: Option<&(JsonlSink, JoinHandle<Result<(), SinkError>>)>,
+    otlp: Option<&(OtlpSink, JoinHandle<()>)>,
+) -> Option<Arc<dyn EventSink>> {
+    let mut sinks: Vec<Arc<dyn EventSink>> = Vec::new();
+    if let Some((sink, _)) = jsonl {
+        sinks.push(Arc::new(sink.clone()));
+    }
+    if let Some((sink, _)) = otlp {
+        sinks.push(Arc::new(sink.clone()));
+    }
+    (!sinks.is_empty()).then(|| Arc::new(MultiSink(sinks)) as Arc<dyn EventSink>)
 }
 
 type AgentAccess = (HashMap<String, String>, BTreeMap<String, ProviderEndpoint>);

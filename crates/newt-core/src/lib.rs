@@ -5,6 +5,7 @@ mod commit;
 pub mod event;
 pub mod journal;
 pub mod message;
+pub mod otlp;
 pub mod prompt;
 pub mod provider;
 pub mod sink;

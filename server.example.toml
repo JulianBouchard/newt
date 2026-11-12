@@ -22,3 +22,11 @@ chain = ["openai", "anthropic"]
 [agents.assistant]
 context_provider = "http://localhost:4000/assistant"
 token_env = "ASSISTANT_TOKEN"
+
+# Export one trace per turn over OTLP/HTTP (JSON). For Langfuse, headers_env names a variable
+# holding "Authorization=Basic <base64 public:secret>,x-langfuse-ingestion-version=4".
+# [tracing]
+# endpoint = "https://cloud.langfuse.com/api/public/otel/v1/traces"
+# profile = "langfuse"
+# headers_env = "NEWT_OTLP_HEADERS"
+# capture_content = true

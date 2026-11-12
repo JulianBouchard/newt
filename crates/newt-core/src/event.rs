@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::message::Message;
 use crate::prompt::{Effort, LayerFingerprint};
 use crate::provider::{CallTiming, StopReason, Usage};
 use crate::tools::Retention;
@@ -35,6 +36,8 @@ pub enum EventKind {
         turn: String,
         history_messages: usize,
         events: usize,
+        #[serde(default)]
+        compaction: bool,
     },
     ModelCallStarted {
         session: String,
@@ -45,6 +48,7 @@ pub enum EventKind {
         prefix: LayerFingerprint,
         history: LayerFingerprint,
         scratch: LayerFingerprint,
+        input: Vec<Message>,
     },
     ModelCallFinished {
         session: String,
@@ -55,6 +59,7 @@ pub enum EventKind {
         stop: StopReason,
         response_id: Option<String>,
         request_ids: BTreeMap<String, String>,
+        output: Message,
     },
     ModelCallReplayed {
         session: String,

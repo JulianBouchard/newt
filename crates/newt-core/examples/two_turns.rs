@@ -6,7 +6,10 @@ use newt_core::journal::NoJournal;
 use newt_core::message::Message;
 use newt_core::prompt::{Effort, Lane};
 use newt_core::provider::{Protocol, ProviderClient};
-use newt_core::sink::JsonlSink;
+use std::sync::Arc;
+
+use newt_core::otlp::{Hooks, OtlpConfig, OtlpSink, Profile, parse_headers};
+use newt_core::sink::{EventSink, JsonlSink, MultiSink};
 use newt_core::steering::NoSteering;
 use newt_core::tools::NoTools;
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
@@ -15,6 +18,30 @@ use tokio_util::sync::CancellationToken;
 
 const SYSTEM: &str = "You are a concise personal assistant. Read the workspace before answering. \
 You cannot message the person directly in this demo: answer in plain text, then call end_turn.";
+
+type Exporter = (OtlpSink, tokio::task::JoinHandle<()>);
+
+fn otlp_from_env() -> Result<Option<Exporter>, Box<dyn std::error::Error>> {
+    let Ok(endpoint) = std::env::var("NEWT_OTLP_ENDPOINT") else {
+        return Ok(None);
+    };
+    let headers = parse_headers(&std::env::var("NEWT_OTLP_HEADERS").unwrap_or_default())?;
+    let profile = match std::env::var("NEWT_OTLP_PROFILE").as_deref() {
+        Ok("langfuse") => Profile::Langfuse,
+        _ => Profile::Generic,
+    };
+    Ok(Some(OtlpSink::spawn(
+        OtlpConfig {
+            endpoint,
+            headers,
+            profile,
+            capture_content: true,
+            service_name: "newt-example".to_owned(),
+        },
+        Hooks::default(),
+        1024,
+    )))
+}
 
 fn env(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("set {name}"))
@@ -43,7 +70,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let events_path = std::env::var("NEWT_EVENTS_FILE")
         .map_or_else(|_| PathBuf::from("newt-events.jsonl"), PathBuf::from);
-    let (sink, writer) = JsonlSink::spawn(events_path.clone(), 1024);
+    let (jsonl, writer) = JsonlSink::spawn(events_path.clone(), 1024);
+    let mut sinks: Vec<Arc<dyn EventSink>> = vec![Arc::new(jsonl.clone())];
+    let otlp = otlp_from_env()?;
+    if let Some((exporter_sink, _)) = &otlp {
+        sinks.push(Arc::new(exporter_sink.clone()));
+    }
+    let sink = MultiSink(sinks);
     let session = std::env::var("NEWT_SESSION").unwrap_or_else(|_| "demo-session".to_owned());
 
     let workspace = Workspace::new(BTreeMap::from([
@@ -100,9 +133,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         history.extend(outcome.committed);
     }
 
-    let dropped = sink.dropped();
+    let dropped = jsonl.dropped();
     drop(sink);
+    drop(jsonl);
     writer.await??;
+    if let Some((exporter_sink, exporter)) = otlp {
+        drop(exporter_sink);
+        exporter.await?;
+    }
     writeln!(
         std::io::stdout().lock(),
         "events written to {} ({dropped} dropped); run `cargo run -q -p newt-server --bin newt-report -- {}`",
