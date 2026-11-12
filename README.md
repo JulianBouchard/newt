@@ -37,6 +37,24 @@ curl localhost:4000/assistant/outbox/ana -H "Authorization: Bearer $ASSISTANT_TO
 
 The event is accepted in a few milliseconds; the turn reads the workspace, adds the task and the note through MCP, sends a reply and ends. `newt-report newt-events.jsonl` breaks each turn down by model call. On a live run against gpt-6.1-terra, each turn took 6 to 8 seconds, of which newt itself spent about 20 ms.
 
+## Load testing without paying for tokens
+
+`newt-loadtest` runs load against newt with no real model behind it:
+
+- `fake-model` speaks the OpenAI Responses stream with random text. Its timings (response headers, thinking, token rate, prefill per uncached token) and its tool use come from a production agent's production profile: about 16 tool calls per turn, picked with a production agent's real tool mix. Prompt caching is simulated per prefix: a request reuses the longest run of 128-token blocks an earlier request with the same `prompt_cache_key` wrote (at least 1,024 tokens, readable 2 seconds after the write, five-minute expiry), so a rewritten history misses just as it would against a real model.
+- `mock-app` is a context provider with a production-sized prompt and workspace, and an MCP server whose tools have a production agent's latencies and error rates.
+- `run` drives sessions against newt's events API and live feed and reports read receipt, time to turn start, turn duration, model calls, cache rate and tool calls.
+
+```sh
+newt-loadtest fake-model --speed 1 &   # --speed 10 compresses every delay tenfold
+newt-loadtest mock-app --speed 1 &
+LOADTEST_TOKEN=... newt-loadtest run --base http://127.0.0.1:7878 --agent assistant \
+  --sessions 200 --turns 5 --concurrency 200 --think-ms 5000 \
+  --fake http://127.0.0.1:9100 --mock http://127.0.0.1:9200
+```
+
+Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `context_provider` at `http://127.0.0.1:9200/agent`.
+
 ## Context provider
 
 Each agent in `server.toml` names a `context_provider` base URL and a `token_env`. That one token authenticates both directions: callers send it to newt as `Authorization: Bearer`, and newt sends it to the provider. The provider serves three JSON endpoints:

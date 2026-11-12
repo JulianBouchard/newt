@@ -1,0 +1,120 @@
+#![expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use newt_loadtest::driver::{LoadPlan, NewtTarget, run};
+use newt_loadtest::fake_model::{self, FakeModel};
+use newt_loadtest::mock_app::{self, MockApp};
+use newt_loadtest::profile::TERRA;
+use newt_server::config::ServerConfig;
+use newt_server::context::{ContextProviderBackend, ProviderEndpoint};
+use newt_server::http::{AppState, router};
+use newt_server::models::Routes;
+use newt_server::runner::{Runner, RunnerConfig};
+use newt_server::store::Store;
+use sqlx::PgPool;
+use tokio_util::sync::CancellationToken;
+
+const TOKEN: &str = "loadtest-token";
+const SPEED: f64 = 50.0;
+
+async fn listen(router: axum::Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    format!("http://{address}")
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPool) {
+    let model = FakeModel::new(TERRA, SPEED, 0.0, 11);
+    let model_url = listen(fake_model::router(Arc::clone(&model))).await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let app_url = format!("http://{}", listener.local_addr().unwrap());
+    let app = MockApp::new(&app_url, SPEED, 12);
+    tokio::spawn({
+        let router = mock_app::router(Arc::clone(&app));
+        async move { axum::serve(listener, router).await.unwrap() }
+    });
+
+    let config_path =
+        std::env::temp_dir().join(format!("newt-loadtest-{}.toml", std::process::id()));
+    std::fs::write(
+        &config_path,
+        format!(
+            "server = {{ listen = \"127.0.0.1:0\" }}\ndatabase = {{ url_env = \"DATABASE_URL\" }}\n\
+             [routes.fake]\nprotocol = \"openai-responses\"\nmodel = \"terra\"\nbase_url = \"{model_url}/v1\"\n\
+             key_env = \"CARGO_MANIFEST_DIR\"\nmax_concurrent = 64\n[models.default]\nchain = [\"fake\"]\n"
+        ),
+    )
+    .unwrap();
+    let config = ServerConfig::load(&config_path).unwrap();
+    let (live, _listener) = newt_server::live::spawn_listener(pool.clone())
+        .await
+        .unwrap();
+    let runner = Runner::new(
+        Store::new(pool.clone()),
+        ContextProviderBackend::new(
+            BTreeMap::from([(
+                "assistant".to_owned(),
+                ProviderEndpoint {
+                    base_url: format!("{app_url}/agent"),
+                    token: TOKEN.into(),
+                },
+            )]),
+            ["default".to_owned()],
+        )
+        .unwrap(),
+        Routes::from_config(&config).unwrap(),
+        RunnerConfig {
+            max_sessions: 32,
+            ..RunnerConfig::default()
+        },
+        None,
+        live.clone(),
+    );
+    let _loops = runner.spawn_loops();
+    let newt_url = listen(router(AppState {
+        store: Store::new(pool),
+        tokens: Arc::new(HashMap::from([("assistant".to_owned(), TOKEN.to_owned())])),
+        live,
+        shutdown: CancellationToken::new(),
+    }))
+    .await;
+
+    let (samples, _) = run(
+        NewtTarget {
+            base: newt_url,
+            agent: "assistant".into(),
+            token: TOKEN.into(),
+        },
+        LoadPlan {
+            sessions: 6,
+            turns: 2,
+            concurrency: 6,
+            think: Duration::from_millis(10),
+            timeout: Duration::from_secs(60),
+        },
+        "t",
+    )
+    .await;
+
+    let failed: Vec<_> = samples.iter().filter(|sample| !sample.ok).collect();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(samples.len(), 12);
+    assert!(samples.iter().all(|sample| sample.start_ms.is_some()));
+    let calls = model.stats.calls.load(Ordering::Relaxed);
+    assert!(
+        calls >= 24,
+        "each turn needs several model calls, saw {calls}"
+    );
+    assert!(
+        app.tool_calls.load(Ordering::Relaxed) > 0,
+        "the fake model calls mock tools"
+    );
+    std::fs::remove_file(config_path).unwrap();
+}
