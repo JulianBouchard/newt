@@ -59,20 +59,3 @@ impl Backend for StaticBackend {
         }))
     }
 }
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoContextProvider;
-
-impl Backend for NoContextProvider {
-    type Host = NoTools;
-
-    fn prepare(
-        &self,
-        agent: &str,
-        _key: &str,
-    ) -> impl Future<Output = Result<Prepared<NoTools>, BackendError>> + Send {
-        std::future::ready(Err(BackendError(format!(
-            "agent `{agent}` needs a context provider, which arrives in milestone 4"
-        ))))
-    }
-}

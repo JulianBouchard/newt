@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -10,8 +10,8 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-use newt_server::backend::NoContextProvider;
 use newt_server::config::ServerConfig;
+use newt_server::context::{ContextProviderBackend, ProviderEndpoint};
 use newt_server::http::{self, AppState};
 use newt_server::models::Routes;
 use newt_server::runner::{Runner, RunnerConfig};
@@ -69,27 +69,17 @@ async fn main() -> anyhow::Result<()> {
         sink.emit(Event::now(EventKind::ServerReady { boot_ms }));
     }
 
-    let tokens: HashMap<String, String> = config
-        .agents
-        .iter()
-        .map(|(name, agent)| {
-            let token = std::env::var(&agent.token_env)
-                .with_context(|| format!("environment variable {} is not set", agent.token_env))?;
-            if token.trim().is_empty() {
-                anyhow::bail!("environment variable {} is empty", agent.token_env);
-            }
-            Ok((name.clone(), token))
-        })
-        .collect::<anyhow::Result<_>>()?;
+    let (tokens, endpoints) = agent_access(&config)?;
     let (live_topics, _listener_task) = live::spawn_listener(pool.clone())
         .await
         .context("subscribing to Postgres notifications")?;
     let instrumentation = jsonl
         .as_ref()
         .map(|(sink, _)| Arc::new(sink.clone()) as Arc<dyn EventSink>);
+    let backend = ContextProviderBackend::new(endpoints, config.models.keys().cloned())?;
     let runner = Runner::new(
         Store::new(pool.clone()),
-        NoContextProvider,
+        backend,
         Routes::from_config(&config)?,
         RunnerConfig::default(),
         instrumentation,
@@ -121,6 +111,29 @@ async fn main() -> anyhow::Result<()> {
         writer.await.context("event writer panicked")??;
     }
     Ok(())
+}
+
+type AgentAccess = (HashMap<String, String>, BTreeMap<String, ProviderEndpoint>);
+
+fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
+    let mut tokens = HashMap::new();
+    let mut endpoints = BTreeMap::new();
+    for (name, agent) in &config.agents {
+        let token = std::env::var(&agent.token_env)
+            .with_context(|| format!("environment variable {} is not set", agent.token_env))?;
+        if token.trim().is_empty() {
+            anyhow::bail!("environment variable {} is empty", agent.token_env);
+        }
+        endpoints.insert(
+            name.clone(),
+            ProviderEndpoint {
+                base_url: agent.context_provider.clone(),
+                token: token.clone(),
+            },
+        );
+        tokens.insert(name.clone(), token);
+    }
+    Ok((tokens, endpoints))
 }
 
 async fn shutdown_signal() {
