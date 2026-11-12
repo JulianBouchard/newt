@@ -110,7 +110,9 @@ impl TurnContext<'_> {
     }
 
     pub(crate) fn mark_skill_loaded(&self, call: &ToolCall) {
-        if let Some(name) = crate::skills::requested(call) {
+        if let Some(name) = crate::skills::requested(call)
+            && crate::skills::requested_file(call).is_none()
+        {
             self.loaded().insert(name.to_owned());
         }
     }

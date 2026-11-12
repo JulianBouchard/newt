@@ -45,6 +45,7 @@ const fn default_history_budget() -> u32 {
 struct Loaded {
     bootstrap: Bootstrap,
     toolset: Toolset,
+    skills: Vec<Skill>,
 }
 
 const fn default_max_output_tokens() -> u32 {
@@ -254,13 +255,19 @@ impl ContextProviderBackend {
             ));
         }
         let toolset = Toolset::connect(&bootstrap.mcp_servers, &client.endpoint.token).await?;
+        let skills = toolset.skills_after(&bootstrap.skills)?;
         tracing::info!(
             agent,
             version,
             tools = toolset.tools.len(),
+            skills = skills.len(),
             "loaded agent bootstrap"
         );
-        let loaded = Arc::new(Loaded { bootstrap, toolset });
+        let loaded = Arc::new(Loaded {
+            bootstrap,
+            toolset,
+            skills,
+        });
         *slot = Some(Arc::clone(&loaded));
         Ok(loaded)
     }
@@ -312,7 +319,7 @@ impl ContextProviderBackend {
             system: with_pinned(&bootstrap.instructions, turn.pinned.as_deref()),
             tools: loaded.toolset.tools.clone(),
             context: turn.render(),
-            skills: bootstrap.skills.clone(),
+            skills: loaded.skills.clone(),
             workspace: match turn.pages {
                 Some(pages) => Workspace::with_source(pages, Arc::new(source)),
                 None => Workspace::loading(Arc::new(source)),

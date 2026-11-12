@@ -5,6 +5,7 @@ use serde_json::json;
 
 use crate::message::ToolCall;
 use crate::prompt::ToolSpec;
+use crate::skills::Skill;
 use crate::workspace::{Page, PageKey, Workspace};
 
 pub const END_TURN: &str = "end_turn";
@@ -85,6 +86,20 @@ pub trait ToolHost: Send + Sync {
         call: &ToolCall,
         context: &CallContext,
     ) -> impl Future<Output = ToolOutput> + Send;
+
+    /// Fetch a skill this host serves ([`Skill::served_by`] is set), or one of
+    /// its files when `file` is given. The default serves none.
+    fn load_skill(
+        &self,
+        skill: &Skill,
+        file: Option<&str>,
+    ) -> impl Future<Output = ToolOutput> + Send {
+        let _ = file;
+        std::future::ready(ToolOutput::error(format!(
+            "The skill `{}` cannot be loaded here.",
+            skill.name
+        )))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

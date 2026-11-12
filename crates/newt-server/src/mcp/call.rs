@@ -5,6 +5,7 @@ use std::future::Future;
 use std::sync::atomic::Ordering;
 
 use newt_core::message::ToolCall;
+use newt_core::skills::Skill;
 use newt_core::tools::{CallContext, ToolHost, ToolOutput};
 use newt_core::workspace::{Page, PageKey};
 use rmcp::model::{
@@ -153,6 +154,14 @@ impl ToolHost for McpHost {
         context: &CallContext,
     ) -> impl Future<Output = ToolOutput> + Send {
         self.run(call, context)
+    }
+
+    fn load_skill(
+        &self,
+        skill: &Skill,
+        file: Option<&str>,
+    ) -> impl Future<Output = ToolOutput> + Send {
+        self.load_served(skill, file)
     }
 }
 

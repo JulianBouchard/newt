@@ -13,22 +13,58 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub content: String,
+    /// The MCP server that serves this skill. Its content is fetched through
+    /// [`ToolHost::load_skill`](crate::tools::ToolHost::load_skill) when the
+    /// model loads it, and `content` is empty.
+    #[serde(skip)]
+    pub served_by: Option<String>,
+}
+
+impl Skill {
+    pub fn inline(name: &str, description: &str, content: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            content: content.to_owned(),
+            served_by: None,
+        }
+    }
 }
 
 pub(crate) fn load_skill_tool(skills: &[Skill]) -> ToolDef {
     let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
+    let mut properties = json!({ "name": { "type": "string", "enum": names } });
+    if skills.iter().any(|skill| skill.served_by.is_some()) {
+        properties["file"] = json!({
+            "type": "string",
+            "description": "A file the loaded skill lists, relative to the skill, such as references/guide.md. Omit it to load the skill itself.",
+        });
+    }
     ToolDef::new(
         ToolSpec {
             name: LOAD_SKILL.to_owned(),
             description: "Load a skill: instructions for one kind of task, listed under <skills> in your instructions. Load it before doing the task it covers; it stays loaded for this turn only.".to_owned(),
             input_schema: json!({
                 "type": "object",
-                "properties": { "name": { "type": "string", "enum": names } },
+                "properties": properties,
                 "required": ["name"],
             }),
         },
         Retention::Ephemeral,
     )
+}
+
+pub(crate) fn requested_file(call: &ToolCall) -> Option<&str> {
+    call.arguments
+        .get("file")
+        .and_then(serde_json::Value::as_str)
+}
+
+pub(crate) fn served(call: &ToolCall, skills: &[Skill]) -> Option<usize> {
+    let name = requested(call)?;
+    skills
+        .iter()
+        .position(|skill| skill.name == name && skill.served_by.is_some())
 }
 
 pub(crate) fn with_index(system: &str, skills: &[Skill]) -> String {
@@ -60,6 +96,9 @@ pub(crate) fn load(call: &ToolCall, skills: &[Skill]) -> ToolOutput {
         return ToolOutput::error("load_skill needs the skill's name");
     };
     match skills.iter().find(|skill| skill.name == name) {
+        Some(_) if requested_file(call).is_some() => {
+            ToolOutput::error(format!("The skill `{name}` has no files besides itself."))
+        }
         Some(skill) => ToolOutput::ok(skill.content.clone()),
         None => ToolOutput::error(format!("There is no skill named `{name}`.")),
     }
@@ -70,11 +109,11 @@ mod tests {
     use super::*;
 
     fn skills() -> Vec<Skill> {
-        vec![Skill {
-            name: "writing".into(),
-            description: "How to word a message to the person.".into(),
-            content: "Short sentences.".into(),
-        }]
+        vec![Skill::inline(
+            "writing",
+            "How to word a message to the person.",
+            "Short sentences.",
+        )]
     }
 
     #[test]

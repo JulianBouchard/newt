@@ -191,7 +191,11 @@ Load a skill with load_skill before doing what it covers.
 </skills>
 ```
 
-and adds a built-in `load_skill` tool whose `name` argument is one of the skill names. The skill's `content` comes back as the tool result. It stays in that turn's scratch and never enters history. Newt does not check that skill names are unique. Loaded skill names are passed to MCP tools in `newt/skills_loaded`.
+and adds a built-in `load_skill` tool whose `name` argument is one of the skill names. The skill's `content` comes back as the tool result. It stays in that turn's scratch and never enters history. Newt does not check that bootstrap skill names are unique. Loaded skill names are passed to MCP tools in `newt/skills_loaded`.
+
+MCP servers can serve skills too (section 2.6). Those follow the bootstrap's skills in the index, sorted by name.
+
+## 2. MCP tools
 
 ## 2. MCP tools
 
@@ -312,6 +316,23 @@ If any of the three fields is malformed (wrong type, or a page list that breaks 
 - A JSON-RPC error from the server becomes `The tool call failed: <message>`.
 - A broken connection, 90 seconds without a result or progress, or 10 minutes in total, becomes an error result that says the outcome is unknown and tells the model not to repeat the call but to check the workspace first.
 - An `input_required` result (the MCP multi round-trip pattern) becomes an error result saying the tool asked for input newt cannot give yet and nothing was done.
+
+### 2.6 Skills served over MCP
+
+A server that declares the `io.modelcontextprotocol/skills` extension ([SEP-2640](https://modelcontextprotocol.io/seps/2640-skills-extension)) can serve skills in the [Agent Skills](https://agentskills.io/specification) format instead of putting them in the bootstrap. When newt connects, it calls `skills/list` (every page) and offers each skill under the name `{server}/{skill path}`: the server's name from the bootstrap, then the skill's URI without its scheme and `/SKILL.md`. `skill://acme/billing/refunds/SKILL.md` on server `app` becomes `app/acme/billing/refunds`. The description is the frontmatter's `description`.
+
+A skill is not offered, with a warning in the log, if its `resources` is `"dynamic"` (newt cannot verify it), its URI does not end in `/{name}/SKILL.md`, it has more than 512 files or more than 16 MiB, its file list leaves out its own `SKILL.md`, or it lists a file outside its directory. Two skills from one server that would get the same name, or an MCP skill with the same name as a bootstrap skill, fail the bootstrap load.
+
+Nothing is fetched until the model loads a skill. Then newt reads `SKILL.md` with `resources/read`, checks its size and `sha256` digest against the listing, and checks that its frontmatter equals the listing's `frontmatter`. The result is the file, followed by the skill's other files when it has any:
+
+```
+<skill_files>
+Read one with load_skill and `file`:
+- references/tone.md
+</skill_files>
+```
+
+When any skill is served over MCP, `load_skill` also takes `file`, a path relative to the skill. Only files the listing names can be read, each checked the same way. Absolute paths, `..`, `.` and empty segments are refused. Verified files are cached by server, URI and digest for as long as the tool set lives. A file that fails a check is never shown to the model: the call fails, and the tool set is marked stale so the next turn lists the skills again. Only text contents are read.
 
 ## 3. Retention classes
 

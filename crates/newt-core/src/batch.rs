@@ -10,6 +10,7 @@ use crate::event::{Event, EventKind};
 use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{ToolCall, ToolResult};
 use crate::sink::EventSink;
+use crate::skills::Skill;
 use crate::tools::{
     CallContext, END_TURN, EndTurn, REMEMBER, Retention, ToolHost, ToolOutput, run_workspace_tool,
 };
@@ -33,6 +34,43 @@ pub(crate) struct Batch {
 const TOOL_CONCURRENCY: usize = 5;
 
 type Timed = (ToolOutput, u64);
+
+/// Which slots run where: done already, workspace reads, served skill loads
+/// (with the skill's index), concurrent host calls, and outward calls in order.
+struct Lanes {
+    slots: Vec<Option<Timed>>,
+    workspace_reads: Vec<usize>,
+    skill_loads: Vec<(usize, usize)>,
+    concurrent: Vec<usize>,
+    outward: Vec<usize>,
+}
+
+impl Lanes {
+    fn of(plans: Vec<Plan>) -> Self {
+        let mut lanes = Self {
+            slots: Vec::with_capacity(plans.len()),
+            workspace_reads: Vec::new(),
+            skill_loads: Vec::new(),
+            concurrent: Vec::new(),
+            outward: Vec::new(),
+        };
+        for (slot, plan) in plans.into_iter().enumerate() {
+            match plan {
+                Plan::Done(output, ms) => {
+                    lanes.slots.push(Some((output, ms)));
+                    continue;
+                }
+                Plan::Skill(index) => lanes.skill_loads.push((slot, index)),
+                Plan::Workspace => lanes.workspace_reads.push(slot),
+                Plan::Concurrent => lanes.concurrent.push(slot),
+                Plan::Outward => lanes.outward.push(slot),
+            }
+            lanes.slots.push(None);
+        }
+        lanes
+    }
+}
+
 pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     model_calls: &[ToolCall],
     context: &TurnContext<'_>,
@@ -49,27 +87,13 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         checkpoint,
     } = plan_calls(tool_calls, &expanded.preset, context, replay);
 
-    let mut slots: Vec<Option<(ToolOutput, u64)>> = Vec::with_capacity(plans.len());
-    let mut workspace_reads = Vec::new();
-    let mut concurrent = Vec::new();
-    let mut outward = Vec::new();
-    for (slot, plan) in plans.into_iter().enumerate() {
-        match plan {
-            Plan::Done(output, ms) => slots.push(Some((output, ms))),
-            Plan::Workspace => {
-                workspace_reads.push(slot);
-                slots.push(None);
-            }
-            Plan::Concurrent => {
-                concurrent.push(slot);
-                slots.push(None);
-            }
-            Plan::Outward => {
-                outward.push(slot);
-                slots.push(None);
-            }
-        }
-    }
+    let Lanes {
+        mut slots,
+        workspace_reads,
+        skill_loads,
+        concurrent,
+        outward,
+    } = Lanes::of(plans);
 
     let contexts: Vec<CallContext> = concurrent
         .iter()
@@ -84,11 +108,24 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         .iter()
         .map(|&slot| timed_read(context, &tool_calls[slot]))
         .collect();
-    let (read_outputs, outputs): (Vec<Timed>, Vec<Timed>) = futures_util::join!(
+    let loads: Vec<_> = skill_loads
+        .iter()
+        .map(|&(slot, index)| timed_skill_load(host, &tool_calls[slot], &context.skills[index]))
+        .collect();
+    let (read_outputs, load_outputs, outputs): (Vec<Timed>, Vec<Timed>, Vec<Timed>) = futures_util::join!(
         join_all(reads),
+        join_all(loads),
         stream::iter(calls).buffered(TOOL_CONCURRENCY).collect()
     );
     for (&slot, output) in workspace_reads.iter().zip(read_outputs) {
+        slots[slot] = Some(output);
+    }
+    for (&(slot, _), output) in skill_loads.iter().zip(load_outputs) {
+        let call = &tool_calls[slot];
+        if !output.0.is_error {
+            context.mark_skill_loaded(call);
+        }
+        record_output(journal, call, &output.0);
         slots[slot] = Some(output);
     }
     for (&slot, output) in concurrent.iter().zip(outputs) {
@@ -293,6 +330,14 @@ async fn timed_call<H: ToolHost>(
 ) -> (ToolOutput, u64) {
     let started = Instant::now();
     let output = host.call(call, call_context).await;
+    (output, elapsed_ms(started))
+}
+
+async fn timed_skill_load<H: ToolHost>(host: &H, call: &ToolCall, skill: &Skill) -> Timed {
+    let started = Instant::now();
+    let output = host
+        .load_skill(skill, crate::skills::requested_file(call))
+        .await;
     (output, elapsed_ms(started))
 }
 

@@ -2,6 +2,7 @@
 //! `call.rs`.
 
 mod call;
+mod skills;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use newt_core::prompt::ToolSpec;
+use newt_core::skills::Skill;
 use newt_core::tools::{Retention, ToolDef};
 use newt_core::workspace::PageKey;
 use rmcp::model::{
@@ -98,6 +100,8 @@ impl Default for CallLimits {
 #[derive(Clone)]
 pub struct McpHost {
     tools: Arc<HashMap<String, Remote>>,
+    skills: Arc<HashMap<String, skills::Served>>,
+    verified: skills::Verified,
     stale: Arc<AtomicBool>,
     limits: CallLimits,
     session: String,
@@ -108,16 +112,21 @@ impl std::fmt::Debug for McpHost {
         formatter
             .debug_struct("McpHost")
             .field("tools", &self.tools.len())
+            .field("skills", &self.skills.len())
             .field("stale", &self.stale)
             .field("limits", &self.limits)
             .field("session", &self.session)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 pub struct Toolset {
     pub tools: Vec<ToolDef>,
+    /// Skills the servers serve, sorted by name, named `{server}/{skill path}`.
+    pub skills: Vec<Skill>,
     remotes: Arc<HashMap<String, Remote>>,
+    served: Arc<HashMap<String, skills::Served>>,
+    verified: skills::Verified,
     stale: Arc<AtomicBool>,
     limits: CallLimits,
 }
@@ -127,6 +136,7 @@ impl std::fmt::Debug for Toolset {
         formatter
             .debug_struct("Toolset")
             .field("tools", &self.tools.len())
+            .field("skills", &self.skills.len())
             .finish_non_exhaustive()
     }
 }
@@ -150,6 +160,12 @@ impl Toolset {
         self.stale.load(Ordering::Relaxed)
     }
 
+    /// The bootstrap's own skills followed by the served ones. A served skill
+    /// never silently shadows a bootstrap skill of the same name.
+    pub fn skills_after(&self, bootstrap: &[Skill]) -> Result<Vec<Skill>, String> {
+        skills::merge(bootstrap, &self.skills)
+    }
+
     #[must_use]
     pub fn with_call_limits(mut self, limits: CallLimits) -> Self {
         self.limits = limits;
@@ -159,6 +175,8 @@ impl Toolset {
     async fn connect_all(servers: &[McpServer], agent_token: &str) -> Result<Self, String> {
         let mut tools = Vec::new();
         let mut remotes = HashMap::new();
+        let mut offered = Vec::new();
+        let mut served = HashMap::new();
         let stale = Arc::new(AtomicBool::new(false));
         for server in servers {
             let client = Arc::new(connect(server, agent_token).await?);
@@ -182,11 +200,19 @@ impl Toolset {
                 }
                 tools.push(def);
             }
-            tracing::info!(server = %server.name, tools = tools.len(), "MCP server connected");
+            for (skill, entry) in skills::list(&server.name, &client).await? {
+                served.insert(skill.name.clone(), entry);
+                offered.push(skill);
+            }
+            tracing::info!(server = %server.name, tools = tools.len(), skills = offered.len(), "MCP server connected");
         }
+        offered.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(Self {
             tools,
+            skills: offered,
             remotes: Arc::new(remotes),
+            served: Arc::new(served),
+            verified: skills::Verified::default(),
             stale,
             limits: CallLimits::default(),
         })
@@ -195,6 +221,8 @@ impl Toolset {
     pub fn host(&self, session: &str) -> McpHost {
         McpHost {
             tools: Arc::clone(&self.remotes),
+            skills: Arc::clone(&self.served),
+            verified: Arc::clone(&self.verified),
             stale: Arc::clone(&self.stale),
             limits: self.limits,
             session: session.to_owned(),

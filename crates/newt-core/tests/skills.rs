@@ -77,7 +77,7 @@ impl Model for Scripted {
 }
 
 #[derive(Default)]
-struct Seeing(Mutex<Vec<CallContext>>);
+struct Seeing(Mutex<Vec<CallContext>>, Mutex<Vec<String>>);
 
 impl ToolHost for Seeing {
     fn call(
@@ -87,6 +87,18 @@ impl ToolHost for Seeing {
     ) -> impl Future<Output = ToolOutput> + Send {
         self.0.lock().unwrap().push(context.clone());
         std::future::ready(ToolOutput::ok("sent"))
+    }
+
+    fn load_skill(
+        &self,
+        skill: &Skill,
+        file: Option<&str>,
+    ) -> impl Future<Output = ToolOutput> + Send {
+        self.1
+            .lock()
+            .unwrap()
+            .push(format!("{} {}", skill.name, file.unwrap_or("SKILL.md")));
+        std::future::ready(ToolOutput::ok("Served instructions."))
     }
 }
 
@@ -99,11 +111,11 @@ fn call(id: &str, name: &str, arguments: Value) -> Part {
 }
 
 fn writing() -> Vec<Skill> {
-    vec![Skill {
-        name: "writing".into(),
-        description: "How to word a message to the person.".into(),
-        content: "Write short sentences. Never use a dash.".into(),
-    }]
+    vec![Skill::inline(
+        "writing",
+        "How to word a message to the person.",
+        "Write short sentences. Never use a dash.",
+    )]
 }
 
 async fn run(
@@ -230,4 +242,47 @@ async fn an_unknown_skill_is_an_error_and_no_skills_means_no_tool() {
     )
     .await;
     assert!(!model.tools.lock().unwrap()[0].contains(&"load_skill".to_owned()));
+}
+
+#[tokio::test]
+async fn a_served_skill_and_its_files_load_through_the_host() {
+    let mut skills = writing();
+    skills.push(Skill {
+        served_by: Some("app".into()),
+        ..Skill::inline("app/refunds", "How to handle a refund.", "")
+    });
+    let (outcome, model, host) = run(
+        vec![
+            vec![
+                call("s1", "load_skill", json!({ "name": "app/refunds" })),
+                call(
+                    "s2",
+                    "load_skill",
+                    json!({ "name": "app/refunds", "file": "references/policy.md" }),
+                ),
+                call(
+                    "s3",
+                    "load_skill",
+                    json!({ "name": "writing", "file": "references/x.md" }),
+                ),
+            ],
+            vec![call("m1", "send_message", json!({ "text": "Refunded." }))],
+            vec![call("e1", "end_turn", json!({ "nothing_new": "x" }))],
+        ],
+        &skills,
+    )
+    .await;
+    assert!(outcome.is_ok());
+    assert_eq!(
+        *host.1.lock().unwrap(),
+        vec!["app/refunds SKILL.md", "app/refunds references/policy.md"]
+    );
+    assert_eq!(host.0.lock().unwrap()[0].skills_loaded, vec!["app/refunds"]);
+    let mut errors = model.errors.lock().unwrap().clone();
+    errors.dedup();
+    assert_eq!(
+        errors,
+        vec!["The skill `writing` has no files besides itself."]
+    );
+    assert!(model.systems.lock().unwrap()[0].contains("- app/refunds: How to handle a refund."));
 }

@@ -23,6 +23,7 @@ const END_TURN_WHILE_COMPACTING: &str = "Compaction ends with checkpoint, not en
 
 pub(super) enum Plan {
     Done(ToolOutput, u64),
+    Skill(usize),
     Workspace,
     Concurrent,
     Outward,
@@ -75,6 +76,9 @@ pub(super) fn plan_calls(
                 return Plan::Done(output.clone(), 0);
             }
             if call.name == LOAD_SKILL {
+                if let Some(index) = skills::served(call, context.skills) {
+                    return Plan::Skill(index);
+                }
                 let output = skills::load(call, context.skills);
                 if !output.is_error {
                     context.mark_skill_loaded(call);
