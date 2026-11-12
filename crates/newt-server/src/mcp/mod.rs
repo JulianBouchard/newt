@@ -36,6 +36,9 @@ pub const META_PAGES: &str = "newt/pages";
 const CALL_QUIET_LIMIT: Duration = Duration::from_secs(90);
 const CALL_LIMIT: Duration = Duration::from_mins(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// One connection per server carries the calls of every session of an agent,
+/// so it must not cap them at rmcp's default of 16 requests in flight.
+const MAX_CALLS_IN_FLIGHT: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -260,8 +263,9 @@ async fn connect(server: &McpServer, agent_token: &str) -> Result<Client, String
         })?;
         headers.insert(header_name, header_value);
     }
-    let mut config =
-        StreamableHttpClientTransportConfig::with_uri(server.url.as_str()).custom_headers(headers);
+    let mut config = StreamableHttpClientTransportConfig::with_uri(server.url.as_str())
+        .custom_headers(headers)
+        .max_concurrent_requests(MAX_CALLS_IN_FLIGHT);
     if server.auth == McpAuth::AgentToken {
         config = config.auth_header(agent_token);
     }

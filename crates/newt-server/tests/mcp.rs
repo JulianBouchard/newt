@@ -698,6 +698,30 @@ async fn progress_never_extends_a_call_past_the_total_limit() {
 }
 
 #[tokio::test]
+async fn many_sessions_call_one_server_at_once_without_queueing() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect(&calls, true).await.unwrap();
+    let started = std::time::Instant::now();
+    let outputs = futures_util::future::join_all((0..48).map(|index| {
+        let host = toolset.host(&format!("customer-{index}"));
+        async move {
+            host.call(
+                &call("c1", "silent_search", json!({})),
+                &key(&format!("k{index}")),
+            )
+            .await
+        }
+    }))
+    .await;
+    assert!(outputs.iter().all(|output| !output.is_error));
+    assert!(
+        started.elapsed() < Duration::from_millis(1200),
+        "48 calls of a 600 ms tool took {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn an_abandoned_call_is_cancelled_on_the_server() {
     let calls = Arc::new(Calls::default());
     let toolset = connect(&calls, true).await.unwrap();
