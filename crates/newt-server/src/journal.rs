@@ -39,8 +39,9 @@ impl TurnJournal {
             while receiver.recv_many(&mut batch, JOURNAL_BATCH).await > 0 {
                 let (entries, acks): (Vec<JournalEntry>, Vec<Option<Ack>>) =
                     batch.drain(..).unzip();
+                let durable = acks.iter().any(Option::is_some);
                 let result = match store
-                    .append_journal_batch(&lease, &turn_id, seq, &entries)
+                    .append_journal_batch(&lease, &turn_id, seq, &entries, durable)
                     .await
                 {
                     Ok(true) => Ok(()),

@@ -18,6 +18,16 @@ const FENCED_INSERT: &str = "insert into turn_journal (agent, key, turn_id, seq,
        where agent = $1 and key = $2 and lease_owner = $7 and lease_epoch = $8 for share) \
      returning 1";
 
+const FENCED_BATCH_RELAXED: &str = "with relaxed as (select set_config('synchronous_commit', 'off', true)), \
+     written as ( \
+       insert into turn_journal (agent, key, turn_id, seq, kind, payload) \
+       select $1, $2, $3, $4 + entry.ordinality::int - 1, entry.kind, entry.payload \
+       from unnest($5::text[], $6::jsonb[]) with ordinality as entry(kind, payload, ordinality) \
+       where exists (select 1 from sessions \
+         where agent = $1 and key = $2 and lease_owner = $7 and lease_epoch = $8 for share) \
+       returning 1) \
+     select 1 from written, relaxed";
+
 const FENCED_BATCH: &str = "insert into turn_journal (agent, key, turn_id, seq, kind, payload) \
      select $1, $2, $3, $4 + entry.ordinality::int - 1, entry.kind, entry.payload \
      from unnest($5::text[], $6::jsonb[]) with ordinality as entry(kind, payload, ordinality) \
@@ -62,6 +72,7 @@ impl Store {
         turn_id: &str,
         first_seq: i32,
         entries: &[JournalEntry],
+        durable: bool,
     ) -> Owned<bool> {
         let pool = self.pool().clone();
         let lease = lease.clone();
@@ -70,7 +81,12 @@ impl Store {
         let payloads: Vec<Json<JournalEntry>> = entries.iter().cloned().map(Json).collect();
         let expected = entries.len();
         Box::pin(async move {
-            let written: Vec<i32> = sqlx::query_scalar(FENCED_BATCH)
+            let statement = if durable {
+                FENCED_BATCH
+            } else {
+                FENCED_BATCH_RELAXED
+            };
+            let written: Vec<i32> = sqlx::query_scalar(statement)
                 .bind(&lease.agent)
                 .bind(&lease.key)
                 .bind(&turn_id)
