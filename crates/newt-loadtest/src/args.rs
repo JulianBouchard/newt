@@ -19,18 +19,42 @@ pub const SKILLS: &[&str] = &["writing", "intro", "screening", "followups", "mat
 pub fn arguments_for(name: &str, kind: Kind, schema: &Value, rng: &Rng) -> Value {
     match (name, kind) {
         (_, Kind::Skill) if name == "read_file" => {
-            json!({ "paths": [format!("skills/{}.md", SKILLS[rng.below(SKILLS.len())])] })
+            read_one(schema, &format!("skills/{}.md", SKILLS[rng.below(SKILLS.len())]))
         }
-        ("read_file", _) => {
-            let first = PAGES[rng.below(PAGES.len())];
-            let second = PAGES[rng.below(PAGES.len())];
-            json!({ "paths": [first, second] })
-        }
+        ("read_file", _) => read_one(schema, PAGES[rng.below(PAGES.len())]),
         ("grep", _) => json!({ "pattern": "role|intro" }),
         ("glob", _) => json!({ "pattern": "**/*.md" }),
-        (_, Kind::Send) => json!({ "text": rng.words(12) }),
+        (_, Kind::Send) => send(schema, rng),
         _ => from_schema(schema, rng, 0),
     }
+}
+
+fn property<'a>(schema: &'a Value, name: &str) -> Option<&'a Value> {
+    schema.get("properties").and_then(|properties| properties.get(name))
+}
+
+fn read_one(schema: &Value, path: &str) -> Value {
+    if property(schema, "filePath").is_some() {
+        json!({ "filePath": path })
+    } else {
+        json!({ "paths": [path] })
+    }
+}
+
+fn send(schema: &Value, rng: &Rng) -> Value {
+    let Some(channels) = property(schema, "channel")
+        .and_then(|channel| channel.get("enum"))
+        .and_then(Value::as_array)
+    else {
+        return json!({ "text": rng.words(12) });
+    };
+    let channel = channels
+        .iter()
+        .find(|channel| channel.as_str() == Some("web"))
+        .or_else(|| channels.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+    json!({ "command": "send", "channel": channel, "message": rng.words(12) })
 }
 
 fn from_schema(schema: &Value, rng: &Rng, depth: usize) -> Value {
