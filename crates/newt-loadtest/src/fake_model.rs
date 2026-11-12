@@ -191,11 +191,8 @@ fn finish(tools: &HashMap<String, Value>, compacting: bool) -> Vec<Call> {
     Vec::new()
 }
 
-async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -> Response {
-    model.stats.calls.fetch_add(1, Ordering::Relaxed);
-    let timing = model.timing;
-    let key = body
-        .get("prompt_cache_key")
+fn cache_key(body: &Value) -> String {
+    body.get("prompt_cache_key")
         .and_then(Value::as_str)
         .map_or_else(
             || {
@@ -208,7 +205,28 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
                 .to_string()
             },
             str::to_owned,
-        );
+        )
+}
+
+fn tool_schemas(body: &Value) -> HashMap<String, Value> {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| {
+            let name = tool.get("name").and_then(Value::as_str)?;
+            Some((
+                name.to_owned(),
+                tool.get("parameters").cloned().unwrap_or(Value::Null),
+            ))
+        })
+        .collect()
+}
+
+async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -> Response {
+    model.stats.calls.fetch_add(1, Ordering::Relaxed);
+    let timing = model.timing;
+    let key = cache_key(&body);
     let lookup = model.cache.lookup_and_store(&key, &prompt_bytes(&body));
     let uncached = lookup.input_tokens - lookup.cached_tokens;
     #[expect(clippy::cast_precision_loss, reason = "token counts far below 2^52")]
@@ -227,19 +245,7 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let tools: HashMap<String, Value> = body
-        .get("tools")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|tool| {
-            let name = tool.get("name").and_then(Value::as_str)?;
-            Some((
-                name.to_owned(),
-                tool.get("parameters").cloned().unwrap_or(Value::Null),
-            ))
-        })
-        .collect();
+    let tools = tool_schemas(&body);
     let turn = read_turn(&input);
     let target = timing
         .tool_calls_per_turn
@@ -257,8 +263,17 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
     let text = calls
         .is_empty()
         .then(|| model.rng.words(timing.text_tokens.count(&model.rng)));
-    let events =
-        crate::stream::response_events(&model, &calls_json(&calls), text, input_tokens, cached);
+    let calls = calls_json(&calls);
+    let events = crate::stream::response_events(
+        &model,
+        crate::stream::Reply {
+            model_name: body.get("model").and_then(Value::as_str).unwrap_or("fake"),
+            calls: &calls,
+            text,
+            input_tokens,
+            cached,
+        },
+    );
     model
         .stats
         .input_tokens
