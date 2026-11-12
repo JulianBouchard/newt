@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: newt
+          POSTGRES_PASSWORD: newt
+          POSTGRES_DB: newt
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U newt"
+          --health-interval 2s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo deny check
+      - run: cargo machete
+      - name: boot smoke test
+        env:
+          NEWT_CONFIG: server.example.toml
+          NEWT_DATABASE_URL: postgres://newt:newt@localhost:5432/newt
+          OPENAI_API_KEY: unused
+          ANTHROPIC_API_KEY: unused
+          ASSISTANT_TOKEN: unused
+        run: |
+          cargo build --release -p newt-server
+          ./target/release/newt &
+          pid=$!
+          for _ in $(seq 1 50); do
+            curl -sf localhost:7878/healthz && break
+            sleep 0.2
+          done
+          curl -sf localhost:7878/healthz
+          kill -TERM "$pid"
+          wait "$pid"

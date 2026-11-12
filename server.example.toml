@@ -1,0 +1,22 @@
+server = { listen = "127.0.0.1:7878" }
+database = { url_env = "NEWT_DATABASE_URL", max_connections = 10 }
+events = { jsonl = "newt-events.jsonl" }
+
+[routes.openai]
+protocol = "openai-responses"
+base_url = "https://api.openai.com/v1"
+key_env = "OPENAI_API_KEY"
+max_concurrent = 6
+
+[routes.anthropic]
+protocol = "anthropic-messages"
+base_url = "https://api.anthropic.com"
+key_env = "ANTHROPIC_API_KEY"
+max_concurrent = 6
+
+[models.default]
+chain = ["openai", "anthropic"]
+
+[agents.assistant]
+context_provider = "http://localhost:4000/assistant"
+token_env = "ASSISTANT_TOKEN"
