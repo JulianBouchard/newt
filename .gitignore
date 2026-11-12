@@ -2,3 +2,5 @@
 /server.toml
 *.jsonl
 .env
+CLAUDE.md
+.claude/
