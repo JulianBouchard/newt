@@ -66,6 +66,8 @@ const fn default_max_connections() -> u32 {
 #[serde(deny_unknown_fields)]
 pub struct Events {
     pub jsonl: Option<PathBuf>,
+    #[serde(default)]
+    pub capture_content: bool,
 }
 
 #[derive(Debug, Deserialize)]

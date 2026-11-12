@@ -71,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let events_path = std::env::var("NEWT_EVENTS_FILE")
         .map_or_else(|_| PathBuf::from("newt-events.jsonl"), PathBuf::from);
     let (jsonl, writer) = JsonlSink::spawn(events_path.clone(), 1024);
+    let jsonl = jsonl.capturing_content(true);
     let mut sinks: Vec<Arc<dyn EventSink>> = vec![Arc::new(jsonl.clone())];
     let otlp = otlp_from_env()?;
     if let Some((exporter_sink, _)) = &otlp {

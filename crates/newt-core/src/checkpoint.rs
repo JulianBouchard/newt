@@ -53,9 +53,31 @@ pub(crate) fn checkpoint_tool() -> ToolDef {
 }
 
 impl Checkpoint {
-    pub(crate) fn accept(call: &ToolCall, open_commitments: &[String]) -> Result<Self, String> {
+    pub(crate) fn accept(
+        call: &ToolCall,
+        open_commitments: &[String],
+        max_chars: usize,
+    ) -> Result<Self, String> {
         let checkpoint = Self::deserialize(&call.arguments)
             .map_err(|error| format!("invalid checkpoint: {error}"))?;
+        let filled = [
+            &checkpoint.memory,
+            &checkpoint.open_threads,
+            &checkpoint.commitments,
+            &checkpoint.decisions,
+        ]
+        .iter()
+        .any(|items| items.iter().any(|item| !item.trim().is_empty()))
+            || !checkpoint.tone.trim().is_empty();
+        if !filled {
+            return Err("Checkpoint refused: it is empty, so the whole conversation would be forgotten. Write what the next turns need.".to_owned());
+        }
+        let size = checkpoint.render().chars().count();
+        if size > max_chars {
+            return Err(format!(
+                "Checkpoint refused: it is {size} characters, the limit is {max_chars}. Keep what the next turns need and drop the rest."
+            ));
+        }
         let kept = |commitment: &str| {
             checkpoint
                 .commitments
@@ -130,7 +152,7 @@ mod tests {
             "memory": [], "open_threads": [], "decisions": [], "tone": "",
             "commitments": ["Send Maria the Acme brief"],
         }));
-        let error = Checkpoint::accept(&dropped, &open).unwrap_err();
+        let error = Checkpoint::accept(&dropped, &open, 10_000).unwrap_err();
         assert!(error.contains("Call back Friday"), "{error}");
         assert!(!error.contains("Acme"), "{error}");
 
@@ -139,7 +161,28 @@ mod tests {
             "commitments": [" Send Maria the Acme brief "],
             "resolved": ["Call back Friday"],
         }));
-        assert!(Checkpoint::accept(&resolved, &open).is_ok());
+        assert!(Checkpoint::accept(&resolved, &open, 10_000).is_ok());
+    }
+
+    #[test]
+    fn empty_or_oversized_checkpoints_are_refused() {
+        let empty = call(json!({
+            "memory": [" "], "open_threads": [], "commitments": [], "decisions": [], "tone": "",
+        }));
+        assert!(
+            Checkpoint::accept(&empty, &[], 10_000)
+                .unwrap_err()
+                .contains("empty")
+        );
+        let big = call(json!({
+            "memory": ["x".repeat(500)], "open_threads": [], "commitments": [], "decisions": [], "tone": "",
+        }));
+        assert!(
+            Checkpoint::accept(&big, &[], 200)
+                .unwrap_err()
+                .contains("limit is 200")
+        );
+        assert!(Checkpoint::accept(&big, &[], 10_000).is_ok());
     }
 
     #[test]

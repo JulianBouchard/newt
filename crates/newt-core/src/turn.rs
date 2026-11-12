@@ -35,6 +35,12 @@ pub struct TurnInput<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct Compaction<'a> {
+    pub open_commitments: &'a [String],
+    pub max_checkpoint_chars: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct TurnSettings<'a> {
     pub model: &'a str,
     pub first_call_effort: Option<Effort>,
@@ -42,7 +48,7 @@ pub struct TurnSettings<'a> {
     pub max_output_tokens: u32,
     pub max_model_calls: u32,
     pub lane: Lane,
-    pub compaction: Option<&'a [String]>,
+    pub compaction: Option<Compaction<'a>>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +103,7 @@ pub(crate) struct TurnContext<'a> {
     specs: &'a [ToolSpec],
     pub(crate) retention: &'a HashMap<String, Retention>,
     pub(crate) invalidates: &'a HashMap<String, Vec<PageKey>>,
-    pub(crate) compaction: Option<&'a [String]>,
+    pub(crate) compaction: Option<Compaction<'a>>,
     prefix_fingerprint: LayerFingerprint,
     history_fingerprint: LayerFingerprint,
 }
@@ -494,7 +500,9 @@ async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(
             .scratch
             .get(traced..)
             .unwrap_or_default()
-            .to_vec(),
+            .iter()
+            .map(without_reasoning)
+            .collect(),
     }));
     let output_started = AtomicBool::new(false);
     let mut on_event = |event: StreamEvent| {

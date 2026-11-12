@@ -157,6 +157,22 @@ async fn export(
     capture_content: bool,
     turns: &[&str],
 ) -> Vec<(Option<String>, Value)> {
+    export_events(
+        profile,
+        capture_content,
+        turns
+            .iter()
+            .flat_map(|turn| turn_events(turn, "555 0100"))
+            .collect(),
+    )
+    .await
+}
+
+async fn export_events(
+    profile: Profile,
+    capture_content: bool,
+    events: Vec<Event>,
+) -> Vec<(Option<String>, Value)> {
     let (endpoint, captured) = collector().await;
     let (sink, exporter) = OtlpSink::spawn(
         OtlpConfig {
@@ -173,10 +189,8 @@ async fn export(
         },
         64,
     );
-    for turn in turns {
-        for event in turn_events(turn, "555 0100") {
-            sink.emit(event);
-        }
+    for event in events {
+        sink.emit(event);
     }
     drop(sink);
     exporter.await.unwrap();
@@ -247,9 +261,10 @@ async fn each_turn_is_one_trace_with_chat_and_tool_spans_under_its_root() {
 }
 
 #[tokio::test]
-async fn ids_are_stable_so_a_reexport_overwrites() {
-    let once = export(Profile::Generic, true, &["t1"]).await;
-    let again = export(Profile::Generic, true, &["t1"]).await;
+async fn ids_are_stable_so_a_reexport_of_the_same_attempt_overwrites() {
+    let events = turn_events("t1", "555 0100");
+    let once = export_events(Profile::Generic, true, events.clone()).await;
+    let again = export_events(Profile::Generic, true, events).await;
     let ids = |exports: &[(Option<String>, Value)]| -> Vec<(Value, Value)> {
         spans(&exports[0].1)
             .iter()
@@ -272,4 +287,35 @@ async fn without_content_capture_no_messages_leave_the_process() {
 fn malformed_headers_are_rejected() {
     assert!(parse_headers("Authorization").is_err());
     assert_eq!(parse_headers("").unwrap(), Vec::new());
+}
+
+#[tokio::test]
+async fn without_content_capture_errors_and_session_keys_stay_private() {
+    let mut events = turn_events("t1", "555 0100");
+    events.pop();
+    events.push(Event::now(EventKind::TurnFailed {
+        session: "assistant/customer-7".into(),
+        turn: "t1".into(),
+        error: "provider said: my phone is 555 0100".into(),
+        committed_messages: 0,
+    }));
+    let exports = export_events(Profile::Langfuse, false, events).await;
+    let body = exports[0].1.to_string();
+    assert!(!body.contains("555"), "{body}");
+    assert!(!body.contains("customer-7"), "{body}");
+    assert_eq!(spans(&exports[0].1)[0]["status"]["message"], "failed");
+}
+
+#[tokio::test]
+async fn ids_differ_across_turns_calls_and_tools() {
+    let exports = export(Profile::Generic, true, &["t1", "t2"]).await;
+    let mut span_ids: Vec<Value> = exports
+        .iter()
+        .flat_map(|(_, body)| spans(body))
+        .map(|span| span["spanId"].clone())
+        .collect();
+    let total = span_ids.len();
+    span_ids.sort_by_key(ToString::to_string);
+    span_ids.dedup();
+    assert_eq!(span_ids.len(), total);
 }

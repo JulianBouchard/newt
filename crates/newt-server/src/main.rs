@@ -48,11 +48,13 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let jsonl = config
-        .events
-        .jsonl
-        .clone()
-        .map(|path| JsonlSink::spawn(path, EVENT_BUFFER));
+    let jsonl = config.events.jsonl.clone().map(|path| {
+        let (sink, writer) = JsonlSink::spawn(path, EVENT_BUFFER);
+        (
+            sink.capturing_content(config.events.capture_content),
+            writer,
+        )
+    });
     let otlp = otlp_sink(&config)?;
 
     let pool = db::connect_and_migrate(&config.database).await?;

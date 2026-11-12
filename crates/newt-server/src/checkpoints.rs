@@ -18,6 +18,7 @@ pub struct CompactionState {
     pub rows: Vec<LiveRow>,
     pub checkpoint_tokens: i64,
     pub open_commitments: Vec<String>,
+    pub due: bool,
 }
 
 impl CompactionState {
@@ -88,7 +89,16 @@ impl Store {
             .bind(through)
             .fetch_all(&pool)
             .await?;
+            let due: bool = sqlx::query_scalar(
+                "select compaction_retry_after is null or compaction_retry_after <= now() \
+                 from sessions where agent = $1 and key = $2",
+            )
+            .bind(&lease.agent)
+            .bind(&lease.key)
+            .fetch_one(&pool)
+            .await?;
             Ok(CompactionState {
+                due,
                 rows: rows
                     .into_iter()
                     .map(|(seq, turn_id, tokens)| LiveRow {
@@ -121,7 +131,7 @@ impl Store {
             let mut tx = pool.begin().await?;
             let next_seq = fence(&mut tx, &lease).await?;
             let seq =
-                insert_history(&mut tx, &lease, &turn_id, "compaction", next_seq, &flushed).await?;
+                insert_history(&mut tx, &lease, &turn_id, "message", next_seq, &flushed).await?;
             sqlx::query(
                 "insert into checkpoints (agent, key, through_seq, snapshot, summary) \
                  values ($1, $2, $3, $4, $5)",
@@ -133,14 +143,37 @@ impl Store {
             .bind(checkpoint.render())
             .execute(&mut *tx)
             .await?;
-            sqlx::query("update sessions set next_history_seq = $3 where agent = $1 and key = $2")
-                .bind(&lease.agent)
-                .bind(&lease.key)
-                .bind(seq)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "update sessions set next_history_seq = $3, compaction_failures = 0, \
+                   compaction_retry_after = null where agent = $1 and key = $2",
+            )
+            .bind(&lease.agent)
+            .bind(&lease.key)
+            .bind(seq)
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
             Ok(())
+        })
+    }
+}
+
+impl Store {
+    pub fn record_compaction_failure(&self, lease: &Lease, base_seconds: f64) -> Owned<i32> {
+        let pool = self.pool().clone();
+        let lease = lease.clone();
+        Box::pin(async move {
+            sqlx::query_scalar(
+                "update sessions set compaction_failures = compaction_failures + 1, \
+                   compaction_retry_after = now() + make_interval(secs => \
+                     least($3 * power(2, compaction_failures), 86400)) \
+                 where agent = $1 and key = $2 returning compaction_failures",
+            )
+            .bind(&lease.agent)
+            .bind(&lease.key)
+            .bind(base_seconds)
+            .fetch_one(&pool)
+            .await
         })
     }
 }

@@ -34,7 +34,6 @@ pub(crate) struct CallTrace {
 pub(crate) struct ToolTrace {
     call_id: String,
     name: String,
-    started: Option<OffsetDateTime>,
     finished: OffsetDateTime,
     ms: u64,
     retention: Retention,
@@ -51,13 +50,16 @@ pub(crate) struct TurnTrace {
     error: Option<String>,
     calls: BTreeMap<u32, CallTrace>,
     tools: Vec<ToolTrace>,
-    tool_starts: HashMap<String, OffsetDateTime>,
+    last_seen: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Assembler {
     turns: HashMap<(String, String), TurnTrace>,
+    finished: std::collections::VecDeque<(String, String)>,
 }
+
+const REMEMBERED_FINISHED: usize = 4096;
 
 impl Assembler {
     fn turn(&mut self, session: &str, turn: &str) -> &mut TurnTrace {
@@ -76,6 +78,14 @@ impl Assembler {
     )]
     pub(crate) fn apply(&mut self, event: Event) -> Option<TurnTrace> {
         let at = event.at;
+        if let Some(key) = event_turn(&event.kind)
+            && self.finished.contains(&key)
+        {
+            return None;
+        }
+        if let Some((session, turn)) = event_turn(&event.kind) {
+            self.turn(&session, &turn).last_seen = Some(at);
+        }
         match event.kind {
             EventKind::TurnStarted {
                 session,
@@ -140,14 +150,6 @@ impl Assembler {
                 entry.finished = Some(at);
                 entry.error = Some(error);
             }
-            EventKind::ToolStarted {
-                session,
-                turn,
-                call_id,
-                ..
-            } => {
-                self.turn(&session, &turn).tool_starts.insert(call_id, at);
-            }
             EventKind::ToolFinished {
                 session,
                 turn,
@@ -157,12 +159,9 @@ impl Assembler {
                 is_error,
                 ms,
             } => {
-                let trace = self.turn(&session, &turn);
-                let started = trace.tool_starts.remove(&call_id);
-                trace.tools.push(ToolTrace {
+                self.turn(&session, &turn).tools.push(ToolTrace {
                     call_id,
                     name,
-                    started,
                     finished: at,
                     ms,
                     retention,
@@ -170,7 +169,7 @@ impl Assembler {
                 });
             }
             EventKind::TurnCompleted { session, turn, .. } => {
-                let mut trace = self.turns.remove(&(session, turn))?;
+                let mut trace = self.close(session, turn)?;
                 trace.ended = Some(at);
                 return Some(trace);
             }
@@ -180,17 +179,45 @@ impl Assembler {
                 error,
                 ..
             } => {
-                let mut trace = self.turns.remove(&(session, turn))?;
+                let mut trace = self.close(session, turn)?;
                 trace.ended = Some(at);
                 trace.error = Some(error);
                 return Some(trace);
             }
             EventKind::ServerReady { .. }
             | EventKind::TurnSteered { .. }
+            | EventKind::ToolStarted { .. }
             | EventKind::ModelCallReplayed { .. }
             | EventKind::CompactionCompleted { .. } => {}
         }
         None
+    }
+
+    fn close(&mut self, session: String, turn: String) -> Option<TurnTrace> {
+        let key = (session, turn);
+        let trace = self.turns.remove(&key)?;
+        if self.finished.len() == REMEMBERED_FINISHED {
+            self.finished.pop_front();
+        }
+        self.finished.push_back(key);
+        Some(trace)
+    }
+
+    pub(crate) fn evict_older_than(&mut self, cutoff: OffsetDateTime) -> Vec<TurnTrace> {
+        let stale: Vec<(String, String)> = self
+            .turns
+            .iter()
+            .filter(|(_, trace)| trace.last_seen.is_none_or(|seen| seen < cutoff))
+            .map(|(key, _)| key.clone())
+            .collect();
+        stale
+            .into_iter()
+            .filter_map(|(session, turn)| self.close(session, turn))
+            .map(|mut trace| {
+                trace.error = Some("the turn never finished".to_owned());
+                trace
+            })
+            .collect()
     }
 
     pub(crate) fn drain(&mut self) -> Vec<TurnTrace> {
@@ -201,6 +228,24 @@ impl Assembler {
                 trace
             })
             .collect()
+    }
+}
+
+fn event_turn(kind: &EventKind) -> Option<(String, String)> {
+    match kind {
+        EventKind::TurnStarted { session, turn, .. }
+        | EventKind::ModelCallStarted { session, turn, .. }
+        | EventKind::ModelCallFinished { session, turn, .. }
+        | EventKind::ModelCallInterrupted { session, turn, .. }
+        | EventKind::ModelCallFailed { session, turn, .. }
+        | EventKind::ToolStarted { session, turn, .. }
+        | EventKind::ToolFinished { session, turn, .. }
+        | EventKind::TurnCompleted { session, turn, .. }
+        | EventKind::TurnFailed { session, turn, .. } => Some((session.clone(), turn.clone())),
+        EventKind::ServerReady { .. }
+        | EventKind::TurnSteered { .. }
+        | EventKind::ModelCallReplayed { .. }
+        | EventKind::CompactionCompleted { .. } => None,
     }
 }
 
@@ -247,6 +292,17 @@ fn span(
     span
 }
 
+fn status_message(error: Option<&str>, config: &OtlpConfig, hooks: &Hooks) -> Option<String> {
+    let error = error?;
+    if !config.capture_content {
+        return Some("failed".to_owned());
+    }
+    Some(match &hooks.redactor {
+        Some(redactor) => redactor.redact(error.to_owned()),
+        None => error.to_owned(),
+    })
+}
+
 fn content(messages: &impl serde::Serialize, hooks: &Hooks) -> String {
     let raw = serde_json::to_string(messages).unwrap_or_default();
     match &hooks.redactor {
@@ -258,20 +314,32 @@ fn content(messages: &impl serde::Serialize, hooks: &Hooks) -> String {
 struct Ids<'a> {
     trace: String,
     root: String,
-    session: &'a str,
+    attempt: String,
+    conversation: String,
+    agent: &'a str,
     turn: &'a str,
 }
 
 pub(crate) fn spans(trace: &TurnTrace, config: &OtlpConfig, hooks: &Hooks) -> Vec<Value> {
     let (session, turn) = (trace.session.as_str(), trace.turn.as_str());
+    let attempt = trace
+        .started
+        .map(|started| started.unix_timestamp_nanos().to_string())
+        .unwrap_or_default();
     let ids = Ids {
         trace: format!(
             "{}{}",
-            hex64(&["trace", session, turn]),
-            hex64(&["trace-low", session, turn])
+            hex64(&["trace", session, turn, &attempt]),
+            hex64(&["trace-low", session, turn, &attempt])
         ),
-        root: hex64(&["root", session, turn]),
-        session,
+        root: hex64(&["root", session, turn, &attempt]),
+        conversation: if config.capture_content {
+            session.to_owned()
+        } else {
+            hex64(&["session", session])
+        },
+        agent: session.split('/').next().unwrap_or(session),
+        attempt,
         turn,
     };
     let now = OffsetDateTime::now_utc();
@@ -302,12 +370,12 @@ fn root_span(
     config: &OtlpConfig,
     hooks: &Hooks,
 ) -> Value {
-    let session = ids.session;
-    let agent = session.split('/').next().unwrap_or(session);
+    let agent = ids.agent;
+    let conversation = ids.conversation.as_str();
     let mut attributes = vec![
         text("gen_ai.operation.name", "invoke_agent"),
         text("gen_ai.agent.name", agent),
-        text("gen_ai.conversation.id", session),
+        text("gen_ai.conversation.id", conversation),
         text("newt.turn.id", ids.turn),
         int(
             "newt.model_calls",
@@ -317,7 +385,7 @@ fn root_span(
     if let Some(enricher) = &hooks.enricher {
         attributes.extend(
             enricher
-                .attributes(session)
+                .attributes(&trace.session)
                 .into_iter()
                 .map(|(key, value)| text(&key, value)),
         );
@@ -328,7 +396,7 @@ fn root_span(
         "turn"
     };
     if config.profile == Profile::Langfuse {
-        attributes.push(text("langfuse.session.id", session));
+        attributes.push(text("langfuse.session.id", conversation));
         attributes.push(text("langfuse.trace.name", format!("{agent} {label}")));
         attributes.push(text("langfuse.observation.type", "agent"));
         if config.capture_content {
@@ -354,7 +422,7 @@ fn root_span(
         KIND_INTERNAL,
         window,
         attributes,
-        trace.error.as_deref(),
+        status_message(trace.error.as_deref(), config, hooks).as_deref(),
     )
 }
 
@@ -412,14 +480,20 @@ fn chat_span(
     if config.profile == Profile::Langfuse {
         attributes.extend(langfuse_generation(call, call_started, config, hooks));
     }
-    let call_id = hex64(&["call", ids.session, ids.turn, &index.to_string()]);
+    let call_id = hex64(&[
+        "call",
+        &ids.conversation,
+        ids.turn,
+        &ids.attempt,
+        &index.to_string(),
+    ]);
     span(
         (&ids.trace, &call_id, Some(&ids.root)),
         format!("chat {}", call.model),
         KIND_CLIENT,
         (call_started, call_ended),
         attributes,
-        call.error.as_deref(),
+        status_message(call.error.as_deref(), config, hooks).as_deref(),
     )
 }
 
@@ -470,9 +544,8 @@ fn langfuse_generation(
 }
 
 fn tool_span(tool: &ToolTrace, ids: &Ids<'_>, config: &OtlpConfig) -> Value {
-    let tool_started = tool.started.unwrap_or_else(|| {
-        tool.finished - time::Duration::milliseconds(i64::try_from(tool.ms).unwrap_or(0))
-    });
+    let tool_started =
+        tool.finished - time::Duration::milliseconds(i64::try_from(tool.ms).unwrap_or(0));
     let mut attributes = vec![
         text("gen_ai.operation.name", "execute_tool"),
         text("gen_ai.tool.name", tool.name.clone()),
@@ -485,7 +558,13 @@ fn tool_span(tool: &ToolTrace, ids: &Ids<'_>, config: &OtlpConfig) -> Value {
     if config.profile == Profile::Langfuse {
         attributes.push(text("langfuse.observation.type", "tool"));
     }
-    let tool_id = hex64(&["tool", ids.session, ids.turn, &tool.call_id]);
+    let tool_id = hex64(&[
+        "tool",
+        &ids.conversation,
+        ids.turn,
+        &ids.attempt,
+        &tool.call_id,
+    ]);
     span(
         (&ids.trace, &tool_id, Some(&ids.root)),
         format!("execute_tool {}", tool.name),

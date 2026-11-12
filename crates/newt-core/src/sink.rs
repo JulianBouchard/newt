@@ -55,6 +55,7 @@ pub enum SinkError {
 pub struct JsonlSink {
     sender: mpsc::Sender<Event>,
     dropped: Arc<AtomicU64>,
+    capture_content: bool,
 }
 
 impl JsonlSink {
@@ -64,6 +65,7 @@ impl JsonlSink {
         let sink = Self {
             sender,
             dropped: Arc::new(AtomicU64::new(0)),
+            capture_content: false,
         };
         (sink, writer)
     }
@@ -71,10 +73,21 @@ impl JsonlSink {
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
+
+    #[must_use]
+    pub fn capturing_content(mut self, capture_content: bool) -> Self {
+        self.capture_content = capture_content;
+        self
+    }
 }
 
 impl EventSink for JsonlSink {
     fn emit(&self, event: Event) {
+        let event = if self.capture_content {
+            event
+        } else {
+            event.without_content()
+        };
         if self.sender.try_send(event).is_err() {
             let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::warn!(dropped = total, "jsonl sink full or closed, event dropped");
@@ -134,6 +147,7 @@ mod tests {
         let sink = JsonlSink {
             sender,
             dropped: Arc::new(AtomicU64::new(0)),
+            capture_content: false,
         };
 
         sink.emit(Event::now(EventKind::ServerReady { boot_ms: 1 }));

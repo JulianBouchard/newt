@@ -141,13 +141,17 @@ fn plan_checkpoint(
     context: &TurnContext<'_>,
     accepted: &mut Option<Checkpoint>,
 ) -> ToolOutput {
-    let Some(open_commitments) = context.compaction else {
+    let Some(compaction) = context.compaction else {
         return failure(CHECKPOINT_OUTSIDE);
     };
     if calls_in_batch != 1 {
         return failure(CHECKPOINT_ALONE);
     }
-    match Checkpoint::accept(call, open_commitments) {
+    match Checkpoint::accept(
+        call,
+        compaction.open_commitments,
+        compaction.max_checkpoint_chars,
+    ) {
         Ok(checkpoint) => {
             *accepted = Some(checkpoint);
             success("Checkpoint saved.")
@@ -266,6 +270,7 @@ fn finish_batch(
     let mut results = Vec::with_capacity(outputs.len());
     let effects = tool_calls.iter().zip(&outputs).any(|(call, (output, _))| {
         !output.is_error
+            && call.name != REMEMBER
             && matches!(
                 context.retention.get(&call.name),
                 Some(Retention::Durable | Retention::Outward)

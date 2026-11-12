@@ -16,12 +16,29 @@ pub struct Event {
     pub kind: EventKind,
 }
 
+fn empty_message() -> Message {
+    Message {
+        role: crate::message::Role::Assistant,
+        parts: Vec::new(),
+    }
+}
+
 impl Event {
     pub fn now(kind: EventKind) -> Self {
         Self {
             at: OffsetDateTime::now_utc(),
             kind,
         }
+    }
+
+    #[must_use]
+    pub fn without_content(mut self) -> Self {
+        match &mut self.kind {
+            EventKind::ModelCallStarted { input, .. } => input.clear(),
+            EventKind::ModelCallFinished { output, .. } => output.parts.clear(),
+            _ => {}
+        }
+        self
     }
 }
 
@@ -48,6 +65,7 @@ pub enum EventKind {
         prefix: LayerFingerprint,
         history: LayerFingerprint,
         scratch: LayerFingerprint,
+        #[serde(default)]
         input: Vec<Message>,
     },
     ModelCallFinished {
@@ -59,6 +77,7 @@ pub enum EventKind {
         stop: StopReason,
         response_id: Option<String>,
         request_ids: BTreeMap<String, String>,
+        #[serde(default = "empty_message")]
         output: Message,
     },
     ModelCallReplayed {

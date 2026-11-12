@@ -15,6 +15,9 @@ use crate::sink::EventSink;
 use spans::{Assembler, TurnTrace};
 
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_EXPORTS_IN_FLIGHT: usize = 4;
+const UNFINISHED_AFTER: Duration = Duration::from_mins(30);
+const EVICT_EVERY: Duration = Duration::from_mins(1);
 const ERROR_BODY_LIMIT: usize = 300;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -100,14 +103,17 @@ pub struct OtlpSink {
 impl OtlpSink {
     pub fn spawn(config: OtlpConfig, hooks: Hooks, capacity: usize) -> (Self, JoinHandle<()>) {
         let (sender, receiver) = mpsc::channel(capacity);
-        let exporter = tokio::spawn(run(config, hooks, receiver));
-        (
-            Self {
-                sender,
-                dropped: Arc::new(AtomicU64::new(0)),
-            },
-            exporter,
-        )
+        let dropped = Arc::new(AtomicU64::new(0));
+        let exporter = tokio::spawn(run(
+            Arc::new(Exporter {
+                client: reqwest::Client::new(),
+                config,
+                hooks,
+            }),
+            receiver,
+            Arc::clone(&dropped),
+        ));
+        (Self { sender, dropped }, exporter)
     }
 
     pub fn dropped(&self) -> u64 {
@@ -123,18 +129,51 @@ impl EventSink for OtlpSink {
     }
 }
 
-async fn run(config: OtlpConfig, hooks: Hooks, mut receiver: mpsc::Receiver<Event>) {
-    let client = reqwest::Client::new();
+struct Exporter {
+    client: reqwest::Client,
+    config: OtlpConfig,
+    hooks: Hooks,
+}
+
+async fn run(
+    exporter: Arc<Exporter>,
+    mut receiver: mpsc::Receiver<Event>,
+    dropped: Arc<AtomicU64>,
+) {
     let mut assembler = Assembler::default();
+    let mut exports = tokio::task::JoinSet::new();
+    let mut last_eviction = std::time::Instant::now();
+    let mut reported_drops = 0;
     while let Some(event) = receiver.recv().await {
-        if let Some(trace) = assembler.apply(event) {
-            export(&client, &config, &hooks, &[trace]).await;
+        let mut finished: Vec<TurnTrace> = assembler.apply(event).into_iter().collect();
+        if last_eviction.elapsed() >= EVICT_EVERY {
+            last_eviction = std::time::Instant::now();
+            finished.extend(
+                assembler.evict_older_than(time::OffsetDateTime::now_utc() - UNFINISHED_AFTER),
+            );
         }
+        if finished.is_empty() {
+            continue;
+        }
+        let drops = dropped.load(Ordering::Relaxed);
+        if drops > reported_drops {
+            tracing::warn!(
+                dropped = drops - reported_drops,
+                "trace events dropped: the exporter is behind"
+            );
+            reported_drops = drops;
+        }
+        while exports.len() >= MAX_EXPORTS_IN_FLIGHT {
+            exports.join_next().await;
+        }
+        let exporter = Arc::clone(&exporter);
+        exports.spawn(async move { exporter.export(&finished).await });
     }
     let unfinished = assembler.drain();
     if !unfinished.is_empty() {
-        export(&client, &config, &hooks, &unfinished).await;
+        exporter.export(&unfinished).await;
     }
+    while exports.join_next().await.is_some() {}
 }
 
 pub(crate) fn request_body(
@@ -159,32 +198,30 @@ pub(crate) fn request_body(
     })
 }
 
-async fn export(
-    client: &reqwest::Client,
-    config: &OtlpConfig,
-    hooks: &Hooks,
-    traces: &[TurnTrace],
-) {
-    let mut request = client
-        .post(&config.endpoint)
-        .timeout(EXPORT_TIMEOUT)
-        .json(&request_body(config, hooks, traces));
-    for (name, value) in &config.headers {
-        request = request.header(name, value);
-    }
-    match request.send().await {
-        Ok(response) if response.status().is_success() => {}
-        Ok(response) => {
-            let status = response.status();
-            let body: String = response
-                .text()
-                .await
-                .unwrap_or_default()
-                .chars()
-                .take(ERROR_BODY_LIMIT)
-                .collect();
-            tracing::warn!(%status, %body, "OTLP export rejected");
+impl Exporter {
+    async fn export(&self, traces: &[TurnTrace]) {
+        let mut request = self
+            .client
+            .post(&self.config.endpoint)
+            .timeout(EXPORT_TIMEOUT)
+            .json(&request_body(&self.config, &self.hooks, traces));
+        for (name, value) in &self.config.headers {
+            request = request.header(name, value);
         }
-        Err(error) => tracing::warn!(error = %error.without_url(), "OTLP export failed"),
+        match request.send().await {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => {
+                let status = response.status();
+                let body: String = response
+                    .text()
+                    .await
+                    .unwrap_or_default()
+                    .chars()
+                    .take(ERROR_BODY_LIMIT)
+                    .collect();
+                tracing::warn!(%status, %body, "OTLP export rejected");
+            }
+            Err(error) => tracing::warn!(error = %error.without_url(), "OTLP export failed"),
+        }
     }
 }

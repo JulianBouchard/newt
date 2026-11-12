@@ -19,7 +19,7 @@ use newt_core::sink::EventSink;
 use newt_core::steering::NoSteering;
 use newt_core::tools::{Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::turn::{
-    TurnDeps, TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings, run_turn,
+    Compaction, TurnDeps, TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings, run_turn,
 };
 use newt_core::workspace::Workspace;
 use serde_json::{Value, json};
@@ -224,7 +224,10 @@ async fn run_with(
             max_output_tokens: 4096,
             max_model_calls,
             lane: Lane::Interactive,
-            compaction,
+            compaction: compaction.map(|open_commitments| Compaction {
+                open_commitments,
+                max_checkpoint_chars: 10_000,
+            }),
         },
     )
     .await;
@@ -851,4 +854,15 @@ async fn checkpoint_outside_compaction_is_refused() {
     let run = run(script, 4, &external_tools()).await;
     assert!(result_of(&run, 1, "c").1);
     assert!(run.outcome.unwrap().checkpoint.is_none());
+}
+
+#[tokio::test]
+async fn a_failed_turn_that_only_remembered_has_no_effects() {
+    let script = vec![assistant(vec![call(
+        "m1",
+        "remember",
+        json!({ "note": "Remote only" }),
+    )])];
+    let failure = run(script, 4, &external_tools()).await.outcome.unwrap_err();
+    assert!(!failure.effects, "remember changes nothing outside newt");
 }
