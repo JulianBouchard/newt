@@ -13,7 +13,7 @@ use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
-                           [--cache-scope key|prefix|routed] [--machines 2]
+                           [--cache-scope key|prefix|routed] [--machines 4]
                            [--dump-dir DIR] [--turn-marker TEXT] [--decision-log FILE]
   newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false]
   newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
@@ -59,7 +59,7 @@ fn cache_scope(flags: &Flags) -> anyhow::Result<CacheScope> {
         "key" => CacheScope::Key,
         "prefix" => CacheScope::Prefix,
         "routed" => CacheScope::Routed {
-            machines: flags.number("machines", 2)?,
+            machines: flags.number("machines", 4)?,
         },
         other => bail!("--cache-scope must be key, prefix or routed, not `{other}`"),
     })
