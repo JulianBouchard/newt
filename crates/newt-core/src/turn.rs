@@ -20,6 +20,12 @@ use crate::steering::Steering;
 use crate::tools::{EndTurn, Retention, ToolDef, ToolHost, builtin_tools};
 use crate::workspace::{PageKey, Workspace};
 
+mod call;
+mod setup;
+
+use call::{next_response, take_arrivals};
+use setup::{ToolTable, initial_scratch, tool_table, turn_started};
+
 const END_TURN_REMINDER: &str =
     "Every turn ends with a call to end_turn. Call it now if you are done, or keep working.";
 const CHECKPOINT_REMINDER: &str = "Compaction ends with a call to checkpoint. Call it now.";
@@ -278,18 +284,6 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     }
 }
 
-fn without_reasoning(message: &Message) -> Message {
-    Message {
-        role: message.role,
-        parts: message
-            .parts
-            .iter()
-            .filter(|part| !matches!(part, Part::Reasoning(_)))
-            .cloned()
-            .collect(),
-    }
-}
-
 struct Finish {
     end: EndTurn,
     checkpoint: Option<Checkpoint>,
@@ -396,203 +390,4 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
         }
     }
     Err(TurnError::TooManyModelCalls(settings.max_model_calls))
-}
-
-async fn take_arrivals<M, H, S: Steering, J: Journal>(
-    deps: &TurnDeps<'_, M, H, S, J>,
-    state: &mut TurnState,
-) -> Vec<crate::steering::Steered> {
-    if !state.replay.exhausted() {
-        return state.replay.take_steered();
-    }
-    let fresh = deps.steering.take_new().await;
-    for steered in &fresh {
-        deps.journal.append(JournalEntry::Steered {
-            id: steered.id.clone(),
-            message: steered.message.clone(),
-        });
-    }
-    fresh
-}
-
-async fn next_response<M: Model, H: ToolHost, S: Steering, J: Journal>(
-    deps: &TurnDeps<'_, M, H, S, J>,
-    request: &ModelRequest<'_>,
-    call: u32,
-    context: &TurnContext<'_>,
-    replay: &mut Replay,
-    traced: usize,
-) -> Result<Option<ModelResponse>, TurnError> {
-    if let Some((message, usage, stop)) = replay.take_response() {
-        deps.sink.emit(Event::now(EventKind::ModelCallReplayed {
-            session: context.ids.session.to_owned(),
-            turn: context.ids.turn.to_owned(),
-            call,
-        }));
-        return Ok(Some(ModelResponse {
-            message,
-            usage,
-            stop,
-            timing: CallTiming::default(),
-            response_id: None,
-            request_ids: BTreeMap::new(),
-        }));
-    }
-    match call_model(deps, request, call, context, traced).await? {
-        CallResult::Response(response) => {
-            deps.journal.append(JournalEntry::ModelResponse {
-                call,
-                message: response.message.clone(),
-                usage: response.usage,
-                stop: response.stop.clone(),
-            });
-            Ok(Some(*response))
-        }
-        CallResult::Interrupted => Ok(None),
-    }
-}
-
-fn turn_started(input: &TurnInput<'_>, settings: &TurnSettings<'_>) -> Event {
-    Event::now(EventKind::TurnStarted {
-        session: input.session.to_owned(),
-        turn: input.turn.to_owned(),
-        history_messages: input.history.len(),
-        events: input.events.len(),
-        compaction: settings.compaction.is_some(),
-    })
-}
-
-fn initial_scratch(
-    context: Option<String>,
-    events: Vec<Message>,
-) -> (Vec<Message>, HashSet<usize>) {
-    let mut scratch = Vec::with_capacity(events.len() + 1);
-    let mut harness_notes = HashSet::new();
-    if let Some(context) = context.filter(|context| !context.trim().is_empty()) {
-        harness_notes.insert(0);
-        scratch.push(Message::user_text(context));
-    }
-    scratch.extend(events);
-    (scratch, harness_notes)
-}
-
-struct ToolTable {
-    specs: Vec<ToolSpec>,
-    retention: HashMap<String, Retention>,
-    invalidates: HashMap<String, Vec<PageKey>>,
-}
-
-fn tool_table(external_tools: &[ToolDef], skills: &[Skill]) -> Result<ToolTable, TurnError> {
-    let tools: Vec<ToolDef> = builtin_tools()
-        .into_iter()
-        .chain((!skills.is_empty()).then(|| load_skill_tool(skills)))
-        .chain(external_tools.iter().cloned())
-        .collect();
-    let mut retention = HashMap::new();
-    let mut invalidates = HashMap::new();
-    for tool in &tools {
-        if retention
-            .insert(tool.spec.name.clone(), tool.retention)
-            .is_some()
-        {
-            return Err(TurnError::DuplicateTool(tool.spec.name.clone()));
-        }
-        if !tool.invalidates.is_empty() {
-            invalidates.insert(tool.spec.name.clone(), tool.invalidates.clone());
-        }
-    }
-    let specs = tools.into_iter().map(|tool| tool.spec).collect();
-    Ok(ToolTable {
-        specs,
-        retention,
-        invalidates,
-    })
-}
-
-async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(
-    deps: &TurnDeps<'_, M, H, S, J>,
-    request: &ModelRequest<'_>,
-    call: u32,
-    context: &TurnContext<'_>,
-    traced: usize,
-) -> Result<CallResult, TurnError> {
-    let ids = &context.ids;
-    let sink = deps.sink;
-    sink.emit(Event::now(EventKind::ModelCallStarted {
-        session: ids.session.to_owned(),
-        turn: ids.turn.to_owned(),
-        call,
-        model: request.model.to_owned(),
-        effort: request.effort,
-        prefix: context.prefix_fingerprint.clone(),
-        history: context.history_fingerprint.clone(),
-        scratch: request.prompt.scratch_fingerprint(),
-        input: request
-            .prompt
-            .scratch
-            .get(traced..)
-            .unwrap_or_default()
-            .iter()
-            .map(without_reasoning)
-            .collect(),
-    }));
-    let output_started = AtomicBool::new(false);
-    let mut on_event = |event: StreamEvent| {
-        output_started.store(true, Ordering::Relaxed);
-        if let StreamEvent::ToolCallStarted { id, name } = event {
-            sink.emit(Event::now(EventKind::ToolStarted {
-                session: ids.session.to_owned(),
-                turn: ids.turn.to_owned(),
-                call_id: id,
-                name,
-            }));
-        }
-    };
-    let stream = deps.model.stream(request, deps.cancel, &mut on_event);
-    tokio::pin!(stream);
-    let arrived = deps.steering.arrived();
-    tokio::pin!(arrived);
-    let mut listening = true;
-    let result = loop {
-        tokio::select! {
-            result = &mut stream => break result,
-            () = &mut arrived, if listening => {
-                if output_started.load(Ordering::Relaxed) {
-                    listening = false;
-                } else {
-                    sink.emit(Event::now(EventKind::ModelCallInterrupted {
-                        session: ids.session.to_owned(),
-                        turn: ids.turn.to_owned(),
-                        call,
-                    }));
-                    return Ok(CallResult::Interrupted);
-                }
-            }
-        }
-    };
-    match result {
-        Ok(response) => {
-            sink.emit(Event::now(EventKind::ModelCallFinished {
-                session: ids.session.to_owned(),
-                turn: ids.turn.to_owned(),
-                call,
-                usage: response.usage,
-                timing: response.timing,
-                stop: response.stop.clone(),
-                response_id: response.response_id.clone(),
-                request_ids: response.request_ids.clone(),
-                output: without_reasoning(&response.message),
-            }));
-            Ok(CallResult::Response(Box::new(response)))
-        }
-        Err(error) => {
-            sink.emit(Event::now(EventKind::ModelCallFailed {
-                session: ids.session.to_owned(),
-                turn: ids.turn.to_owned(),
-                call,
-                error: error.to_string(),
-            }));
-            Err(error.into())
-        }
-    }
 }
