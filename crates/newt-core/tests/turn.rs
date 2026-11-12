@@ -71,6 +71,8 @@ impl Model for ScriptedModel {
                     },
                     stop: StopReason::ToolUse,
                     timing: CallTiming::default(),
+                    response_id: None,
+                    request_ids: std::collections::BTreeMap::new(),
                 }
             });
         std::future::ready(result)

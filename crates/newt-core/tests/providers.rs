@@ -154,6 +154,7 @@ async fn anthropic_stream_decodes_thinking_text_tool_call_and_cache_usage() {
     assert_eq!(response.usage.input_tokens, 2520);
     assert_eq!(response.usage.cache_read_tokens, 2400);
     assert_eq!(response.usage.output_tokens, 42);
+    assert_eq!(response.response_id.as_deref(), Some("msg_1"));
     assert_eq!(
         events,
         vec![
@@ -222,6 +223,7 @@ async fn openai_stream_keeps_reasoning_items_and_reports_cached_tokens() {
     assert_eq!(response.usage.input_tokens, 3000);
     assert_eq!(response.usage.cache_read_tokens, 2048);
     assert_eq!(response.usage.reasoning_tokens, 64);
+    assert_eq!(response.response_id.as_deref(), Some("resp_1"));
     assert_eq!(response.stop, StopReason::ToolUse);
     assert_eq!(
         events,
@@ -365,4 +367,75 @@ async fn a_mid_stream_overload_is_a_retryable_api_error() {
 
     assert!(matches!(&error, ProviderError::Api { kind, .. } if kind == "overloaded_error"));
     assert!(error.retryable());
+}
+
+#[tokio::test]
+async fn an_api_key_header_route_sends_that_header_and_no_bearer_token() {
+    let seen: Arc<Mutex<Option<axum::http::HeaderMap>>> = Arc::new(Mutex::new(None));
+    let sink = Arc::clone(&seen);
+    let app = Router::new().route(
+        "/responses",
+        post(move |headers: axum::http::HeaderMap| {
+            let sink = Arc::clone(&sink);
+            async move {
+                *sink.lock().await = Some(headers);
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .header("apim-request-id", "req-42")
+                    .body(Body::from(include_str!("fixtures/openai_tool_use.sse")))
+                    .unwrap()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ProviderClient::new(
+        Protocol::OpenaiResponses,
+        format!("http://{address}"),
+        "azure-key",
+    )
+    .unwrap()
+    .with_api_key_header("api-key");
+
+    let response = stream_once(&client, &CancellationToken::new())
+        .await
+        .0
+        .unwrap();
+
+    let headers = seen.lock().await.take().unwrap();
+    assert_eq!(headers.get("api-key").unwrap(), "azure-key");
+    assert!(headers.get("authorization").is_none());
+    assert_eq!(
+        response
+            .request_ids
+            .get("apim-request-id")
+            .map(String::as_str),
+        Some("req-42")
+    );
+}
+
+#[tokio::test]
+async fn capture_mode_writes_the_request_and_raw_stream_without_the_key() {
+    let fixture = include_str!("fixtures/anthropic_tool_use.sse");
+    let (base, _) = serve("/v1/messages", StatusCode::OK, Body::from(fixture)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let client = ProviderClient::new(Protocol::AnthropicMessages, base, "secret-key")
+        .unwrap()
+        .with_capture_dir(dir.path());
+
+    stream_once(&client, &CancellationToken::new())
+        .await
+        .0
+        .unwrap();
+
+    let request = std::fs::read_to_string(dir.path().join("0000-request.json")).unwrap();
+    let stream = std::fs::read_to_string(dir.path().join("0000-response.sse")).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&request).unwrap()["model"],
+        "test-model"
+    );
+    assert!(!request.contains("secret-key"));
+    assert!(stream.starts_with("HTTP 200 OK\n\n"));
+    assert!(stream.ends_with(fixture));
 }

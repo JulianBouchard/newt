@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use crate::commit::{CommitRules, committed_messages};
 use crate::event::{Event, EventKind};
 use crate::message::{Message, Part, Role, ToolCall, ToolResult};
-use crate::prompt::{Effort, ModelRequest, Prompt, ToolSpec};
+use crate::prompt::{Effort, LayerFingerprint, ModelRequest, Prompt, ToolSpec};
 use crate::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
@@ -93,6 +93,8 @@ struct TurnContext<'a> {
     workspace: &'a Workspace,
     specs: &'a [ToolSpec],
     retention: &'a HashMap<String, Retention>,
+    prefix_fingerprint: LayerFingerprint,
+    history_fingerprint: LayerFingerprint,
 }
 
 struct TurnState {
@@ -120,6 +122,12 @@ pub async fn run_turn<M: Model, H: ToolHost>(
             });
         }
     };
+    let layers = Prompt {
+        system: input.system,
+        tools: &specs,
+        history: input.history,
+        scratch: &[],
+    };
     let context = TurnContext {
         ids: TurnIds {
             session: input.session,
@@ -130,7 +138,15 @@ pub async fn run_turn<M: Model, H: ToolHost>(
         workspace: input.workspace,
         specs: &specs,
         retention: &retention,
+        prefix_fingerprint: layers.prefix_fingerprint(),
+        history_fingerprint: layers.history_fingerprint(),
     };
+    sink.emit(Event::now(EventKind::TurnStarted {
+        session: input.session.to_owned(),
+        turn: input.turn.to_owned(),
+        history_messages: input.history.len(),
+        events: input.events.len(),
+    }));
     let mut state = TurnState {
         scratch: input.events,
         summaries: HashMap::new(),
@@ -205,7 +221,7 @@ async fn drive<M: Model, H: ToolHost>(
             max_output_tokens: settings.max_output_tokens,
             cache_key: context.ids.session,
         };
-        let response = call_model(model, &request, call, &context.ids, sink, cancel).await?;
+        let response = call_model(model, &request, call, context, sink, cancel).await?;
         state.calls.push(CallReport {
             usage: response.usage,
             timing: response.timing,
@@ -263,14 +279,20 @@ async fn call_model<M: Model>(
     model: &M,
     request: &ModelRequest<'_>,
     call: u32,
-    ids: &TurnIds<'_>,
+    context: &TurnContext<'_>,
     sink: &dyn EventSink,
     cancel: &CancellationToken,
 ) -> Result<ModelResponse, TurnError> {
+    let ids = &context.ids;
     sink.emit(Event::now(EventKind::ModelCallStarted {
         session: ids.session.to_owned(),
         turn: ids.turn.to_owned(),
         call,
+        model: request.model.to_owned(),
+        effort: request.effort,
+        prefix: context.prefix_fingerprint.clone(),
+        history: context.history_fingerprint.clone(),
+        scratch: request.prompt.scratch_fingerprint(),
     }));
     let mut on_event = |event: StreamEvent| {
         if let StreamEvent::ToolCallStarted { id, name } = event {
@@ -291,6 +313,8 @@ async fn call_model<M: Model>(
                 usage: response.usage,
                 timing: response.timing,
                 stop: response.stop.clone(),
+                response_id: response.response_id.clone(),
+                request_ids: response.request_ids.clone(),
             }));
             Ok(response)
         }

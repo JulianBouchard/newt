@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::path::PathBuf;
 
-use newt_core::event::Event;
 use newt_core::message::Message;
 use newt_core::prompt::Effort;
 use newt_core::provider::{Protocol, ProviderClient};
-use newt_core::sink::EventSink;
+use newt_core::sink::JsonlSink;
 use newt_core::tools::NoTools;
 use newt_core::turn::{TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
@@ -13,12 +13,6 @@ use tokio_util::sync::CancellationToken;
 
 const SYSTEM: &str = "You are a concise personal assistant. Read the workspace before answering. \
 You cannot message the person directly in this demo: answer in plain text, then call end_turn.";
-
-struct Quiet;
-
-impl EventSink for Quiet {
-    fn emit(&self, _event: Event) {}
-}
 
 fn env(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("set {name}"))
@@ -33,12 +27,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("NEWT_PROTOCOL must be anthropic or openai, not {other}").into());
         }
     };
-    let client = ProviderClient::new(protocol, env("NEWT_BASE_URL")?, env("NEWT_API_KEY")?)?;
+    let mut client = ProviderClient::new(protocol, env("NEWT_BASE_URL")?, env("NEWT_API_KEY")?)?;
+    if let Ok(header) = std::env::var("NEWT_AUTH_HEADER") {
+        client = client.with_api_key_header(header);
+    }
+    if let Ok(dir) = std::env::var("NEWT_CAPTURE_DIR") {
+        client = client.with_capture_dir(dir);
+    }
     let model = env("NEWT_MODEL")?;
     let system = match std::env::var("NEWT_SYSTEM_FILE") {
         Ok(path) => std::fs::read_to_string(path)?,
         Err(_) => SYSTEM.to_owned(),
     };
+    let events_path = std::env::var("NEWT_EVENTS_FILE")
+        .map_or_else(|_| PathBuf::from("newt-events.jsonl"), PathBuf::from);
+    let (sink, writer) = JsonlSink::spawn(events_path.clone(), 1024);
+    let session = std::env::var("NEWT_SESSION").unwrap_or_else(|_| "demo-session".to_owned());
+
     let workspace = Workspace::new(BTreeMap::from([
         (
             "profile.md".to_owned(),
@@ -57,7 +62,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_output_tokens: 4096,
         max_model_calls: 6,
     };
-    let mut out = std::io::stdout().lock();
     let mut history: Vec<Message> = Vec::new();
     let asks = [
         "What do you know about me? One sentence.",
@@ -70,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &client,
             &NoTools,
             TurnInput {
-                session: "demo-session",
+                session: &session,
                 turn: &turn,
                 system: &system,
                 external_tools: &[],
@@ -79,29 +83,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 workspace: &workspace,
             },
             &settings,
-            &Quiet,
+            &sink,
             &CancellationToken::new(),
         )
         .await?;
-
-        writeln!(out, "\n{turn}: {ask}")?;
-        for (call, report) in outcome.calls.iter().enumerate() {
-            writeln!(
-                out,
-                "  call {call}: input {} (cache hit {:.0}%), output {}, first output {:?} ms, total {} ms",
-                report.usage.input_tokens,
-                report.usage.cache_hit_ratio() * 100.0,
-                report.usage.output_tokens,
-                report.timing.first_output_ms,
-                report.timing.total_ms,
-            )?;
-        }
-        writeln!(
-            out,
-            "  committed {} messages to history",
-            outcome.committed.len()
-        )?;
         history.extend(outcome.committed);
     }
+
+    let dropped = sink.dropped();
+    drop(sink);
+    writer.await??;
+    writeln!(
+        std::io::stdout().lock(),
+        "events written to {} ({dropped} dropped); run `cargo run -q -p newt-server --bin newt-report -- {}`",
+        events_path.display(),
+        events_path.display()
+    )?;
     Ok(())
 }

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{Emitter, ProviderError, StopReason, Usage, decode, tool_arguments};
+use super::{Decoded, Emitter, ProviderError, StopReason, Usage, decode, tool_arguments};
 use crate::message::{Message, Part, Reasoning, Role, ToolCall};
 use crate::prompt::{Effort, ModelRequest};
 use crate::sse::SseEvent;
@@ -135,6 +135,8 @@ enum Event {
 
 #[derive(Debug, Deserialize)]
 struct StartMessage {
+    #[serde(default)]
+    id: Option<String>,
     usage: StartUsage,
 }
 
@@ -220,6 +222,7 @@ pub(super) struct Decoder {
     blocks: Vec<Block>,
     usage: Usage,
     stop: Option<StopReason>,
+    response_id: Option<String>,
 }
 
 impl Decoder {
@@ -251,6 +254,7 @@ impl super::Decoder for Decoder {
     fn handle(&mut self, event: &SseEvent, emit: &mut Emitter<'_>) -> Result<bool, ProviderError> {
         match decode::<Event>(event)? {
             Event::MessageStart { message } => {
+                self.response_id = message.id;
                 let cache_read = message.usage.cache_read_input_tokens.unwrap_or(0);
                 let cache_write = message.usage.cache_creation_input_tokens.unwrap_or(0);
                 self.usage.cache_read_tokens = cache_read;
@@ -319,7 +323,7 @@ impl super::Decoder for Decoder {
         Ok(false)
     }
 
-    fn finish(self) -> Result<(Vec<Part>, Usage, StopReason), ProviderError> {
+    fn finish(self) -> Result<Decoded, ProviderError> {
         let mut parts = Vec::new();
         for block in self.blocks {
             match block {
@@ -352,7 +356,12 @@ impl super::Decoder for Decoder {
         } else {
             StopReason::EndTurn
         });
-        Ok((parts, self.usage, stop))
+        Ok(Decoded {
+            parts,
+            usage: self.usage,
+            stop,
+            response_id: self.response_id,
+        })
     }
 }
 

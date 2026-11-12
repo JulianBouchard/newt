@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{Emitter, ProviderError, StopReason, Usage, decode, tool_arguments};
+use super::{Decoded, Emitter, ProviderError, StopReason, Usage, decode, tool_arguments};
 use crate::message::{Message, Part, Reasoning, Role, ToolCall};
 use crate::prompt::{Effort, ModelRequest};
 use crate::sse::SseEvent;
@@ -155,6 +155,8 @@ enum ContentPart {
 
 #[derive(Debug, Deserialize)]
 struct Completion {
+    #[serde(default)]
+    id: Option<String>,
     usage: Option<ResponseUsage>,
     #[serde(default)]
     incomplete_details: Option<IncompleteDetails>,
@@ -205,10 +207,12 @@ pub(super) struct Decoder {
     usage: Usage,
     stop: Option<StopReason>,
     refused: bool,
+    response_id: Option<String>,
 }
 
 impl Decoder {
     fn complete(&mut self, completion: Completion) {
+        self.response_id = completion.id;
         if let Some(usage) = completion.usage {
             self.usage = Usage {
                 input_tokens: usage.input_tokens,
@@ -308,7 +312,7 @@ impl super::Decoder for Decoder {
         Ok(false)
     }
 
-    fn finish(self) -> Result<(Vec<Part>, Usage, StopReason), ProviderError> {
+    fn finish(self) -> Result<Decoded, ProviderError> {
         let has_tool_call = self
             .parts
             .iter()
@@ -320,6 +324,11 @@ impl super::Decoder for Decoder {
         } else {
             StopReason::EndTurn
         });
-        Ok((self.parts, self.usage, stop))
+        Ok(Decoded {
+            parts: self.parts,
+            usage: self.usage,
+            stop,
+            response_id: self.response_id,
+        })
     }
 }

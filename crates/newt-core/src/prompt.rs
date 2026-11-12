@@ -18,6 +18,39 @@ pub enum Effort {
     High,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerFingerprint {
+    pub hash: String,
+    pub bytes: usize,
+    pub items: usize,
+}
+
+impl LayerFingerprint {
+    pub fn of<T: Serialize + ?Sized>(value: &T, items: usize) -> Self {
+        match serde_json::to_vec(value) {
+            Ok(bytes) => Self {
+                hash: format!("{:016x}", fnv1a(&bytes)),
+                bytes: bytes.len(),
+                items,
+            },
+            Err(error) => {
+                tracing::warn!(%error, "could not fingerprint a prompt layer");
+                Self {
+                    hash: "unserializable".to_owned(),
+                    bytes: 0,
+                    items,
+                }
+            }
+        }
+    }
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Prompt<'a> {
     pub system: &'a str,
@@ -27,6 +60,18 @@ pub struct Prompt<'a> {
 }
 
 impl Prompt<'_> {
+    pub fn prefix_fingerprint(&self) -> LayerFingerprint {
+        LayerFingerprint::of(&(self.system, self.tools), self.tools.len())
+    }
+
+    pub fn history_fingerprint(&self) -> LayerFingerprint {
+        LayerFingerprint::of(self.history, self.history.len())
+    }
+
+    pub fn scratch_fingerprint(&self) -> LayerFingerprint {
+        LayerFingerprint::of(self.scratch, self.scratch.len())
+    }
+
     pub fn messages(&self) -> impl Iterator<Item = &Message> {
         self.history.iter().chain(self.scratch)
     }
@@ -47,4 +92,25 @@ pub struct ModelRequest<'a> {
     pub effort: Option<Effort>,
     pub max_output_tokens: u32,
     pub cache_key: &'a str,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::Message;
+
+    #[test]
+    fn fingerprints_are_stable_and_change_with_content() {
+        let first = [Message::user_text("hi")];
+        let same = [Message::user_text("hi")];
+        let other = [Message::user_text("hi!")];
+        assert_eq!(
+            LayerFingerprint::of(&first[..], 1),
+            LayerFingerprint::of(&same[..], 1)
+        );
+        assert_ne!(
+            LayerFingerprint::of(&first[..], 1).hash,
+            LayerFingerprint::of(&other[..], 1).hash
+        );
+    }
 }
