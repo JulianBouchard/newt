@@ -1,3 +1,4 @@
+mod assemble;
 mod spans;
 
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use tokio::task::JoinHandle;
 use crate::event::Event;
 use crate::sink::EventSink;
 
-use spans::{Assembler, TurnTrace};
+use assemble::{Assembler, TurnTrace};
 
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_EXPORTS_IN_FLIGHT: usize = 4;
