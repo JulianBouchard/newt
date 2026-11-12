@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     }
     let mut out = std::io::stdout().lock();
     let mut flags = Vec::new();
-    let mut previous_by_session: HashMap<String, (String, OffsetDateTime)> = HashMap::new();
+    let mut previous_by_session: HashMap<String, (String, OffsetDateTime, u64)> = HashMap::new();
     for turn in &turns {
         print_turn(&mut out, turn)?;
         flag_turn(turn, &mut previous_by_session, &mut flags);
@@ -292,7 +292,7 @@ fn print_turn(out: &mut impl Write, turn: &TurnReport) -> std::io::Result<()> {
 
 fn flag_turn(
     turn: &TurnReport,
-    previous_by_session: &mut HashMap<String, (String, OffsetDateTime)>,
+    previous_by_session: &mut HashMap<String, (String, OffsetDateTime, u64)>,
     flags: &mut Vec<String>,
 ) {
     let label = format!("{}/{}", turn.session, turn.turn_id);
@@ -308,9 +308,10 @@ fn flag_turn(
         if let Some(error) = &call.failed {
             flags.push(format!("{label} call {index}: model call failed: {error}"));
         }
-        if let (Some((prefix, at)), Some(started)) =
+        if let (Some((prefix, at, previous_input)), Some(started)) =
             (previous_by_session.get(&turn.session), call.started_at)
             && *prefix == call.prefix_hash
+            && *previous_input >= CACHE_MIN_TOKENS
             && call.usage.input_tokens >= CACHE_MIN_TOKENS
             && call.usage.cache_hit_ratio() < CACHE_MISS_RATIO
         {
@@ -320,7 +321,7 @@ fn flag_turn(
                 (started - *at).whole_milliseconds()
             ));
         }
-        if let Some((prefix, _)) = previous_by_session.get(&turn.session)
+        if let Some((prefix, _, _)) = previous_by_session.get(&turn.session)
             && *prefix != call.prefix_hash
             && index == 0
         {
@@ -331,7 +332,10 @@ fn flag_turn(
             ));
         }
         if let Some(finished) = call.finished_at {
-            previous_by_session.insert(turn.session.clone(), (call.prefix_hash.clone(), finished));
+            previous_by_session.insert(
+                turn.session.clone(),
+                (call.prefix_hash.clone(), finished, call.usage.input_tokens),
+            );
         }
     }
     for pair in turn.calls.windows(2) {

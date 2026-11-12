@@ -4,17 +4,38 @@ An agent runtime for products: a long-lived agent per customer, your backend as 
 
 Newts regrow what they lose. So does this: every turn strips the context back and grows it from the workspace and the history, so stale reads never pile up and the prompt cache stays warm.
 
-Early days. In so far: streaming Anthropic and OpenAI clients, the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, and the reactive workspace fed by a context provider.
+Early days, not yet in production. In so far: streaming Anthropic and OpenAI clients, the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, a reactive workspace fed by a context provider, MCP tools, compaction and OTLP tracing.
 
-## Run it
+## Try it: a personal assistant
+
+`newt-demo` is a small assistant that keeps a person's notes and tasks and replies by chat. One process serves both halves an app gives newt: the context provider (`/assistant`) and the tools, over MCP (`/mcp`). Its state lives in memory.
 
 ```sh
 docker compose up -d --wait
 export NEWT_DATABASE_URL=postgres://newt:newt@localhost:55432/newt
-export OPENAI_API_KEY=... ANTHROPIC_API_KEY=... ASSISTANT_TOKEN=...
+export ASSISTANT_TOKEN=$(openssl rand -hex 16)
+
+# terminal 1: the app side
+cargo run -p newt-demo
+
+# terminal 2: newt, with the route keys server.example.toml names
+export OPENAI_API_KEY=... ANTHROPIC_API_KEY=...
 NEWT_CONFIG=server.example.toml cargo run -p newt-server
-curl localhost:7878/healthz
 ```
+
+Talk to it, watch the turn live, and read what it sent:
+
+```sh
+curl -X POST localhost:7878/v1/agents/assistant/sessions/ana/events \
+  -H "Authorization: Bearer $ASSISTANT_TOKEN" -H 'content-type: application/json' \
+  -d '{"id":"m1","text":"Remind me to call the bank tomorrow. Also, I moved to Lisbon."}'
+
+curl -N localhost:7878/v1/agents/assistant/sessions/ana/live -H "Authorization: Bearer $ASSISTANT_TOKEN"
+
+curl localhost:4000/assistant/outbox/ana -H "Authorization: Bearer $ASSISTANT_TOKEN"
+```
+
+The event is accepted in a few milliseconds; the turn reads the workspace, adds the task and the note through MCP, sends a reply and ends. `newt-report newt-events.jsonl` breaks each turn down by model call. On a live run against gpt-6.1-terra, each turn took 6 to 8 seconds, of which newt itself spent about 20 ms.
 
 ## Context provider
 

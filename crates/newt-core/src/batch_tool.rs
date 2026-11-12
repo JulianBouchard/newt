@@ -238,6 +238,7 @@ pub(crate) struct Folded {
     pub(crate) results: Vec<ToolResult>,
     pub(crate) summaries: HashMap<String, String>,
     pub(crate) kept: HashSet<String>,
+    pub(crate) batch_ms: HashMap<String, u64>,
 }
 
 pub(crate) fn fold(
@@ -245,11 +246,13 @@ pub(crate) fn fold(
     mut results: Vec<Option<ToolResult>>,
     mut summaries: HashMap<String, String>,
     retention: &HashMap<String, Retention>,
+    durations: &[u64],
 ) -> Folded {
     let mut folded = Folded {
         results: Vec::with_capacity(expanded.groups.len()),
         summaries: HashMap::new(),
         kept: HashSet::new(),
+        batch_ms: HashMap::new(),
     };
     for group in &expanded.groups {
         match group {
@@ -262,6 +265,13 @@ pub(crate) fn fold(
                 }
             }
             Group::Batch { id, inner } => {
+                let slowest = inner
+                    .iter()
+                    .filter_map(|slot| durations.get(*slot))
+                    .max()
+                    .copied()
+                    .unwrap_or(0);
+                folded.batch_ms.insert(id.clone(), slowest);
                 let mut lines = Vec::with_capacity(inner.len());
                 let mut kept_lines = Vec::new();
                 let mut failures = 0;

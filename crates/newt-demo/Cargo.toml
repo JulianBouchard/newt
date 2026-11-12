@@ -1,0 +1,28 @@
+[package]
+name = "newt-demo"
+version = "0.1.0"
+description = "A small personal assistant for newt: its context provider and MCP tools in one process"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+rmcp = { version = "3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+time = { version = "0.3.55", features = ["formatting"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+newt-core = { version = "0.1.0", path = "../newt-core" }
+newt-server = { version = "0.1.0", path = "../newt-server" }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "macros"] }
+tokio-util = "0.7.20"

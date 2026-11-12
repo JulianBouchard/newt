@@ -557,6 +557,13 @@ async fn a_batch_runs_its_calls_with_the_send_last_and_keeps_only_the_writes() {
         vec!["save_note", "send_message"],
         "the outward call runs after the others"
     );
+    let batch_finished = run.sink.events.lock().unwrap().iter().any(|event| {
+        matches!(&event.kind, EventKind::ToolFinished { call_id, name, .. } if call_id == "b1" && name == "batch")
+    });
+    assert!(
+        batch_finished,
+        "a batch reports its own finish, not only its inner calls"
+    );
     let seen = &run.model.seen.lock().unwrap()[1].scratch;
     let folded = seen
         .iter()

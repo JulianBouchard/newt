@@ -4,7 +4,7 @@ use std::time::Instant;
 use futures_util::future::join_all;
 use futures_util::stream::{self, StreamExt};
 
-use crate::batch_tool::{Expanded, expand, fold, project};
+use crate::batch_tool::{BATCH, Expanded, expand, fold, project};
 use crate::checkpoint::{CHECKPOINT, Checkpoint};
 use crate::event::{Event, EventKind};
 use crate::journal::{Journal, JournalEntry, Replay};
@@ -268,6 +268,7 @@ fn finish_batch(
     let tool_calls = expanded.calls.as_slice();
     let mut summaries = HashMap::new();
     let mut results = Vec::with_capacity(outputs.len());
+    let durations: Vec<u64> = outputs.iter().map(|(_, ms)| *ms).collect();
     let effects = tool_calls.iter().zip(&outputs).any(|(call, (output, _))| {
         !output.is_error
             && call.name != REMEMBER
@@ -301,7 +302,20 @@ fn finish_batch(
             is_error: output.is_error,
         }));
     }
-    let folded = fold(expanded, results, summaries, context.retention);
+    let folded = fold(expanded, results, summaries, context.retention, &durations);
+    for result in &folded.results {
+        if let Some(inner) = folded.batch_ms.get(&result.call_id) {
+            sink.emit(Event::now(EventKind::ToolFinished {
+                session: context.ids.session.to_owned(),
+                turn: context.ids.turn.to_owned(),
+                call_id: result.call_id.clone(),
+                name: BATCH.to_owned(),
+                retention: Retention::Ephemeral,
+                is_error: result.is_error,
+                ms: *inner,
+            }));
+        }
+    }
     Batch {
         results: folded.results,
         summaries: folded.summaries,
