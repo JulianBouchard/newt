@@ -62,6 +62,8 @@ struct TurnContext {
     #[serde(default)]
     pages: Option<Vec<Page>>,
     #[serde(default)]
+    pinned: Option<String>,
+    #[serde(default)]
     instructions: Option<String>,
     #[serde(default)]
     constraints: Vec<String>,
@@ -306,7 +308,7 @@ impl ContextProviderBackend {
             session: key.to_owned(),
         };
         Ok(Prepared {
-            system: bootstrap.instructions.clone(),
+            system: with_pinned(&bootstrap.instructions, turn.pinned.as_deref()),
             tools: loaded.toolset.tools.clone(),
             context: turn.render(),
             skills: bootstrap.skills.clone(),
@@ -332,6 +334,13 @@ impl Backend for ContextProviderBackend {
         self.prepare_turn(agent, key)
             .await
             .map_err(|error| BackendError(format!("context provider for `{agent}`: {error}")))
+    }
+}
+
+fn with_pinned(instructions: &str, pinned: Option<&str>) -> String {
+    match pinned.map(str::trim).filter(|pinned| !pinned.is_empty()) {
+        Some(pinned) => format!("{instructions}\n\n<pinned>\n{pinned}\n</pinned>"),
+        None => instructions.to_owned(),
     }
 }
 

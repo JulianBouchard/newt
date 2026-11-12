@@ -29,6 +29,9 @@ pub struct Stats {
     pub output_tokens: AtomicU64,
     pub tool_calls: AtomicU64,
     pub failures: AtomicU64,
+    pub instructions_bytes: AtomicU64,
+    pub tools_bytes: AtomicU64,
+    pub input_bytes: AtomicU64,
 }
 
 impl Stats {
@@ -40,6 +43,9 @@ impl Stats {
             "output_tokens": self.output_tokens.load(Ordering::Relaxed),
             "tool_calls": self.tool_calls.load(Ordering::Relaxed),
             "failures": self.failures.load(Ordering::Relaxed),
+            "instructions_bytes": self.instructions_bytes.load(Ordering::Relaxed),
+            "tools_bytes": self.tools_bytes.load(Ordering::Relaxed),
+            "input_bytes": self.input_bytes.load(Ordering::Relaxed),
         })
     }
 }
@@ -52,11 +58,31 @@ pub struct FakeModel {
     failure_rate: f64,
     cache: PrefixCache,
     ids: AtomicU64,
+    shared_cache: bool,
+    dump_dir: Option<std::path::PathBuf>,
     pub stats: Stats,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct FakeOptions {
+    pub speed: f64,
+    pub failure_rate: f64,
+    pub seed: u64,
+    pub shared_cache: bool,
+    pub dump_dir: Option<std::path::PathBuf>,
+}
+
+const DUMP_LIMIT: u64 = 40;
+
 impl FakeModel {
-    pub fn new(timing: ModelTiming, speed: f64, failure_rate: f64, rng_seed: u64) -> Arc<Self> {
+    pub fn new(timing: ModelTiming, options: FakeOptions) -> Arc<Self> {
+        let FakeOptions {
+            speed,
+            failure_rate,
+            seed: rng_seed,
+            shared_cache,
+            dump_dir,
+        } = options;
         Arc::new(Self {
             rng: Rng::new(rng_seed),
             timing,
@@ -67,6 +93,8 @@ impl FakeModel {
                 readable_after: timing.cache_readable_after.div_f64(speed.max(0.001)),
             }),
             ids: AtomicU64::new(rng_seed),
+            shared_cache,
+            dump_dir,
             stats: Stats::default(),
         })
     }
@@ -191,6 +219,32 @@ fn finish(tools: &HashMap<String, Value>, compacting: bool) -> Vec<Call> {
     Vec::new()
 }
 
+async fn record_shape(model: &FakeModel, body: &Value) {
+    let size = |field: &str| {
+        u64::try_from(body.get(field).map_or(0, |value| value.to_string().len())).unwrap_or(0)
+    };
+    model
+        .stats
+        .instructions_bytes
+        .fetch_add(size("instructions"), Ordering::Relaxed);
+    model
+        .stats
+        .tools_bytes
+        .fetch_add(size("tools"), Ordering::Relaxed);
+    model
+        .stats
+        .input_bytes
+        .fetch_add(size("input"), Ordering::Relaxed);
+    let number = model.stats.calls.load(Ordering::Relaxed);
+    if let Some(dir) = &model.dump_dir
+        && number <= DUMP_LIMIT
+        && let Err(error) =
+            tokio::fs::write(dir.join(format!("{number:03}.json")), body.to_string()).await
+    {
+        tracing::warn!(%error, "could not dump a request");
+    }
+}
+
 fn cache_key(body: &Value) -> String {
     body.get("prompt_cache_key")
         .and_then(Value::as_str)
@@ -226,7 +280,12 @@ fn tool_schemas(body: &Value) -> HashMap<String, Value> {
 async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -> Response {
     model.stats.calls.fetch_add(1, Ordering::Relaxed);
     let timing = model.timing;
-    let key = cache_key(&body);
+    let key = if model.shared_cache {
+        "shared".to_owned()
+    } else {
+        cache_key(&body)
+    };
+    record_shape(&model, &body).await;
     let lookup = model.cache.lookup_and_store(&key, &prompt_bytes(&body));
     let uncached = lookup.input_tokens - lookup.cached_tokens;
     #[expect(clippy::cast_precision_loss, reason = "token counts far below 2^52")]

@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use newt_loadtest::driver::{LoadPlan, NewtTarget, run};
-use newt_loadtest::fake_model::{self, FakeModel};
+use newt_loadtest::fake_model::{self, FakeModel, FakeOptions};
 use newt_loadtest::mock_app::{self, MockApp};
 use newt_loadtest::profile::TERRA;
 use newt_server::config::ServerConfig;
@@ -30,7 +30,14 @@ async fn listen(router: axum::Router) -> String {
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPool) {
-    let model = FakeModel::new(TERRA, SPEED, 0.0, 11);
+    let model = FakeModel::new(
+        TERRA,
+        FakeOptions {
+            speed: SPEED,
+            seed: 11,
+            ..FakeOptions::default()
+        },
+    );
     let model_url = listen(fake_model::router(Arc::clone(&model))).await;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

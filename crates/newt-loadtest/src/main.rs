@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use newt_loadtest::driver::{LoadPlan, NewtTarget, run};
-use newt_loadtest::fake_model::{self, FakeModel};
+use newt_loadtest::fake_model::{self, FakeModel, FakeOptions};
 use newt_loadtest::mock_app::{self, MockApp};
 use newt_loadtest::profile::TERRA;
 use serde_json::Value;
@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
+                           [--cache-scope key|prefix] [--dump-dir DIR]
   newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false]
   newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
                     [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--timeout-s 300]
@@ -126,9 +127,13 @@ async fn main() -> anyhow::Result<()> {
         "fake-model" => {
             let model = FakeModel::new(
                 TERRA,
-                flags.number("speed", 1.0)?,
-                flags.number("failure-rate", 0.0)?,
-                flags.number("seed", 1)?,
+                FakeOptions {
+                    speed: flags.number("speed", 1.0)?,
+                    failure_rate: flags.number("failure-rate", 0.0)?,
+                    seed: flags.number("seed", 1)?,
+                    shared_cache: flags.text("cache-scope", "key") == "prefix",
+                    dump_dir: flags.0.get("dump-dir").map(std::path::PathBuf::from),
+                },
             );
             serve(
                 &flags.text("listen", "127.0.0.1:9100"),

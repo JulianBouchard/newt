@@ -280,3 +280,21 @@ async fn per_turn_instructions_and_constraints_become_turn_context() {
         "<turn_context>\n<instructions>\nReply on WhatsApp.\n</instructions>\n<active_constraints>\n- Travelling until Dec 2: hold intros\n</active_constraints>\n</turn_context>"
     );
 }
+
+#[tokio::test]
+async fn pinned_context_joins_the_cached_prefix_not_the_turn() {
+    let provider = Provider::new();
+    *provider.turn_extras.lock().unwrap() = json!({
+        "pinned": "Write like a peer. Short sentences.",
+        "instructions": "Reply on WhatsApp.",
+    });
+    let backend = serve(&provider, TOKEN).await;
+    let prepared = backend.prepare("assistant", "customer-7").await.unwrap();
+    assert_eq!(
+        prepared.system,
+        "You help one customer.\n\n<pinned>\nWrite like a peer. Short sentences.\n</pinned>"
+    );
+    let context = prepared.context.unwrap();
+    assert!(context.contains("Reply on WhatsApp."));
+    assert!(!context.contains("Write like a peer"));
+}
