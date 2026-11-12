@@ -209,6 +209,15 @@ fn apply(turns: &mut Vec<TurnReport>, event: Event) {
             entry.ended_at = Some(at);
             entry.outcome = format!("failed: {error}");
         }
+        EventKind::CompactionCompleted {
+            session,
+            turn,
+            tokens_before,
+            tokens_after,
+        } => {
+            turn_mut(turns, &session, &turn).outcome =
+                format!("compacted history {tokens_before} -> {tokens_after} tokens");
+        }
     }
 }
 

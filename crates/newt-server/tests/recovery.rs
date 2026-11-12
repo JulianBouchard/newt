@@ -108,6 +108,7 @@ impl Backend for WorldBackend {
             effort: None,
             max_output_tokens: 1024,
             max_model_calls: 6,
+            history_budget: 60_000,
             host: Host(Arc::clone(&self.0)),
         }))
     }

@@ -173,6 +173,7 @@ async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) 
             max_output_tokens: 1024,
             max_model_calls: 6,
             lane: Lane::Interactive,
+            compaction: None,
         },
     )
     .await

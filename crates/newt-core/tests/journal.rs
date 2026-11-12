@@ -171,6 +171,7 @@ async fn run(
             max_output_tokens: 1024,
             max_model_calls: 6,
             lane: Lane::Interactive,
+            compaction: None,
         },
     )
     .await

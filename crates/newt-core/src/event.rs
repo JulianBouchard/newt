@@ -104,4 +104,10 @@ pub enum EventKind {
         error: String,
         committed_messages: usize,
     },
+    CompactionCompleted {
+        session: String,
+        turn: String,
+        tokens_before: i64,
+        tokens_after: i64,
+    },
 }

@@ -15,6 +15,7 @@ pub struct Prepared<H> {
     pub effort: Option<Effort>,
     pub max_output_tokens: u32,
     pub max_model_calls: u32,
+    pub history_budget: u32,
     pub host: H,
 }
 
@@ -57,6 +58,7 @@ impl Backend for StaticBackend {
             effort: Some(Effort::Medium),
             max_output_tokens: 4096,
             max_model_calls: 8,
+            history_budget: 60_000,
             host: NoTools,
         }))
     }

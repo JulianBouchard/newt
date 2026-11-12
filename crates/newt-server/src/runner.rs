@@ -136,6 +136,10 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         &self.inner.owner
     }
 
+    pub fn model(&self) -> &M {
+        &self.inner.model
+    }
+
     pub fn wake(&self, agent: &str, key: &str) {
         if self.inner.stopping.is_cancelled() {
             return;

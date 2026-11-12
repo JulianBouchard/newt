@@ -64,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_output_tokens: 4096,
         max_model_calls: 6,
         lane: Lane::Interactive,
+        compaction: None,
     };
     let mut history: Vec<Message> = Vec::new();
     let asks = [

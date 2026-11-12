@@ -178,6 +178,7 @@ pub fn builtin_tools() -> Vec<ToolDef> {
             Retention::Durable,
         ),
         crate::batch_tool::batch_tool(),
+        crate::checkpoint::checkpoint_tool(),
     ]
 }
 

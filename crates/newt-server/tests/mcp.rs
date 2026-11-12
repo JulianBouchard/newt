@@ -373,6 +373,7 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
             max_output_tokens: 1024,
             max_model_calls: 6,
             lane: Lane::Interactive,
+            compaction: None,
         },
     )
     .await

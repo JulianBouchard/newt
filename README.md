@@ -22,7 +22,7 @@ Each agent in `server.toml` names a `context_provider` base URL and a `token_env
 
 | Call | When | Request | Response |
 |---|---|---|---|
-| `GET {base}/bootstrap` | first turn, then whenever the version changes | none | `{ version, instructions, model, first_call_effort?, effort?, max_output_tokens?, max_model_calls?, mcp_servers? }` |
+| `GET {base}/bootstrap` | first turn, then whenever the version changes | none | `{ version, instructions, model, first_call_effort?, effort?, max_output_tokens?, max_model_calls?, history_budget?, mcp_servers? }` |
 | `POST {base}/turn` | start of every turn | `{ session }` | `{ version, pages: [Page], instructions?, constraints? }` |
 | `POST {base}/pages` | a read of a page a tool invalidated | `{ session, keys: [PageKey] }` | `{ pages: [Page] }` |
 
@@ -46,6 +46,10 @@ Newt reads and writes a few `_meta` fields; a server that ignores them still wor
 | result | `newt/pages` | fresh page data, used without a refetch |
 
 Invalidation only reaches pages newt already has, so a tool that creates a page returns it in `newt/pages`. A result whose newt metadata is malformed marks every page stale. When a call times out or loses its connection, the model is told the outcome is unknown and not to repeat it, and the connections are rebuilt on the next turn.
+
+## Memory and compaction
+
+The agent saves durable facts with the built-in `remember` tool (one fact per call, kept in history as an append). When a session's live history passes `history_budget` tokens (60,000 by default), newt compacts it right after a turn commits: the agent's own model gets the same prompt plus one instruction, saves anything not yet recorded, then calls `checkpoint` with its memory, open threads, commitments, decisions and tone. Newt refuses a checkpoint that drops a commitment from the previous one unless it is listed as resolved, and nothing is sent while compacting. Later turns see the checkpoint followed by the most recent whole turns that fit in a quarter of the budget. Raw history is never deleted.
 
 ## License
 

@@ -1,4 +1,6 @@
 pub mod backend;
+pub mod checkpoints;
+mod compaction;
 pub mod config;
 pub mod context;
 pub mod db;

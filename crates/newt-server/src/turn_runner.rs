@@ -170,6 +170,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             max_output_tokens: prepared.max_output_tokens,
             max_model_calls: prepared.max_model_calls,
             lane,
+            compaction: None,
         },
     )
     .await;
@@ -178,7 +179,11 @@ async fn run_one_turn<B: Backend, M: Model>(
     drop(journal);
     journal_writer.await?;
 
-    finish_turn(inner, lease, plan.turn_id, consumed, result).await
+    let committed = finish_turn(inner, lease, plan.turn_id, consumed, result).await?;
+    if committed {
+        crate::compaction::compact_if_over_budget(inner, lease, &prepared).await?;
+    }
+    Ok(committed)
 }
 
 async fn finish_turn<B: Backend, M: Model>(

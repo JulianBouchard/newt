@@ -179,7 +179,7 @@ struct Run {
 }
 
 async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> Run {
-    run_with(script, max_model_calls, tools, None).await
+    run_with(script, max_model_calls, tools, None, None).await
 }
 
 async fn run_with(
@@ -187,6 +187,7 @@ async fn run_with(
     max_model_calls: u32,
     tools: &[ToolDef],
     context: Option<String>,
+    compaction: Option<&[String]>,
 ) -> Run {
     let model = ScriptedModel::new(script);
     let host = RecordingHost::default();
@@ -223,6 +224,7 @@ async fn run_with(
             max_output_tokens: 4096,
             max_model_calls,
             lane: Lane::Interactive,
+            compaction,
         },
     )
     .await;
@@ -514,6 +516,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             max_output_tokens: 1024,
             max_model_calls: 1,
             lane: Lane::Interactive,
+            compaction: None,
         },
     )
     .await;
@@ -765,6 +768,7 @@ async fn turn_context_reaches_the_model_first_and_is_never_committed() {
         2,
         &external_tools(),
         Some("<turn_context>no sends before 9am</turn_context>".into()),
+        None,
     )
     .await;
     let outcome = run.outcome.unwrap();
@@ -775,4 +779,76 @@ async fn turn_context_reaches_the_model_first_and_is_never_committed() {
     );
     assert_eq!(first[1], Message::user_text("Only remote roles please."));
     assert!(!format!("{:?}", outcome.committed).contains("9am"));
+}
+
+fn result_of(run: &Run, call_index: usize, id: &str) -> (String, bool) {
+    run.model.seen.lock().unwrap()[call_index]
+        .scratch
+        .iter()
+        .flat_map(|message| &message.parts)
+        .find_map(|part| match part {
+            Part::ToolResult(result) if result.call_id == id => {
+                Some((result.content.clone(), result.is_error))
+            }
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn compaction_flushes_refuses_sends_and_ends_on_a_checkpoint_that_keeps_commitments() {
+    let open = vec!["Send Maria the Acme brief".to_owned()];
+    let checkpoint = |commitments: Value| {
+        call(
+            "c",
+            "checkpoint",
+            json!({
+                "memory": ["Remote only"], "open_threads": [], "decisions": [], "tone": "brief",
+                "commitments": commitments,
+            }),
+        )
+    };
+    let script = vec![
+        assistant(vec![
+            call("m1", "remember", json!({ "note": "Remote only" })),
+            call("s1", "send_message", json!({ "text": "hi" })),
+        ]),
+        assistant(vec![call("e1", "end_turn", json!({ "nothing_new": "x" }))]),
+        assistant(vec![checkpoint(json!([]))]),
+        assistant(vec![checkpoint(json!(["Send Maria the Acme brief"]))]),
+    ];
+    let run = run_with(script, 6, &external_tools(), None, Some(&open)).await;
+    assert!(
+        run.host.calls.lock().unwrap().is_empty(),
+        "nothing is sent while compacting"
+    );
+    assert!(result_of(&run, 1, "s1").1);
+    assert!(result_of(&run, 2, "e1").0.contains("checkpoint"));
+    assert!(
+        result_of(&run, 3, "c")
+            .0
+            .contains("Send Maria the Acme brief")
+    );
+
+    let outcome = run.outcome.unwrap();
+    let saved = outcome.checkpoint.unwrap();
+    assert_eq!(saved.commitments, vec!["Send Maria the Acme brief"]);
+    let committed = format!("{:?}", outcome.committed);
+    assert!(committed.contains("Remote only"), "the flush is committed");
+    assert!(!committed.contains("\"checkpoint\""), "{committed}");
+}
+
+#[tokio::test]
+async fn checkpoint_outside_compaction_is_refused() {
+    let script = vec![
+        assistant(vec![call(
+            "c",
+            "checkpoint",
+            json!({ "memory": [], "open_threads": [], "commitments": [], "decisions": [], "tone": "" }),
+        )]),
+        assistant(vec![call("e1", "end_turn", json!({ "nothing_new": "x" }))]),
+    ];
+    let run = run(script, 4, &external_tools()).await;
+    assert!(result_of(&run, 1, "c").1);
+    assert!(run.outcome.unwrap().checkpoint.is_none());
 }

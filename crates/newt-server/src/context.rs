@@ -28,8 +28,14 @@ pub struct Bootstrap {
     pub max_output_tokens: u32,
     #[serde(default = "default_max_model_calls")]
     pub max_model_calls: u32,
+    #[serde(default = "default_history_budget")]
+    pub history_budget: u32,
     #[serde(default)]
     pub mcp_servers: Vec<McpServer>,
+}
+
+const fn default_history_budget() -> u32 {
+    60_000
 }
 
 #[derive(Debug)]
@@ -265,6 +271,9 @@ impl ContextProviderBackend {
                 bootstrap.model
             ));
         }
+        if bootstrap.history_budget < 1_000 {
+            return Err("bootstrap history_budget must be at least 1000 tokens".to_owned());
+        }
         if bootstrap.max_output_tokens == 0 || bootstrap.max_model_calls == 0 {
             return Err(
                 "bootstrap max_output_tokens and max_model_calls must be at least 1".to_owned(),
@@ -300,6 +309,7 @@ impl ContextProviderBackend {
             effort: bootstrap.effort,
             max_output_tokens: bootstrap.max_output_tokens,
             max_model_calls: bootstrap.max_model_calls,
+            history_budget: bootstrap.history_budget,
             host: loaded.toolset.host(key),
         })
     }

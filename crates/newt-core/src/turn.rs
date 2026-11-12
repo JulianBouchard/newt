@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
+use crate::checkpoint::Checkpoint;
 use crate::commit::{CommitRules, committed_messages};
 use crate::event::{Event, EventKind};
 use crate::journal::{Journal, JournalEntry, Replay};
@@ -18,6 +19,7 @@ use crate::workspace::{PageKey, Workspace};
 
 const END_TURN_REMINDER: &str =
     "Every turn ends with a call to end_turn. Call it now if you are done, or keep working.";
+const CHECKPOINT_REMINDER: &str = "Compaction ends with a call to checkpoint. Call it now.";
 
 #[derive(Debug)]
 pub struct TurnInput<'a> {
@@ -40,6 +42,7 @@ pub struct TurnSettings<'a> {
     pub max_output_tokens: u32,
     pub max_model_calls: u32,
     pub lane: Lane,
+    pub compaction: Option<&'a [String]>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +56,7 @@ pub struct CallReport {
 pub struct TurnOutcome {
     pub committed: Vec<Message>,
     pub end: EndTurn,
+    pub checkpoint: Option<Checkpoint>,
     pub calls: Vec<CallReport>,
     pub steered: Vec<String>,
 }
@@ -93,6 +97,7 @@ pub(crate) struct TurnContext<'a> {
     specs: &'a [ToolSpec],
     pub(crate) retention: &'a HashMap<String, Retention>,
     pub(crate) invalidates: &'a HashMap<String, Vec<PageKey>>,
+    pub(crate) compaction: Option<&'a [String]>,
     prefix_fingerprint: LayerFingerprint,
     history_fingerprint: LayerFingerprint,
 }
@@ -172,6 +177,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         specs: &specs,
         retention: &retention,
         invalidates: &invalidates,
+        compaction: settings.compaction,
         prefix_fingerprint: layers.prefix_fingerprint(),
         history_fingerprint: layers.history_fingerprint(),
     };
@@ -205,7 +211,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     );
     let ids = &context.ids;
     match result {
-        Ok(end) => {
+        Ok(Finish { end, checkpoint }) => {
             sink.emit(Event::now(EventKind::TurnCompleted {
                 session: ids.session.to_owned(),
                 turn: ids.turn.to_owned(),
@@ -215,6 +221,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
             Ok(TurnOutcome {
                 committed,
                 end,
+                checkpoint,
                 calls: state.calls,
                 steered: state.steered,
             })
@@ -237,12 +244,17 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     }
 }
 
+struct Finish {
+    end: EndTurn,
+    checkpoint: Option<Checkpoint>,
+}
+
 async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
     deps: &TurnDeps<'_, M, H, S, J>,
     context: &TurnContext<'_>,
     settings: &TurnSettings<'_>,
     state: &mut TurnState,
-) -> Result<EndTurn, TurnError> {
+) -> Result<Finish, TurnError> {
     let mut reminded = false;
     for call in 0..settings.max_model_calls {
         let arrived = take_arrivals(deps, state).await;
@@ -295,7 +307,13 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
             }
             reminded = true;
             state.harness_notes.insert(state.scratch.len());
-            state.scratch.push(Message::user_text(END_TURN_REMINDER));
+            state
+                .scratch
+                .push(Message::user_text(if context.compaction.is_some() {
+                    CHECKPOINT_REMINDER
+                } else {
+                    END_TURN_REMINDER
+                }));
             continue;
         }
 
@@ -307,8 +325,20 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
             role: Role::User,
             parts: batch.results.into_iter().map(Part::ToolResult).collect(),
         });
+        if let Some(checkpoint) = batch.checkpoint {
+            return Ok(Finish {
+                end: EndTurn {
+                    recorded: Vec::new(),
+                    nothing_new: Some("checkpoint written".to_owned()),
+                },
+                checkpoint: Some(checkpoint),
+            });
+        }
         if let Some(end) = batch.end {
-            return Ok(end);
+            return Ok(Finish {
+                end,
+                checkpoint: None,
+            });
         }
     }
     Err(TurnError::TooManyModelCalls(settings.max_model_calls))

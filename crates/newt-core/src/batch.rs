@@ -5,6 +5,7 @@ use futures_util::future::join_all;
 use futures_util::stream::{self, StreamExt};
 
 use crate::batch_tool::{Expanded, expand, fold, project};
+use crate::checkpoint::{CHECKPOINT, Checkpoint};
 use crate::event::{Event, EventKind};
 use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{ToolCall, ToolResult};
@@ -23,12 +24,18 @@ const END_TURN_REPEATED: &str = "Only one end_turn per batch; this one was ignor
 const OUTWARD_SKIPPED: &str =
     "Not run: an earlier outward call in this batch failed, so later ones were skipped.";
 const OUTWARD_CANCELLED: &str = "Not run: the turn was cancelled before this call started.";
+const CHECKPOINT_OUTSIDE: &str = "Only call checkpoint when newt asks you to compact.";
+const CHECKPOINT_ALONE: &str =
+    "Call checkpoint on its own, after your saves have succeeded, not alongside other calls.";
+const NO_SENDS_WHILE_COMPACTING: &str = "Not run: nothing is sent while compacting.";
+const END_TURN_WHILE_COMPACTING: &str = "Compaction ends with checkpoint, not end_turn.";
 
 pub(crate) struct Batch {
     pub(crate) results: Vec<ToolResult>,
     pub(crate) summaries: HashMap<String, String>,
     pub(crate) kept: HashSet<String>,
     pub(crate) end: Option<EndTurn>,
+    pub(crate) checkpoint: Option<Checkpoint>,
     pub(crate) effects: bool,
 }
 
@@ -47,14 +54,22 @@ fn success(content: impl Into<String>) -> ToolOutput {
     ToolOutput::ok(content)
 }
 
+struct Planned {
+    plans: Vec<Plan>,
+    end: Option<EndTurn>,
+    end_slot: Option<usize>,
+    checkpoint: Option<Checkpoint>,
+}
+
 fn plan_calls(
     tool_calls: &[ToolCall],
     preset: &HashMap<String, ToolOutput>,
     context: &TurnContext<'_>,
     replay: &Replay,
-) -> (Vec<Plan>, Option<EndTurn>, Option<usize>) {
+) -> Planned {
     let mut end = None;
     let mut end_slot = None;
+    let mut checkpoint = None;
     let plans = tool_calls
         .iter()
         .enumerate()
@@ -74,7 +89,13 @@ fn plan_calls(
             if let Some(output) = replay.output(&call.id) {
                 return Plan::Done(output.clone(), 0);
             }
+            if call.name == CHECKPOINT {
+                return Plan::Done(plan_checkpoint(call, tool_calls.len(), context, &mut checkpoint), 0);
+            }
             if call.name == END_TURN {
+                if context.compaction.is_some() {
+                    return Plan::Done(failure(END_TURN_WHILE_COMPACTING), 0);
+                }
                 if end_slot.is_some() {
                     return Plan::Done(failure(END_TURN_REPEATED), 0);
                 }
@@ -97,13 +118,42 @@ fn plan_calls(
                 return Plan::Workspace;
             }
             match context.retention.get(&call.name) {
+                Some(Retention::Outward) if context.compaction.is_some() => {
+                    Plan::Done(failure(NO_SENDS_WHILE_COMPACTING), 0)
+                }
                 Some(Retention::Outward) => Plan::Outward,
                 Some(_) => Plan::Concurrent,
                 None => Plan::Done(failure(format!("unknown tool `{}`", call.name)), 0),
             }
         })
         .collect();
-    (plans, end, end_slot)
+    Planned {
+        plans,
+        end,
+        end_slot,
+        checkpoint,
+    }
+}
+
+fn plan_checkpoint(
+    call: &ToolCall,
+    calls_in_batch: usize,
+    context: &TurnContext<'_>,
+    accepted: &mut Option<Checkpoint>,
+) -> ToolOutput {
+    let Some(open_commitments) = context.compaction else {
+        return failure(CHECKPOINT_OUTSIDE);
+    };
+    if calls_in_batch != 1 {
+        return failure(CHECKPOINT_ALONE);
+    }
+    match Checkpoint::accept(call, open_commitments) {
+        Ok(checkpoint) => {
+            *accepted = Some(checkpoint);
+            success("Checkpoint saved.")
+        }
+        Err(message) => failure(message),
+    }
 }
 
 pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
@@ -115,7 +165,12 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     let expanded = expand(model_calls, context.retention);
     let tool_calls = expanded.calls.as_slice();
     let (host, journal) = (deps.host, deps.journal);
-    let (plans, mut end, end_slot) = plan_calls(tool_calls, &expanded.preset, context, replay);
+    let Planned {
+        plans,
+        mut end,
+        end_slot,
+        checkpoint,
+    } = plan_calls(tool_calls, &expanded.preset, context, replay);
 
     let mut slots: Vec<Option<(ToolOutput, u64)>> = Vec::with_capacity(plans.len());
     let mut workspace_reads = Vec::new();
@@ -194,7 +249,9 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     }
 
     apply_workspace_changes(tool_calls, &mut outputs, context, replay);
-    finish_batch(&expanded, outputs, end, context, deps.sink)
+    let mut batch = finish_batch(&expanded, outputs, end, context, deps.sink);
+    batch.checkpoint = checkpoint;
+    batch
 }
 
 fn finish_batch(
@@ -245,6 +302,7 @@ fn finish_batch(
         summaries: folded.summaries,
         kept: folded.kept,
         end,
+        checkpoint: None,
         effects,
     }
 }

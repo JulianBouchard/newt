@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use newt_core::message::Message;
 use sqlx::PgPool;
-use sqlx::types::Json;
 
 use crate::store::Store;
 
@@ -99,21 +98,6 @@ impl Store {
                     },
                 )
                 .collect())
-        })
-    }
-
-    pub fn history(&self, lease: &Lease) -> Owned<Vec<Message>> {
-        let pool = self.pool().clone();
-        let lease = lease.clone();
-        Box::pin(async move {
-            let rows: Vec<Json<Message>> = sqlx::query_scalar(
-                "select entry from history where agent = $1 and key = $2 order by seq",
-            )
-            .bind(&lease.agent)
-            .bind(&lease.key)
-            .fetch_all(&pool)
-            .await?;
-            Ok(rows.into_iter().map(|Json(message)| message).collect())
         })
     }
 
@@ -271,15 +255,7 @@ impl Store {
     }
 }
 
-async fn commit(
-    pool: &PgPool,
-    lease: &Lease,
-    turn_id: &str,
-    messages: &[Message],
-    consumed: &[i64],
-    ttl: Duration,
-) -> Result<(), CommitError> {
-    let mut tx = pool.begin().await?;
+pub(crate) async fn fence(tx: &mut sqlx::PgConnection, lease: &Lease) -> Result<i64, CommitError> {
     let row: Option<(Option<String>, i64, i64)> = sqlx::query_as(
         "select lease_owner, lease_epoch, next_history_seq from sessions \
          where agent = $1 and key = $2 for update",
@@ -294,25 +270,50 @@ async fn commit(
     if owner.as_deref() != Some(lease.owner.as_str()) || epoch != lease.epoch {
         return Err(CommitError::Fenced);
     }
-    let mut seq = next_seq;
+    Ok(next_seq)
+}
+
+pub(crate) async fn insert_history(
+    tx: &mut sqlx::PgConnection,
+    lease: &Lease,
+    turn_id: &str,
+    kind: &str,
+    mut seq: i64,
+    messages: &[Message],
+) -> Result<i64, sqlx::Error> {
     for message in messages {
         let encoded =
             serde_json::to_string(message).map_err(|error| sqlx::Error::Encode(Box::new(error)))?;
         let tokens = i32::try_from(encoded.len() / 4).unwrap_or(i32::MAX);
         sqlx::query(
             "insert into history (agent, key, seq, turn_id, kind, entry, tokens) \
-             values ($1, $2, $3, $4, 'message', $5::jsonb, $6)",
+             values ($1, $2, $3, $4, $5, $6::jsonb, $7)",
         )
         .bind(&lease.agent)
         .bind(&lease.key)
         .bind(seq)
         .bind(turn_id)
+        .bind(kind)
         .bind(encoded)
         .bind(tokens)
         .execute(&mut *tx)
         .await?;
         seq += 1;
     }
+    Ok(seq)
+}
+
+async fn commit(
+    pool: &PgPool,
+    lease: &Lease,
+    turn_id: &str,
+    messages: &[Message],
+    consumed: &[i64],
+    ttl: Duration,
+) -> Result<(), CommitError> {
+    let mut tx = pool.begin().await?;
+    let next_seq = fence(&mut tx, lease).await?;
+    let seq = insert_history(&mut tx, lease, turn_id, "message", next_seq, messages).await?;
     sqlx::query(
         "update inbox set consumed_at = now() where agent = $1 and key = $2 and id = any($3)",
     )

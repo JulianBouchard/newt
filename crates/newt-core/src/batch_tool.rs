@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::checkpoint::CHECKPOINT;
 use crate::commit::{UNSUMMARIZED_RESULT_LIMIT, truncate};
 use crate::message::{ToolCall, ToolResult};
 use crate::prompt::ToolSpec;
@@ -140,7 +141,7 @@ fn parse(
     if let Some(nested) = args
         .calls
         .iter()
-        .find(|inner| inner.name == BATCH || inner.name == END_TURN)
+        .find(|inner| [BATCH, END_TURN, CHECKPOINT].contains(&inner.name.as_str()))
     {
         return Err(format!("`{}` cannot run inside a batch", nested.name));
     }
