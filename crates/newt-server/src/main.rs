@@ -7,6 +7,7 @@ use anyhow::Context;
 use newt_core::event::{Event, EventKind};
 use newt_core::sink::{EventSink, JsonlSink};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use newt_server::backend::NoContextProvider;
@@ -74,10 +75,15 @@ async fn main() -> anyhow::Result<()> {
         .map(|(name, agent)| {
             let token = std::env::var(&agent.token_env)
                 .with_context(|| format!("environment variable {} is not set", agent.token_env))?;
+            if token.trim().is_empty() {
+                anyhow::bail!("environment variable {} is empty", agent.token_env);
+            }
             Ok((name.clone(), token))
         })
         .collect::<anyhow::Result<_>>()?;
-    let (live_topics, _listener_task) = live::spawn_listener(pool.clone());
+    let (live_topics, _listener_task) = live::spawn_listener(pool.clone())
+        .await
+        .context("subscribing to Postgres notifications")?;
     let instrumentation = jsonl
         .as_ref()
         .map(|(sink, _)| Arc::new(sink.clone()) as Arc<dyn EventSink>);
@@ -90,16 +96,19 @@ async fn main() -> anyhow::Result<()> {
         live_topics.clone(),
     );
     let loops = runner.spawn_loops();
+    let shutdown = CancellationToken::new();
     let state = AppState {
         store: Store::new(pool),
         tokens: Arc::new(tokens),
         live: live_topics,
+        shutdown: shutdown.clone(),
     };
 
     let stopping = runner.clone();
     axum::serve(listener, http::router(state))
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
+            shutdown.cancel();
             stopping.shutdown().await;
         })
         .await

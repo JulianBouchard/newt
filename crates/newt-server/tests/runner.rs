@@ -24,6 +24,7 @@ struct ScriptedModel {
     script: Mutex<VecDeque<Message>>,
     steal_lease: Option<PgPool>,
     delay: Duration,
+    started: Arc<tokio::sync::Notify>,
 }
 
 fn respond(message: Message) -> ModelResponse {
@@ -53,6 +54,7 @@ impl Model for ScriptedModel {
             .await
             .unwrap();
         }
+        self.started.notify_one();
         tokio::time::sleep(self.delay).await;
         let next = self.script.lock().unwrap().pop_front();
         next.map(respond)
@@ -76,9 +78,12 @@ fn reply_and_end(text: &str) -> Message {
 
 fn fast() -> RunnerConfig {
     RunnerConfig {
-        lease_ttl: Duration::from_secs(5),
+        lease_ttl: Duration::from_secs(1),
         sweep_every: Duration::from_millis(50),
         shutdown_grace: Duration::from_secs(1),
+        backoff_base: Duration::from_millis(10),
+        max_attempts: 3,
+        max_sessions: 8,
     }
 }
 
@@ -92,7 +97,14 @@ fn runner(
     steal: bool,
     notifications: broadcast::Sender<Notification>,
 ) -> Runner<StaticBackend, ScriptedModel> {
-    slow_runner(pool, script, steal, notifications, Duration::ZERO)
+    slow_runner(
+        pool,
+        script,
+        steal,
+        notifications,
+        Duration::ZERO,
+        Arc::new(tokio::sync::Notify::new()),
+    )
 }
 
 fn slow_runner(
@@ -101,6 +113,7 @@ fn slow_runner(
     steal: bool,
     notifications: broadcast::Sender<Notification>,
     delay: Duration,
+    started: Arc<tokio::sync::Notify>,
 ) -> Runner<StaticBackend, ScriptedModel> {
     Runner::new(
         Store::new(pool.clone()),
@@ -113,6 +126,7 @@ fn slow_runner(
             script: Mutex::new(script.into()),
             steal_lease: steal.then(|| pool.clone()),
             delay,
+            started,
         },
         fast(),
         None,
@@ -127,14 +141,15 @@ async fn wait_for(
 ) -> SessionStatus {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(status) = store.session_status("assistant", key).await.unwrap()
-            && done(&status)
+        let status = store.session_status("assistant", key).await.unwrap();
+        if let Some(status) = &status
+            && done(status)
         {
-            return status;
+            return status.clone();
         }
         assert!(
             Instant::now() < deadline,
-            "session {key} never reached the expected state"
+            "session {key} never reached the expected state; last seen {status:?}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -142,7 +157,7 @@ async fn wait_for(
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_posted_event_runs_a_turn_and_commits_it(pool: PgPool) {
-    let (live, _listener) = spawn_listener(pool.clone());
+    let (live, _listener) = spawn_listener(pool.clone()).await.unwrap();
     let runner = runner(&pool, vec![reply_and_end("Hello!")], false, live.clone());
     let _loops = runner.spawn_loops();
     let state = AppState {
@@ -152,6 +167,7 @@ async fn a_posted_event_runs_a_turn_and_commits_it(pool: PgPool) {
             "secret".to_owned(),
         )])),
         live,
+        shutdown: CancellationToken::new(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -220,7 +236,11 @@ async fn a_failing_turn_backs_off_and_keeps_its_events(pool: PgPool) {
         .accept_event("assistant", "t3", &event("e1", "hi"))
         .await
         .unwrap();
-    let runner = runner(&pool, Vec::new(), false, broadcast::channel(16).0);
+    let thinking_aloud = Message {
+        role: Role::Assistant,
+        parts: vec![Part::text("Let me think about that...")],
+    };
+    let runner = runner(&pool, vec![thinking_aloud], false, broadcast::channel(16).0);
 
     runner.wake("assistant", "t3");
     runner.idle().await;
@@ -234,7 +254,7 @@ async fn a_failing_turn_backs_off_and_keeps_its_events(pool: PgPool) {
     assert_eq!(status.history_entries, 0);
     assert!(status.lease_owner.is_none());
     let (attempts, backing_off): (i32, bool) = sqlx::query_as(
-        "select failed_attempts, retry_after > now() from sessions where key = 't3'",
+        "select failed_attempts, retry_after is not null from sessions where key = 't3'",
     )
     .fetch_one(&pool)
     .await
@@ -303,14 +323,16 @@ async fn the_sweeper_picks_up_an_orphaned_session(pool: PgPool) {
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_message_sent_mid_turn_joins_that_turn(pool: PgPool) {
-    let (live, _listener) = spawn_listener(pool.clone());
+    let (live, _listener) = spawn_listener(pool.clone()).await.unwrap();
     let store = Store::new(pool.clone());
+    let started = Arc::new(tokio::sync::Notify::new());
     let runner = slow_runner(
         &pool,
         vec![reply_and_end("Berlin it is")],
         false,
         live,
         Duration::from_millis(400),
+        Arc::clone(&started),
     );
     store
         .accept_event("assistant", "t6", &event("e1", "roles in Lisbon"))
@@ -318,7 +340,7 @@ async fn a_message_sent_mid_turn_joins_that_turn(pool: PgPool) {
         .unwrap();
 
     runner.wake("assistant", "t6");
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    started.notified().await;
     store
         .accept_event("assistant", "t6", &event("e2", "actually Berlin"))
         .await
@@ -350,4 +372,97 @@ async fn a_message_sent_mid_turn_joins_that_turn(pool: PgPool) {
             .count(),
         1
     );
+}
+
+struct PanicsOnce {
+    fired: std::sync::atomic::AtomicBool,
+    inner: StaticBackend,
+}
+
+impl newt_server::backend::Backend for PanicsOnce {
+    type Host = newt_core::tools::NoTools;
+
+    fn prepare(
+        &self,
+        agent: &str,
+        key: &str,
+    ) -> impl std::future::Future<
+        Output = Result<
+            newt_server::backend::Prepared<newt_core::tools::NoTools>,
+            newt_server::backend::BackendError,
+        >,
+    > + Send {
+        let first = !self.fired.swap(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(!first, "simulated crash while preparing the turn");
+        self.inner.prepare(agent, key)
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_session_whose_task_panics_recovers_after_its_lease_expires(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    store
+        .accept_event("assistant", "t7", &event("e1", "hi"))
+        .await
+        .unwrap();
+    let runner = Runner::new(
+        Store::new(pool.clone()),
+        PanicsOnce {
+            fired: std::sync::atomic::AtomicBool::new(false),
+            inner: StaticBackend {
+                system: "You are a helpful agent.".into(),
+                model: "test".into(),
+                workspace: Workspace::default(),
+            },
+        },
+        ScriptedModel {
+            script: Mutex::new(vec![reply_and_end("back")].into()),
+            steal_lease: None,
+            delay: Duration::ZERO,
+            started: Arc::new(tokio::sync::Notify::new()),
+        },
+        fast(),
+        None,
+        broadcast::channel(16).0,
+    );
+
+    let _loops = runner.spawn_loops();
+    let status = wait_for(&store, "t7", |s| {
+        s.pending_events == 0 && s.lease_owner.is_none()
+    })
+    .await;
+
+    assert_eq!(status.history_entries, 2);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_turn_that_keeps_failing_is_dead_lettered(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    store
+        .accept_event("assistant", "t8", &event("e1", "hi"))
+        .await
+        .unwrap();
+    let runner = runner(&pool, Vec::new(), false, broadcast::channel(16).0);
+
+    let _loops = runner.spawn_loops();
+    wait_for(&store, "t8", |s| {
+        s.pending_events == 0 && s.lease_owner.is_none()
+    })
+    .await;
+
+    let (reason, attempts): (Option<String>, i32) = sqlx::query_as(
+        "select i.dead_letter, s.failed_attempts from inbox i \
+         join sessions s on s.agent = i.agent and s.key = i.key where i.key = 't8'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(reason.unwrap().contains("script exhausted"));
+    assert_eq!(attempts, 0);
+    let status = store
+        .session_status("assistant", "t8")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.history_entries, 0);
 }

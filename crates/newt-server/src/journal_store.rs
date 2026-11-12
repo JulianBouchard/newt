@@ -15,7 +15,7 @@ pub struct OpenTurn {
 
 const FENCED_INSERT: &str = "insert into turn_journal (agent, key, turn_id, seq, kind, payload) \
      select $1, $2, $3, $4, $5, $6 where exists (select 1 from sessions \
-       where agent = $1 and key = $2 and lease_owner = $7 and lease_epoch = $8) \
+       where agent = $1 and key = $2 and lease_owner = $7 and lease_epoch = $8 for share) \
      returning 1";
 
 fn entry_kind(entry: &JournalEntry) -> &'static str {
@@ -81,7 +81,7 @@ impl Store {
         Box::pin(async move {
             let rows: Vec<(String, i32, String, Json<serde_json::Value>)> = sqlx::query_as(
                 "select turn_id, seq, kind, payload from turn_journal \
-                 where agent = $1 and key = $2 order by created_at, turn_id, seq",
+                 where agent = $1 and key = $2 order by turn_id, seq",
             )
             .bind(&lease.agent)
             .bind(&lease.key)

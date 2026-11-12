@@ -225,6 +225,10 @@ async fn a_resumed_turn_replays_and_resends_only_the_unfinished_outward_call() {
         *host.calls.lock().unwrap(),
         vec![("send_message".to_owned(), "customer-1:turn-9:s1".to_owned())]
     );
-    assert_eq!(journal.waits.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        journal.waits.load(Ordering::Relaxed),
+        1,
+        "the resend re-checks the lease with one fenced journal write"
+    );
     assert_eq!(resumed.committed, completed.committed);
 }

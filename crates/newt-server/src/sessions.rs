@@ -169,37 +169,82 @@ impl Store {
         })
     }
 
-    pub fn release_with_backoff(&self, lease: &Lease) -> Owned<()> {
+    pub fn release_with_backoff(&self, lease: &Lease, base_seconds: f64) -> Owned<i32> {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
-            sqlx::query(
+            let attempts: Option<i32> = sqlx::query_scalar(
                 "update sessions set lease_owner = null, lease_expires_at = null, \
                    failed_attempts = failed_attempts + 1, \
-                   retry_after = now() + make_interval(secs => least($5, power(2, failed_attempts + 1))) \
-                 where agent = $1 and key = $2 and lease_owner = $3 and lease_epoch = $4",
+                   retry_after = now() + make_interval(secs => \
+                     least($5, $6 * power(2, failed_attempts))) \
+                 where agent = $1 and key = $2 and lease_owner = $3 and lease_epoch = $4 \
+                 returning failed_attempts",
             )
             .bind(&lease.agent)
             .bind(&lease.key)
             .bind(&lease.owner)
             .bind(lease.epoch)
             .bind(MAX_BACKOFF_SECONDS)
-            .execute(&pool)
+            .bind(base_seconds)
+            .fetch_optional(&pool)
             .await?;
+            Ok(attempts.unwrap_or(0))
+        })
+    }
+
+    pub fn dead_letter(&self, lease: &Lease, inbox_ids: Vec<i64>, reason: String) -> Owned<()> {
+        let pool = self.pool().clone();
+        let lease = lease.clone();
+        Box::pin(async move {
+            let mut tx = pool.begin().await?;
+            sqlx::query(
+                "update inbox set consumed_at = now(), dead_letter = $4 \
+                 where agent = $1 and key = $2 and id = any($3)",
+            )
+            .bind(&lease.agent)
+            .bind(&lease.key)
+            .bind(&inbox_ids)
+            .bind(&reason)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("delete from turn_journal where agent = $1 and key = $2")
+                .bind(&lease.agent)
+                .bind(&lease.key)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "update sessions set failed_attempts = 0, retry_after = null \
+                 where agent = $1 and key = $2",
+            )
+            .bind(&lease.agent)
+            .bind(&lease.key)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
             Ok(())
         })
     }
 
-    pub fn heartbeat(&self, owner: &str, ttl: Duration) -> Owned<u64> {
+    pub fn heartbeat(
+        &self,
+        owner: &str,
+        ttl: Duration,
+        running: Vec<(String, String)>,
+    ) -> Owned<u64> {
         let pool = self.pool().clone();
         let owner = owner.to_owned();
+        let (agents, keys): (Vec<String>, Vec<String>) = running.into_iter().unzip();
         Box::pin(async move {
             let result = sqlx::query(
                 "update sessions set lease_expires_at = now() + make_interval(secs => $2) \
-                 where lease_owner = $1",
+                 where lease_owner = $1 \
+                   and (agent, key) in (select * from unnest($3::text[], $4::text[]))",
             )
             .bind(&owner)
             .bind(seconds(ttl))
+            .bind(&agents)
+            .bind(&keys)
             .execute(&pool)
             .await?;
             Ok(result.rows_affected())
@@ -210,10 +255,13 @@ impl Store {
         let pool = self.pool().clone();
         Box::pin(async move {
             sqlx::query_as(
-                "select distinct s.agent, s.key from sessions s \
-                 join inbox i on i.agent = s.agent and i.key = s.key and i.consumed_at is null \
+                "select s.agent, s.key from sessions s \
                  where (s.lease_owner is null or s.lease_expires_at < now()) \
                    and (s.retry_after is null or s.retry_after <= now()) \
+                   and exists (select 1 from inbox i \
+                     where i.agent = s.agent and i.key = s.key and i.consumed_at is null) \
+                 order by (select min(i.id) from inbox i \
+                   where i.agent = s.agent and i.key = s.key and i.consumed_at is null) \
                  limit $1",
             )
             .bind(limit)

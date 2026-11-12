@@ -21,6 +21,7 @@ pub(crate) struct Batch {
     pub(crate) results: Vec<ToolResult>,
     pub(crate) summaries: HashMap<String, String>,
     pub(crate) end: Option<EndTurn>,
+    pub(crate) effects: bool,
 }
 
 enum Plan {
@@ -141,14 +142,19 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         slots[slot] = Some(output);
     }
 
-    let mut skip_reason = None;
+    let replayed_outward_failed = tool_calls.iter().any(|call| {
+        context.retention.get(&call.name) == Some(&Retention::Outward)
+            && replay
+                .output(&call.id)
+                .is_some_and(|output| output.is_error)
+    });
+    let mut skip_reason = replayed_outward_failed.then(|| OUTWARD_SKIPPED.to_owned());
     for slot in outward {
         let call = &tool_calls[slot];
         if skip_reason.is_none() && deps.cancel.is_cancelled() {
             skip_reason = Some(OUTWARD_CANCELLED.to_owned());
         }
         if skip_reason.is_none()
-            && !replay.has_intent(&call.id)
             && let Err(error) = journal
                 .append_and_wait(JournalEntry::OutwardIntent {
                     call_id: call.id.clone(),
@@ -200,6 +206,13 @@ fn finish_batch(
 ) -> Batch {
     let mut summaries = HashMap::new();
     let mut results = Vec::with_capacity(outputs.len());
+    let effects = tool_calls.iter().zip(&outputs).any(|(call, (output, _))| {
+        !output.is_error
+            && matches!(
+                context.retention.get(&call.name),
+                Some(Retention::Durable | Retention::Outward)
+            )
+    });
     for (call, (output, ms)) in tool_calls.iter().zip(outputs) {
         sink.emit(Event::now(EventKind::ToolFinished {
             session: context.ids.session.to_owned(),
@@ -229,6 +242,7 @@ fn finish_batch(
         results,
         summaries,
         end,
+        effects,
     }
 }
 

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 async fn start(pool: PgPool) -> String {
-    let (live, _listener) = spawn_listener(pool.clone());
+    let (live, _listener) = spawn_listener(pool.clone()).await.unwrap();
     let state = AppState {
         store: Store::new(pool),
         tokens: Arc::new(HashMap::from([(
@@ -21,6 +21,7 @@ async fn start(pool: PgPool) -> String {
             "secret".to_owned(),
         )])),
         live,
+        shutdown: tokio_util::sync::CancellationToken::new(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -86,7 +87,7 @@ async fn bad_tokens_unknown_agents_and_empty_messages_are_refused(pool: PgPool) 
         .send()
         .await
         .unwrap();
-    assert_eq!(unknown.status(), 404);
+    assert_eq!(unknown.status(), 401);
     assert_eq!(
         post(&base, "k", "secret", &event("e1", "  "))
             .await
@@ -161,4 +162,24 @@ async fn the_read_receipt_is_fast(pool: PgPool) {
         median < Duration::from_millis(50),
         "median read receipt took {median:?}"
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn session_keys_with_slashes_or_huge_lengths_are_refused(pool: PgPool) {
+    let base = start(pool).await;
+    let long = "k".repeat(201);
+    assert_eq!(
+        post(&base, &long, "secret", &event("e1", "hi"))
+            .await
+            .status(),
+        400
+    );
+    let slashed = reqwest::Client::new()
+        .post(format!("{base}/v1/agents/assistant/sessions/a%2Fb/events"))
+        .bearer_auth("secret")
+        .json(&event("e1", "hi"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(slashed.status(), 400);
 }

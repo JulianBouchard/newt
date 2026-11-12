@@ -76,6 +76,7 @@ pub struct TurnFailure {
     pub committed: Vec<Message>,
     pub calls: Vec<CallReport>,
     pub steered: Vec<String>,
+    pub effects: bool,
 }
 
 pub(crate) struct TurnIds<'a> {
@@ -116,6 +117,7 @@ enum CallResult {
 }
 
 struct TurnState {
+    effects: bool,
     replay: Replay,
     steered: Vec<String>,
     scratch: Vec<Message>,
@@ -142,6 +144,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
                 committed: input.events,
                 calls: Vec::new(),
                 steered: Vec::new(),
+                effects: false,
             });
         }
     };
@@ -171,6 +174,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         events: input.events.len(),
     }));
     let mut state = TurnState {
+        effects: false,
         replay: Replay::new(input.replay),
         steered: Vec::new(),
         scratch: input.events,
@@ -216,6 +220,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
                 committed,
                 calls: state.calls,
                 steered: state.steered,
+                effects: state.effects,
             })
         }
     }
@@ -285,6 +290,7 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
 
         let batch = crate::batch::run_tools(&tool_calls, context, deps, &state.replay).await;
         state.summaries.extend(batch.summaries);
+        state.effects |= batch.effects;
         state.scratch.push(Message {
             role: Role::User,
             parts: batch.results.into_iter().map(Part::ToolResult).collect(),

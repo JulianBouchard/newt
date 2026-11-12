@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,6 @@ impl Journal for NoJournal {
 pub(crate) struct Replay {
     sequence: VecDeque<JournalEntry>,
     outputs: HashMap<String, ToolOutput>,
-    intents: HashSet<String>,
 }
 
 impl Replay {
@@ -71,9 +70,7 @@ impl Replay {
                 JournalEntry::ToolOutput { call_id, output } => {
                     replay.outputs.insert(call_id, output);
                 }
-                JournalEntry::OutwardIntent { call_id } => {
-                    replay.intents.insert(call_id);
-                }
+                JournalEntry::OutwardIntent { .. } => {}
                 ordered @ (JournalEntry::Steered { .. } | JournalEntry::ModelResponse { .. }) => {
                     replay.sequence.push_back(ordered);
                 }
@@ -116,9 +113,5 @@ impl Replay {
 
     pub(crate) fn output(&self, call_id: &str) -> Option<&ToolOutput> {
         self.outputs.get(call_id)
-    }
-
-    pub(crate) fn has_intent(&self, call_id: &str) -> bool {
-        self.intents.contains(call_id)
     }
 }
