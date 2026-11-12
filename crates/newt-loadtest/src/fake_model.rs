@@ -60,6 +60,7 @@ pub struct FakeModel {
     ids: AtomicU64,
     shared_cache: bool,
     dump_dir: Option<std::path::PathBuf>,
+    turn_marker: Option<String>,
     pub stats: Stats,
 }
 
@@ -70,6 +71,7 @@ pub struct FakeOptions {
     pub seed: u64,
     pub shared_cache: bool,
     pub dump_dir: Option<std::path::PathBuf>,
+    pub turn_marker: Option<String>,
 }
 
 const DUMP_LIMIT: u64 = 40;
@@ -82,6 +84,7 @@ impl FakeModel {
             seed: rng_seed,
             shared_cache,
             dump_dir,
+            turn_marker,
         } = options;
         Arc::new(Self {
             rng: Rng::new(rng_seed),
@@ -95,6 +98,7 @@ impl FakeModel {
             ids: AtomicU64::new(rng_seed),
             shared_cache,
             dump_dir,
+            turn_marker,
             stats: Stats::default(),
         })
     }
@@ -121,24 +125,33 @@ struct Turn {
     compacting: bool,
 }
 
-fn read_turn(input: &[Value]) -> Turn {
-    let last_user = input
-        .iter()
-        .rposition(|item| item.get("role").and_then(Value::as_str) == Some("user"));
-    let start = last_user.map_or(0, |index| index + 1);
-    let user_text = |item: &Value| -> String {
-        match item.get("content") {
-            Some(Value::String(text)) => text.clone(),
-            Some(Value::Array(parts)) => parts
+fn user_text(item: &Value) -> String {
+    match item.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect(),
+        _ => String::new(),
+    }
+}
+
+fn is_user(item: &Value) -> bool {
+    item.get("role").and_then(Value::as_str) == Some("user")
+}
+
+fn read_turn(input: &[Value], marker: Option<&str>) -> Turn {
+    let last_user = marker
+        .and_then(|marker| {
+            input
                 .iter()
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
-                .collect(),
-            _ => String::new(),
-        }
-    };
+                .rposition(|item| is_user(item) && user_text(item).contains(marker))
+        })
+        .or_else(|| input.iter().rposition(is_user));
+    let start = last_user.map_or(0, |index| index + 1);
     let compacting = input
         .iter()
-        .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .filter(|item| is_user(item))
         .any(|item| user_text(item).starts_with(COMPACTING));
     Turn {
         done_calls: input
@@ -305,7 +318,7 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         .cloned()
         .unwrap_or_default();
     let tools = tool_schemas(&body);
-    let turn = read_turn(&input);
+    let turn = read_turn(&input, model.turn_marker.as_deref());
     let target = timing
         .tool_calls_per_turn
         .count(&Rng::new(seed_of(&turn.last_user)));

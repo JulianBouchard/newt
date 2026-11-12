@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
-                           [--cache-scope key|prefix] [--dump-dir DIR]
+                           [--cache-scope key|prefix] [--dump-dir DIR] [--turn-marker TEXT]
   newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false]
   newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
                     [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--timeout-s 300]
@@ -133,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
                     seed: flags.number("seed", 1)?,
                     shared_cache: flags.text("cache-scope", "key") == "prefix",
                     dump_dir: flags.0.get("dump-dir").map(std::path::PathBuf::from),
+                    turn_marker: flags.0.get("turn-marker").cloned(),
                 },
             );
             serve(
