@@ -48,6 +48,7 @@ fn env(name: &str) -> Result<String, String> {
 }
 
 #[tokio::main]
+#[expect(clippy::too_many_lines, reason = "an example reads top to bottom")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protocol = match env("NEWT_PROTOCOL")?.as_str() {
         "anthropic" => Protocol::AnthropicMessages,
@@ -98,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_output_tokens: 4096,
         max_model_calls: 6,
         max_turn_tokens: None,
+        recite: true,
         lane: Lane::Interactive,
         compaction: None,
     };

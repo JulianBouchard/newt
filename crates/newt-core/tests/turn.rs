@@ -186,7 +186,7 @@ struct Run {
 }
 
 async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> Run {
-    run_with(script, max_model_calls, tools, None, None, None).await
+    run_with(script, max_model_calls, tools, None, None, None, true).await
 }
 
 async fn run_with(
@@ -196,6 +196,7 @@ async fn run_with(
     context: Option<String>,
     compaction: Option<&[String]>,
     max_turn_tokens: Option<u64>,
+    recite: bool,
 ) -> Run {
     let model = ScriptedModel::new(script);
     let host = RecordingHost::default();
@@ -234,6 +235,7 @@ async fn run_with(
             max_output_tokens: 4096,
             max_model_calls,
             max_turn_tokens,
+            recite,
             lane: Lane::Interactive,
             compaction: compaction.map(|open_commitments| Compaction {
                 open_commitments,
@@ -548,6 +550,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             max_output_tokens: 1024,
             max_model_calls: 1,
             max_turn_tokens: None,
+            recite: true,
             lane: Lane::Interactive,
             compaction: None,
         },
@@ -810,6 +813,7 @@ async fn turn_context_reaches_the_model_first_and_is_never_committed() {
         Some("<turn_context>no sends before 9am</turn_context>".into()),
         None,
         None,
+        true,
     )
     .await;
     let outcome = run.outcome.unwrap();
@@ -858,7 +862,7 @@ async fn compaction_flushes_refuses_sends_and_ends_on_a_checkpoint_that_keeps_co
         assistant(vec![checkpoint(json!([]))]),
         assistant(vec![checkpoint(json!(["Send Maria the Acme brief"]))]),
     ];
-    let run = run_with(script, 6, &external_tools(), None, Some(&open), None).await;
+    let run = run_with(script, 6, &external_tools(), None, Some(&open), None, true).await;
     assert!(
         run.host.calls.lock().unwrap().is_empty(),
         "nothing is sent while compacting"
@@ -926,6 +930,7 @@ async fn a_turn_past_its_token_budget_is_told_to_end_then_fails_if_it_does_not()
         None,
         None,
         Some(0),
+        true,
     )
     .await;
     assert!(
@@ -952,7 +957,7 @@ async fn a_turn_past_its_token_budget_is_told_to_end_then_fails_if_it_does_not()
         "end_turn",
         json!({ "nothing_new": "out of budget" }),
     )])];
-    let run = run_with(ends, 6, &external_tools(), None, None, Some(0)).await;
+    let run = run_with(ends, 6, &external_tools(), None, None, Some(0), true).await;
     let outcome = run.outcome.unwrap();
     assert!(outcome.committed.iter().all(|message| {
         !note_texts(std::slice::from_ref(message))
@@ -989,6 +994,32 @@ async fn a_long_turn_is_reminded_what_it_is_answering_and_the_reminder_is_never_
     assert_eq!((reminded(3), reminded(4), reminded(5)), (0, 1, 1));
     assert!(outcome.committed.iter().all(|message| {
         !note_texts(std::slice::from_ref(message))
+            .iter()
+            .any(|text| text.contains("<goal>"))
+    }));
+}
+
+#[tokio::test]
+async fn a_long_turn_without_recitation_gets_no_goal_note() {
+    let mut script: Vec<Message> = (0..5)
+        .map(|index| {
+            assistant(vec![call(
+                &format!("r{index}"),
+                "read_file",
+                json!({ "paths": ["profile.md"] }),
+            )])
+        })
+        .collect();
+    script.push(assistant(vec![call(
+        "e1",
+        "end_turn",
+        json!({ "nothing_new": "just reading" }),
+    )]));
+    let run = run_with(script, 8, &external_tools(), None, None, None, false).await;
+    assert!(run.outcome.is_ok());
+    let seen = run.model.seen.lock().unwrap();
+    assert!(seen.iter().all(|request| {
+        !note_texts(&request.scratch)
             .iter()
             .any(|text| text.contains("<goal>"))
     }));

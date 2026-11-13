@@ -68,6 +68,9 @@ pub struct TurnSettings<'a> {
     /// Past it the model is told to end the turn, and one more call that
     /// does not end it fails the turn.
     pub max_turn_tokens: Option<u64>,
+    /// Restate the turn's events to the model on long turns (recitation).
+    /// Internal while its effect is measured; the server always sets it.
+    pub recite: bool,
     pub lane: Lane,
     pub compaction: Option<Compaction<'a>>,
 }
@@ -234,7 +237,8 @@ impl TurnState {
                 return Ok(());
             }
         }
-        if call >= RECITE_FROM
+        if settings.recite
+            && call >= RECITE_FROM
             && (call - RECITE_FROM).is_multiple_of(RECITE_EVERY)
             && !self.goal.is_empty()
         {
