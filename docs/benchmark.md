@@ -1,13 +1,13 @@
 # Benchmark
 
-`scripts/bench.sh [sessions] [turns]` measures newt under load with no model provider and no API key. It needs Postgres (`NEWT_DATABASE_URL`, or `docker compose up -d --wait` for the repo's dev database) and runs everything else itself.
+`scripts/bench.sh [sessions] [turns] [steady|burst]` measures newt under load with no model provider and no API key. It needs Postgres (`NEWT_DATABASE_URL`, or `docker compose up -d --wait` for the repo's dev database) and runs everything else itself.
 
 ## What runs
 
-- **The fake model** (`newt-loadtest fake-model --cache-scope routed --machines 4`) speaks the OpenAI Responses stream. Its timings and tool use come from the profile of a production assistant, about 16 tool calls a turn. Prompt caching is simulated per `prompt_cache_key` and spread over four machines once a key passes 15 requests a minute, as OpenAI routes, so a key that is too busy or a rewritten history misses as it would against the real thing.
+- **The fake model** (`newt-loadtest fake-model --cache-scope routed --machines 4`) speaks the OpenAI Responses stream. Its timings and tool use come from the profile of a production assistant, about 16 tool calls a turn. Prompt caching is simulated per `prompt_cache_key` and spread over four machines once a key passes 15 requests a minute, as OpenAI routes, so a key that is too busy or a rewritten history misses as it would against the real thing. A prompt is readable from the cache 1 second after it was sent: against OpenAI on 2026-11-12 a second request with the same prefix hit the cache every time it started 1.1 s or more after the first.
 - **The mock app** (`newt-loadtest mock-app`) is a context provider with a production-sized prompt and workspace, and an MCP server whose tools have that assistant's latencies and error rates.
 - **newt**, built in release mode, with default runner settings (`cache_key_buckets = "auto"`).
-- **The driver** (`newt-loadtest run`) starts every session at once, waits 2 seconds between a session's turns, and follows each turn on the live feed.
+- **The driver** (`newt-loadtest run`) follows each turn on the live feed. In the default `steady` scenario sessions start at random over 60 seconds and a person pauses 20 to 90 seconds between messages, so each session makes a few model calls a minute, as people do. The `burst` scenario starts every session at once and sends the next message 2 seconds after a turn ends: about 20 model calls a minute per session, past what one cache key holds, and every turn start at the same moment. It is the worst case for the database pool and the cache, not what people do.
 
 ## What it reports
 

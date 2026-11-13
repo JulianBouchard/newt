@@ -6,6 +6,8 @@ use newt_core::sse::SseParser;
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
+use crate::sample::Rng;
+
 const SIGNAL_BUFFER: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +98,13 @@ pub struct LoadPlan {
     pub sessions: usize,
     pub turns: usize,
     pub concurrency: usize,
+    /// The pause before a session's next message: uniform between `think`
+    /// and `think_max`.
     pub think: Duration,
+    pub think_max: Duration,
+    /// Sessions start at uniform offsets in this window rather than all at
+    /// once.
+    pub ramp: Duration,
     pub timeout: Duration,
 }
 
@@ -140,6 +148,8 @@ async fn run_session(
         });
         return samples;
     }
+    let rng = Rng::new(u64::try_from(seed).unwrap_or(0) + 1);
+    tokio::time::sleep(pause(&rng, Duration::ZERO, plan.ramp)).await;
     for turn in 0..plan.turns {
         let posted = Instant::now();
         let text = format!("load message {seed}-{turn}: any news on the role?");
@@ -178,10 +188,16 @@ async fn run_session(
             }
         }
         samples.push(sample);
-        tokio::time::sleep(plan.think).await;
+        tokio::time::sleep(pause(&rng, plan.think, plan.think_max)).await;
     }
     follower.abort();
     samples
+}
+
+/// A pause drawn uniformly between `low` and `high`.
+fn pause(rng: &Rng, low: Duration, high: Duration) -> Duration {
+    high.checked_sub(low)
+        .map_or(low, |spread| low + spread.mul_f64(rng.unit()))
 }
 
 pub async fn run(target: NewtTarget, plan: LoadPlan, run_id: &str) -> (Vec<TurnSample>, Duration) {

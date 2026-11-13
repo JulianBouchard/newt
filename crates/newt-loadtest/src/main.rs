@@ -17,7 +17,7 @@ const USAGE: &str = "usage:
                            [--dump-dir DIR] [--turn-marker TEXT] [--decision-log FILE] [--cache-log FILE] [--profile FILE]
   newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false] [--profile FILE]
   newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
-                    [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--timeout-s 300]
+                    [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--think-max-ms THINK] [--ramp-s 0] [--timeout-s 300]
                     [--fake http://127.0.0.1:9100] [--mock http://127.0.0.1:9200]";
 
 struct Flags(HashMap<String, String>);
@@ -113,6 +113,8 @@ async fn run_load(flags: &Flags) -> anyhow::Result<()> {
         turns: flags.number("turns", 3)?,
         concurrency: flags.number("concurrency", 20)?,
         think: Duration::from_millis(flags.number("think-ms", 2000)?),
+        think_max: Duration::from_millis(flags.number("think-max-ms", 0)?),
+        ramp: Duration::from_secs(flags.number("ramp-s", 0)?),
         timeout: Duration::from_secs(flags.number("timeout-s", 300)?),
     };
     let fake = flags.0.get("fake");

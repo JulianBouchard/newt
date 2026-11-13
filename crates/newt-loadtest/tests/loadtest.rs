@@ -106,6 +106,8 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
             turns: 2,
             concurrency: 6,
             think: Duration::from_millis(10),
+            think_max: Duration::ZERO,
+            ramp: Duration::ZERO,
             timeout: Duration::from_secs(60),
         },
         "t",

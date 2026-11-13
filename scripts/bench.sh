@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # The newt benchmark: one command, no model provider, no API key.
 #
-#   scripts/bench.sh [sessions] [turns]        (defaults: 200 sessions, 3 turns)
+#   scripts/bench.sh [sessions] [turns] [steady|burst]   (defaults: 200, 3, steady)
+#
+# steady: sessions start over 60 s and a person pauses 20 to 90 s between
+# messages, as people do. burst: every session posts at once and again 2 s
+# after each turn, the worst case for the database pool and the cache.
 #
 # Builds the release binaries, starts the loadtest's fake model (prompt caching
 # simulated per key and spread over 4 machines, as OpenAI routes), the mock app
@@ -13,6 +17,12 @@ set -euo pipefail
 
 sessions=${1:-200}
 turns=${2:-3}
+scenario=${3:-steady}
+case "$scenario" in
+  steady) pacing=(--think-ms 20000 --think-max-ms 90000 --ramp-s 60) ;;
+  burst) pacing=(--think-ms 2000) ;;
+  *) echo "scenario must be steady or burst" >&2; exit 2 ;;
+esac
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 export NEWT_DATABASE_URL=${NEWT_DATABASE_URL:-postgres://newt:newt@localhost:55432/newt}
@@ -58,7 +68,7 @@ for _ in $(seq 1 100); do curl -sf localhost:7979/healthz > /dev/null && break; 
 curl -sf localhost:7979/healthz > /dev/null
 
 "$bin/newt-loadtest" run --base http://127.0.0.1:7979 --agent bench --token-env BENCH_TOKEN \
-  --sessions "$sessions" --turns "$turns" --concurrency "$sessions" --think-ms 2000 --timeout-s 300 \
+  --sessions "$sessions" --turns "$turns" --concurrency "$sessions" "${pacing[@]}" --timeout-s 300 \
   --fake http://127.0.0.1:9100 --mock http://127.0.0.1:9200
 
 echo

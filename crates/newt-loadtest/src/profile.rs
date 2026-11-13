@@ -158,6 +158,9 @@ pub struct ModelTiming {
     pub tool_calls_per_step: Spread,
     pub tool_calls_per_turn: Spread,
     pub prefill_ms_per_1k_uncached: f64,
+    /// How soon after a request its prompt can be read from the cache. Against
+    /// `OpenAI` on 2026-11-12 the next request hit the cache every time it
+    /// started 1.1 s or more after the first.
     pub cache_readable_after: Duration,
 }
 
@@ -169,7 +172,7 @@ pub const REFERENCE_TIMING: ModelTiming = ModelTiming {
     tool_calls_per_step: Spread::new(3.0, 6.0),
     tool_calls_per_turn: Spread::new(16.0, 26.0),
     prefill_ms_per_1k_uncached: 40.0,
-    cache_readable_after: Duration::from_secs(2),
+    cache_readable_after: Duration::from_secs(1),
 };
 
 #[cfg(test)]
