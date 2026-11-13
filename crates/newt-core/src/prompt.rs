@@ -31,6 +31,31 @@ pub struct LayerFingerprint {
     pub hash: String,
     pub bytes: usize,
     pub items: usize,
+    /// The layer piece by piece, in prompt order: the system prompt and each
+    /// tool for the prefix, each message for history. Lets a report name the
+    /// piece that changed when the cache missed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<PartFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartFingerprint {
+    /// Empty for a history message, which its position names.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub hash: String,
+    pub bytes: usize,
+}
+
+impl PartFingerprint {
+    fn of<T: Serialize + ?Sized>(name: impl Into<String>, value: &T) -> Self {
+        let LayerFingerprint { hash, bytes, .. } = LayerFingerprint::of(value, 1);
+        Self {
+            name: name.into(),
+            hash,
+            bytes,
+        }
+    }
 }
 
 impl LayerFingerprint {
@@ -40,6 +65,7 @@ impl LayerFingerprint {
                 hash: format!("{:016x}", fnv1a(&bytes)),
                 bytes: bytes.len(),
                 items,
+                parts: Vec::new(),
             },
             Err(error) => {
                 tracing::warn!(%error, "could not fingerprint a prompt layer");
@@ -47,6 +73,7 @@ impl LayerFingerprint {
                     hash: "unserializable".to_owned(),
                     bytes: 0,
                     items,
+                    parts: Vec::new(),
                 }
             }
         }
@@ -69,11 +96,25 @@ pub struct Prompt<'a> {
 
 impl Prompt<'_> {
     pub fn prefix_fingerprint(&self) -> LayerFingerprint {
-        LayerFingerprint::of(&(self.system, self.tools), self.tools.len())
+        let mut layer = LayerFingerprint::of(&(self.system, self.tools), self.tools.len());
+        layer.parts = std::iter::once(PartFingerprint::of("system", self.system))
+            .chain(
+                self.tools
+                    .iter()
+                    .map(|tool| PartFingerprint::of(format!("tool `{}`", tool.name), tool)),
+            )
+            .collect();
+        layer
     }
 
     pub fn history_fingerprint(&self) -> LayerFingerprint {
-        LayerFingerprint::of(self.history, self.history.len())
+        let mut layer = LayerFingerprint::of(self.history, self.history.len());
+        layer.parts = self
+            .history
+            .iter()
+            .map(|message| PartFingerprint::of(String::new(), message))
+            .collect();
+        layer
     }
 
     pub fn scratch_fingerprint(&self) -> LayerFingerprint {

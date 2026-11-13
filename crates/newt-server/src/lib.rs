@@ -6,6 +6,7 @@
 //! repository for the protocol, configuration and design.
 
 pub mod backend;
+pub mod cache_card;
 pub mod checkpoints;
 mod compaction;
 pub mod config;

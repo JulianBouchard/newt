@@ -4,10 +4,13 @@ use std::io::{BufRead, BufReader, Write};
 use anyhow::Context;
 use newt_core::event::{Event, EventKind};
 use newt_core::provider::{CallTiming, Usage};
+use newt_server::cache_card::{CacheCard, Prices};
 use time::OffsetDateTime;
 
-const CACHE_MIN_TOKENS: u64 = 1024;
-const CACHE_MISS_RATIO: f64 = 0.5;
+/// Providers keep an idle cached prefix for about five minutes.
+const CACHE_TTL_SECONDS: i64 = 300;
+const USAGE: &str =
+    "usage: newt-report [--summary] [--prices input,cached,output] [--ttl seconds] <events.jsonl>";
 const SLOW_START_FACTOR: u64 = 2;
 const SLOW_START_FLOOR_MS: u64 = 1500;
 const HARNESS_GAP_MS: i64 = 50;
@@ -49,14 +52,26 @@ struct TurnReport {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let summary = args.iter().any(|arg| arg == "--summary");
-    let path = args
-        .iter()
-        .find(|arg| !arg.starts_with("--"))
-        .cloned()
-        .context("usage: newt-report [--summary] <events.jsonl>")?;
+    let mut summary = false;
+    let mut prices = None;
+    let mut ttl = CACHE_TTL_SECONDS;
+    let mut path = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--summary" => summary = true,
+            "--prices" => {
+                let value = args.next().context(USAGE)?;
+                prices = Some(value.parse::<Prices>().map_err(anyhow::Error::msg)?);
+            }
+            "--ttl" => ttl = args.next().context(USAGE)?.parse().context(USAGE)?,
+            _ if !arg.starts_with("--") && path.is_none() => path = Some(arg),
+            _ => anyhow::bail!(USAGE),
+        }
+    }
+    let path = path.context(USAGE)?;
     let mut profile = newt_server::profile::Profile::default();
+    let mut card = CacheCard::new(ttl);
     let file = std::fs::File::open(&path).with_context(|| format!("opening {path}"))?;
     let mut turns: Vec<TurnReport> = Vec::new();
     for (index, line) in BufReader::new(file).lines().enumerate() {
@@ -67,16 +82,16 @@ fn main() -> anyhow::Result<()> {
         let event: Event = serde_json::from_str(&line)
             .with_context(|| format!("line {} is not a newt event", index + 1))?;
         profile.observe(&event);
+        card.observe(&event);
         apply(&mut turns, event);
     }
     let mut out = std::io::stdout().lock();
     let mut flags = Vec::new();
-    let mut previous_by_session: HashMap<String, (String, OffsetDateTime, u64)> = HashMap::new();
     for turn in &turns {
         if !summary {
             print_turn(&mut out, turn)?;
         }
-        flag_turn(turn, &mut previous_by_session, &mut flags);
+        flag_turn(turn, &mut flags);
     }
     flag_slow_starts(&turns, &mut flags);
     writeln!(out, "\nturns: {}; flags: {}", turns.len(), flags.len())?;
@@ -85,6 +100,7 @@ fn main() -> anyhow::Result<()> {
             writeln!(out, "  - {flag}")?;
         }
     }
+    out.write_all(card.render(prices, !summary).as_bytes())?;
     out.write_all(profile.render().as_bytes())?;
     Ok(())
 }
@@ -307,11 +323,7 @@ fn print_turn(out: &mut impl Write, turn: &TurnReport) -> std::io::Result<()> {
     Ok(())
 }
 
-fn flag_turn(
-    turn: &TurnReport,
-    previous_by_session: &mut HashMap<String, (String, OffsetDateTime, u64)>,
-    flags: &mut Vec<String>,
-) {
+fn flag_turn(turn: &TurnReport, flags: &mut Vec<String>) {
     let label = format!("{}/{}", turn.session, turn.turn_id);
     if turn.outcome.is_empty() {
         flags.push(format!("{label}: turn never completed or failed"));
@@ -324,35 +336,6 @@ fn flag_turn(
     for (index, call) in turn.calls.iter().enumerate() {
         if let Some(error) = &call.failed {
             flags.push(format!("{label} call {index}: model call failed: {error}"));
-        }
-        if let (Some((prefix, at, previous_input)), Some(started)) =
-            (previous_by_session.get(&turn.session), call.started_at)
-            && *prefix == call.prefix_hash
-            && *previous_input >= CACHE_MIN_TOKENS
-            && call.usage.input_tokens >= CACHE_MIN_TOKENS
-            && call.usage.cache_hit_ratio() < CACHE_MISS_RATIO
-        {
-            flags.push(format!(
-                "{label} call {index}: cache {:.0}% on an unchanged prefix, {} ms after the previous call",
-                call.usage.cache_hit_ratio() * 100.0,
-                (started - *at).whole_milliseconds()
-            ));
-        }
-        if let Some((prefix, _, _)) = previous_by_session.get(&turn.session)
-            && *prefix != call.prefix_hash
-            && index == 0
-        {
-            flags.push(format!(
-                "{label}: instructions or tools changed since the previous turn (prefix {} -> {})",
-                short(prefix),
-                short(&call.prefix_hash)
-            ));
-        }
-        if let Some(finished) = call.finished_at {
-            previous_by_session.insert(
-                turn.session.clone(),
-                (call.prefix_hash.clone(), finished, call.usage.input_tokens),
-            );
         }
     }
     for pair in turn.calls.windows(2) {
