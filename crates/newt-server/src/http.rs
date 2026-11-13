@@ -22,6 +22,8 @@ use tokio_util::sync::CancellationToken;
 use crate::live::{Channel, Notification};
 use crate::store::{InboundEvent, LiveEvent, Store, live_topic};
 
+mod fork;
+
 const EVENT_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
 const LIVE_PAGE: i64 = 100;
@@ -53,6 +55,11 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/agents/{agent}/sessions/{key}", get(session_status))
         .route("/v1/agents/{agent}/sessions/{key}/events", post(post_event))
         .route("/v1/agents/{agent}/sessions/{key}/live", get(live))
+        .route(
+            "/v1/agents/{agent}/sessions/{key}/history",
+            get(fork::history),
+        )
+        .route("/v1/agents/{agent}/sessions/{key}/fork", post(fork::fork))
         .layer(DefaultBodyLimit::max(EVENT_BODY_LIMIT))
         .with_state(state)
 }
@@ -62,6 +69,7 @@ enum ApiError {
     Unauthorized,
     NotFound,
     Invalid(&'static str),
+    Conflict(&'static str),
     Internal(sqlx::Error),
 }
 
@@ -71,6 +79,7 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "missing or wrong token"),
             Self::NotFound => (StatusCode::NOT_FOUND, "no such session"),
             Self::Invalid(message) => (StatusCode::BAD_REQUEST, message),
+            Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Internal(error) => {
                 tracing::error!(%error, "request failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error")

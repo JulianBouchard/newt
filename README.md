@@ -104,6 +104,10 @@ Leave `pages` out of the turn response when rendering them is slow: newt starts 
 
 A skill is instructions for one kind of task, loaded only when the agent needs it. The bootstrap lists them as `skills: [{ name, description, content }]`; newt adds an index of names and descriptions to the instructions (it changes only with the bootstrap version, so it stays in the cached prefix) and gives the agent a built-in `load_skill` tool. A loaded skill's text stays in that turn's scratch and never enters history.
 
+## Replay and fork
+
+`POST .../sessions/{key}/fork` starts a new session with a copy of another's history, up to a turn, under the same or another agent. `newt-replay assistant/ana assistant-canary/ana-replay` uses it to send a real conversation's events to a canary agent with a new prompt or model, turn by turn, and prints what each turn did then and now. Use the loadtest fake model to replay for free. See [docs/protocol.md](docs/protocol.md) 5.4 and 5.5.
+
 ## Tools over MCP
 
 Tools come from the MCP servers the bootstrap lists: `{ name, url, headers?, auth? }`, where `auth: "agent_token"` sends the agent's token as the bearer and the default sends none. Headers are static and must not hold secrets. Newt connects once per agent and bootstrap version over Streamable HTTP (MCP `2026-07-28`, falling back to `2025-11-25`), lists the tools, and keeps those connections for every session of that version, relisting when a server announces its tools changed. A server can also serve skills over MCP (the `io.modelcontextprotocol/skills` extension); newt lists them, loads them on demand and verifies every file against the listing.

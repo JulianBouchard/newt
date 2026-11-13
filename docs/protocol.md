@@ -410,6 +410,8 @@ Authentication is the same bearer token. Agent and session key are in the path.
 | `POST /v1/agents/{agent}/sessions/{key}/events` | Add an event to the session. |
 | `GET /v1/agents/{agent}/sessions/{key}` | Session status. |
 | `GET /v1/agents/{agent}/sessions/{key}/live` | Server-sent events for the session. |
+| `GET /v1/agents/{agent}/sessions/{key}/history` | The session's history. |
+| `POST /v1/agents/{agent}/sessions/{key}/fork` | A new session that starts with this one's history. |
 | `GET /healthz` | 200 when Postgres answers, 503 otherwise. No auth. |
 
 Errors are `{ "error": "<message>" }` with status 400 (bad body or key), 401 (missing or wrong token, or unknown agent), 404 (no such session) or 500.
@@ -454,3 +456,36 @@ data: {"type":"received","event_id":"m1","inbox_id":41}
 id: 2
 data: {"at":"2026-11-12T17:30:00.120Z","type":"turn_started","session":"assistant/ana","turn":"0198f2a4-...","history_messages":0,"events":1,"compaction":false}
 ```
+
+### 5.4 `GET .../history`
+
+The session's history entries in order. 404 if there is no such session.
+
+```json
+{ "entries": [ { "seq": 0, "turn": "0198f2a4-...", "kind": "message", "entry": { "role": "user", "parts": [ { "type": "text", "text": "Add milk." } ] } } ] }
+```
+
+`entry` is a message as newt stores it: `role` is `user` or `assistant`, and each part has a `type` of `text`, `tool_call` (`id`, `name`, `arguments`) or `tool_result` (`call_id`, `content`, `is_error`). Only what the retention rules kept is there (section 3).
+
+### 5.5 `POST .../fork`
+
+```json
+{ "into": "ana-try", "agent": "assistant-canary", "through_turn": "0198f2a4-..." }
+```
+
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `into` | string | yes | | The new session's key. It must not exist yet. |
+| `agent` | string | no | the same agent | The new session's agent. The bearer token must be valid for it too. |
+| `through_turn` | string | no | all of it | Copy history through this turn (a `turn` from 5.4). |
+
+Newt creates the session with a copy of the history and checkpoints up to the cut, and nothing else: no pending events, journal, outbox or live feed. The next event sent to it starts a turn on that history, as the target agent, with its prompt, tools and model. Response, status 201:
+
+```json
+{ "agent": "assistant-canary", "key": "ana-try", "history_entries": 12 }
+```
+
+404 if the source session does not exist, 400 for an unknown `through_turn`, 409 if `into` already exists.
+
+`newt-replay` builds on these two. `newt-replay assistant/ana assistant-canary/ana-replay` sends each turn's events from `assistant/ana` to the new session again, one turn at a time, waits for the turn to finish, and prints what the turn did then and what it did now. `--from-turn N` forks the first N turns in instead of replaying them, and `--turns N` stops after N. Point it at a server with `--url`, and name the variable holding the token with `--token-env` (default `NEWT_TOKEN`). A replay runs the target agent's tools for real, so give the target agent an MCP server that is safe to call: a staging app, or `newt-loadtest mock-app`. Give it the `newt-loadtest fake-model` route to replay for free, or a real model to compare prompts or models.
+
