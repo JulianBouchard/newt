@@ -37,8 +37,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: cargo clippy -p newt-server --no-default-features --all-targets -- -D warnings
       - run: cargo doc --workspace --no-deps
         env:
@@ -48,7 +46,6 @@ jobs:
       - name: boot smoke test
         env:
           NEWT_CONFIG: server.example.toml
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: unused
           ANTHROPIC_API_KEY: unused
           ASSISTANT_TOKEN: unused

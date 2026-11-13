@@ -1,9 +1,10 @@
 //! A Postgres server newt runs itself, for installs with no database to
 //! point at: `database = { embedded = "<dir>" }`.
 //!
-//! The first start downloads the Postgres binaries for this platform (checked
-//! against their published hash) into `~/.theseus/postgresql`, which every
-//! later start reuses, and creates the database cluster in `<dir>/data`. Each
+//! The first start downloads the Postgres binaries for this platform from
+//! Maven Central (zonky's builds, which carry their own libraries and so run
+//! on any glibc Linux and macOS; checked against their published hash) into
+//! `~/.theseus/postgresql`, which every later start reuses, and creates the database cluster in `<dir>/data`. Each
 //! start runs the server on a free local port and stops it when newt stops. A
 //! server left running by a newt that was killed is stopped first.
 
@@ -13,7 +14,7 @@ use std::time::Duration;
 use anyhow::Context;
 use postgresql_embedded::{PostgreSQL, Settings, Status, VersionReq};
 
-const VERSION: &str = "=18.2.0";
+const VERSION: &str = "=18.6.0";
 const DATABASE: &str = "newt";
 const COMMAND_TIMEOUT: Duration = Duration::from_mins(1);
 
@@ -70,6 +71,7 @@ fn settings(dir: &Path) -> anyhow::Result<Settings> {
     if let Some(parent) = settings.password_file.parent() {
         remove_empty_dir(parent);
     }
+    postgresql_archive::configuration::zonky::URL.clone_into(&mut settings.releases_url);
     settings.version = VersionReq::parse(VERSION)?;
     settings.data_dir = dir.join("data");
     settings.password_file = dir.join("password");
