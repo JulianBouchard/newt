@@ -47,7 +47,7 @@ pids=()
 cleanup() { kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true; }
 trap cleanup EXIT
 
-"$bin/newt-loadtest" fake-model --listen 127.0.0.1:9100 --cache-scope routed --machines 4 > "$work/fake.log" 2>&1 &
+"$bin/newt-loadtest" fake-model --listen 127.0.0.1:9100 --cache-scope routed --machines 4 --cache-log "$work/cache.jsonl" > "$work/fake.log" 2>&1 &
 pids+=($!)
 "$bin/newt-loadtest" mock-app --listen 127.0.0.1:9200 > "$work/mock.log" 2>&1 &
 pids+=($!)

@@ -42,7 +42,24 @@ impl Profile {
         self.stages.entry(name).or_default().push(value);
     }
 
+    fn observe_pool_wait(&mut self, kind: &EventKind) {
+        let (stage, waited) = match kind {
+            EventKind::EventAccepted { pool_wait_ms, .. } => {
+                ("read receipt: waiting for a connection", pool_wait_ms)
+            }
+            EventKind::SessionClaimed { pool_wait_ms, .. } => {
+                ("claim: waiting for a connection", pool_wait_ms)
+            }
+            EventKind::TurnPrepared { pool_wait_ms, .. } => {
+                ("history load: waiting for a connection", pool_wait_ms)
+            }
+            _ => return,
+        };
+        self.stage(stage, number(*waited));
+    }
+
     pub fn observe(&mut self, event: &Event) {
+        self.observe_pool_wait(&event.kind);
         let at = event.at;
         match &event.kind {
             EventKind::EventAccepted {
@@ -75,6 +92,7 @@ impl Profile {
                 session,
                 claimed,
                 claim_ms,
+                ..
             } => {
                 self.stage("claim query", number(*claim_ms));
                 if !claimed {

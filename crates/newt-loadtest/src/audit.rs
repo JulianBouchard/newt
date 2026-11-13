@@ -15,6 +15,7 @@ pub struct Audit {
     invalid: Mutex<BTreeMap<String, u64>>,
     unanswered: Mutex<HashMap<String, Unanswered>>,
     log: Option<Mutex<std::fs::File>>,
+    cache_log: Option<Mutex<std::fs::File>>,
 }
 
 #[derive(Debug)]
@@ -40,18 +41,13 @@ fn output_text(item: &Value) -> String {
 }
 
 impl Audit {
-    pub fn new(decision_log: Option<&std::path::Path>) -> std::io::Result<Self> {
-        let log = decision_log
-            .map(|path| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-            })
-            .transpose()?
-            .map(Mutex::new);
+    pub fn new(
+        decision_log: Option<&std::path::Path>,
+        cache_log: Option<&std::path::Path>,
+    ) -> std::io::Result<Self> {
         Ok(Self {
-            log,
+            log: append_to(decision_log)?,
+            cache_log: append_to(cache_log)?,
             ..Self::default()
         })
     }
@@ -124,12 +120,13 @@ impl Audit {
     }
 
     pub fn log_decision(&self, decision: &Value) {
-        if let Some(log) = &self.log {
-            let mut file = locked(log);
-            if let Err(error) = writeln!(file, "{decision}") {
-                tracing::warn!(%error, "could not write the decision log");
-            }
-        }
+        write_line(self.log.as_ref(), decision);
+    }
+
+    /// One line per request: where it went and which of its blocks the
+    /// machine held, could read, or did not have.
+    pub fn log_cache(&self, lookup: &Value) {
+        write_line(self.cache_log.as_ref(), lookup);
     }
 
     pub fn snapshot(&self) -> Value {
@@ -165,5 +162,25 @@ impl Audit {
             "tool_calls_left_in_turn_plan": short_by,
             "by_tools": by_tools,
         })
+    }
+}
+
+fn append_to(path: Option<&std::path::Path>) -> std::io::Result<Option<Mutex<std::fs::File>>> {
+    path.map(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    })
+    .transpose()
+    .map(|file| file.map(Mutex::new))
+}
+
+fn write_line(log: Option<&Mutex<std::fs::File>>, line: &Value) {
+    if let Some(log) = log {
+        let mut file = locked(log);
+        if let Err(error) = writeln!(file, "{line}") {
+            tracing::warn!(%error, "could not write a log line");
+        }
     }
 }

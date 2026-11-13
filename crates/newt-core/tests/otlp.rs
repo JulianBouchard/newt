@@ -61,6 +61,7 @@ fn turn_events(turn: &str, secret: &str) -> Vec<Event> {
         turn: turn.clone(),
         call,
         model: "fake-model".into(),
+        cache_key: String::new(),
         effort: None,
         prefix: fingerprint(),
         history: fingerprint(),

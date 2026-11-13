@@ -1,10 +1,10 @@
 use newt_core::checkpoint::Checkpoint;
 use newt_core::message::Message;
-use sqlx::PgPool;
+use sqlx::PgConnection;
 use sqlx::types::Json;
 
 use crate::sessions::{CommitError, Lease, Owned, fence, insert_history};
-use crate::store::Store;
+use crate::store::{Store, timed_connection};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveRow {
@@ -33,7 +33,7 @@ struct Latest {
     checkpoint: Checkpoint,
 }
 
-async fn latest(pool: &PgPool, lease: &Lease) -> Result<Option<Latest>, sqlx::Error> {
+async fn latest(pool: &mut PgConnection, lease: &Lease) -> Result<Option<Latest>, sqlx::Error> {
     let row: Option<(i64, String, Json<Checkpoint>)> = sqlx::query_as(
         "select through_seq, summary, snapshot from checkpoints \
          where agent = $1 and key = $2 order by through_seq desc limit 1",
@@ -51,10 +51,17 @@ async fn latest(pool: &PgPool, lease: &Lease) -> Result<Option<Latest>, sqlx::Er
 
 impl Store {
     pub fn history(&self, lease: &Lease) -> Owned<Vec<Message>> {
+        let timed = self.history_timed(lease);
+        Box::pin(async move { Ok(timed.await?.0) })
+    }
+
+    /// The history, and the milliseconds spent waiting for a connection.
+    pub fn history_timed(&self, lease: &Lease) -> Owned<(Vec<Message>, u64)> {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
-            let latest = latest(&pool, &lease).await?;
+            let (mut connection, waited) = timed_connection(&pool).await?;
+            let latest = latest(&mut connection, &lease).await?;
             let through = latest.as_ref().map_or(-1, |latest| latest.through_seq);
             let rows: Vec<Json<Message>> = sqlx::query_scalar(
                 "select entry from history \
@@ -63,14 +70,14 @@ impl Store {
             .bind(&lease.agent)
             .bind(&lease.key)
             .bind(through)
-            .fetch_all(&pool)
+            .fetch_all(&mut *connection)
             .await?;
             let mut history = Vec::with_capacity(rows.len() + 1);
             if let Some(latest) = latest {
                 history.push(Message::user_text(latest.summary));
             }
             history.extend(rows.into_iter().map(|Json(message)| message));
-            Ok(history)
+            Ok((history, waited))
         })
     }
 
@@ -78,7 +85,8 @@ impl Store {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
-            let latest = latest(&pool, &lease).await?;
+            let mut connection = pool.acquire().await?;
+            let latest = latest(&mut connection, &lease).await?;
             let through = latest.as_ref().map_or(-1, |latest| latest.through_seq);
             let rows: Vec<(i64, String, i32)> = sqlx::query_as(
                 "select seq, turn_id, tokens from history \
@@ -87,7 +95,7 @@ impl Store {
             .bind(&lease.agent)
             .bind(&lease.key)
             .bind(through)
-            .fetch_all(&pool)
+            .fetch_all(&mut *connection)
             .await?;
             let due: bool = sqlx::query_scalar(
                 "select compaction_retry_after is null or compaction_retry_after <= now() \
@@ -95,7 +103,7 @@ impl Store {
             )
             .bind(&lease.agent)
             .bind(&lease.key)
-            .fetch_one(&pool)
+            .fetch_one(&mut *connection)
             .await?;
             Ok(CompactionState {
                 due,

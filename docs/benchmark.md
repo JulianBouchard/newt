@@ -13,7 +13,9 @@
 
 - From the driver: time to the read receipt, time until the turn starts, turn duration, model calls and tool calls per turn, the cached share of input, and failed turns.
 - newt's CPU time and resident memory at the end of the run, and how many warnings it logged.
-- The cache report card from `newt-report`: the cached share of all input, and every cache miss with its cause.
+- The cache report card from `newt-report`: the cached share of all input, and every cache miss with its cause, including a session moved to another cache key.
+- The fake model's cache log (`cache.jsonl` in the run directory): one line per request with its cache key, the machine it went to and the key's home machine, the key's requests in the last minute, and how many leading prompt blocks that machine held, could read, or did not have.
+- Time spent waiting for a database connection when accepting an event, claiming the session and loading history, in `newt-report --summary`.
 
 Turn duration is dominated by the fake model's simulated latency and the mock tools, so it says whether newt adds waiting, not how fast a real model is. The numbers that are newt's own are time to read receipt, time to turn start, the cached share and the miss causes, and CPU and memory per session.
 

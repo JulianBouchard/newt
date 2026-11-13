@@ -25,6 +25,12 @@ pub enum Cause {
         from: String,
         to: String,
     },
+    /// The session moved to another prompt cache key, as when automatic
+    /// buckets grow.
+    KeyChanged {
+        from: String,
+        to: String,
+    },
     /// The first piece of the prefix that differs, and roughly where it starts.
     PrefixChanged {
         part: String,
@@ -52,6 +58,7 @@ impl std::fmt::Display for Cause {
         match self {
             Self::FirstCall => write!(formatter, "first call of the session in this log"),
             Self::ModelChanged { from, to } => write!(formatter, "model changed: {from} -> {to}"),
+            Self::KeyChanged { from, to } => write!(formatter, "cache key changed: {from} -> {to}"),
             Self::PrefixChanged { part, offset } => {
                 write!(
                     formatter,
@@ -86,6 +93,9 @@ impl Cause {
                 "history rewritten"
             }
             .to_owned(),
+            Self::KeyChanged { .. } => {
+                "cache key changed (session moved to another key)".to_owned()
+            }
             Self::Idle { .. } => "idle past the cache lifetime".to_owned(),
             Self::Unexplained { .. } => "unexplained (routing)".to_owned(),
             other => other.to_string(),
@@ -96,6 +106,7 @@ impl Cause {
 #[derive(Debug, Clone)]
 struct Started {
     model: String,
+    cache_key: String,
     at: OffsetDateTime,
     prefix: LayerFingerprint,
     history: LayerFingerprint,
@@ -232,6 +243,7 @@ impl CacheCard {
                 turn,
                 call,
                 model,
+                cache_key,
                 prefix,
                 history,
                 ..
@@ -240,6 +252,7 @@ impl CacheCard {
                     (session.clone(), turn.clone(), *call),
                     Started {
                         model: model.clone(),
+                        cache_key: cache_key.clone(),
                         at: event.at,
                         prefix: prefix.clone(),
                         history: history.clone(),
@@ -368,6 +381,12 @@ fn cause(previous: Option<&Finished>, current: &Started, compaction: bool, ttl: 
         return Cause::ModelChanged {
             from: previous.started.model.clone(),
             to: current.model.clone(),
+        };
+    }
+    if previous.started.cache_key != current.cache_key {
+        return Cause::KeyChanged {
+            from: previous.started.cache_key.clone(),
+            to: current.cache_key.clone(),
         };
     }
     if previous.started.prefix.hash != current.prefix.hash {

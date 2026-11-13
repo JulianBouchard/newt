@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::pool::PoolConnection;
 use sqlx::types::Json;
+use sqlx::{PgPool, Postgres};
 
 pub const LIVE_CHANNEL: &str = "newt_live";
 pub const INBOX_CHANNEL: &str = "newt_inbox";
@@ -78,6 +79,9 @@ pub struct InboundEvent {
 pub struct Accepted {
     pub inbox_id: i64,
     pub duplicate: bool,
+    /// Milliseconds spent waiting for a database connection.
+    #[serde(skip)]
+    pub pool_wait_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -109,12 +113,18 @@ impl Store {
         &self.pool
     }
 
+    /// A connection, and the milliseconds the pool took to hand it over.
+    pub async fn connection(&self) -> Result<(PoolConnection<Postgres>, u64), sqlx::Error> {
+        timed_connection(&self.pool).await
+    }
+
     pub async fn accept_event(
         &self,
         agent: &str,
         key: &str,
         event: &InboundEvent,
     ) -> Result<Accepted, sqlx::Error> {
+        let (mut connection, pool_wait_ms) = self.connection().await?;
         let (inbox_id, fresh, _received, _notified): (i64, bool, i64, i64) = sqlx::query_as(ACCEPT)
             .bind(agent)
             .bind(key)
@@ -126,11 +136,12 @@ impl Store {
             .bind(INBOX_CHANNEL)
             .bind(LIVE_CHANNEL)
             .bind(live_topic(agent, key))
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *connection)
             .await?;
         Ok(Accepted {
             inbox_id,
             duplicate: !fresh,
+            pool_wait_ms,
         })
     }
 
@@ -267,4 +278,14 @@ const APPEND_LIVE_AND_NOTIFY: &str = "with relaxed as (select set_config('synchr
 
 pub fn live_topic(agent: &str, key: &str) -> String {
     format!("{agent}/{key}")
+}
+
+/// A connection from `pool`, and the milliseconds spent waiting for it.
+pub async fn timed_connection(
+    pool: &PgPool,
+) -> Result<(PoolConnection<Postgres>, u64), sqlx::Error> {
+    let started = std::time::Instant::now();
+    let connection = pool.acquire().await?;
+    let waited = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    Ok((connection, waited))
 }

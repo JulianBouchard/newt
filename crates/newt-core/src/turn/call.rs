@@ -72,6 +72,7 @@ pub(super) async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(
         turn: ids.turn.to_owned(),
         call,
         model: request.model.to_owned(),
+        cache_key: request.cache_key.to_owned(),
         effort: request.effort,
         prefix: context.prefix_fingerprint.clone(),
         history: context.history_fingerprint.clone(),

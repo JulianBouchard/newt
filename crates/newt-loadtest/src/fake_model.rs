@@ -14,7 +14,7 @@ use futures_util::stream;
 use serde_json::{Value, json};
 
 use crate::audit::Audit;
-use crate::cache::{CacheRules, CacheScope, PrefixCache, Router, prompt_bytes};
+use crate::cache::{CacheRules, CacheScope, Lookup, PrefixCache, Router, prompt_bytes};
 use crate::plan::{Call, Turn, finish, pick_tools, read_turn, seed_of};
 use crate::profile::{ModelTiming, Profile};
 use crate::sample::Rng;
@@ -76,6 +76,7 @@ pub struct FakeOptions {
     pub dump_dir: Option<std::path::PathBuf>,
     pub turn_marker: Option<String>,
     pub decision_log: Option<std::path::PathBuf>,
+    pub cache_log: Option<std::path::PathBuf>,
     pub profile: Profile,
 }
 
@@ -91,6 +92,7 @@ impl FakeModel {
             dump_dir,
             turn_marker,
             decision_log,
+            cache_log,
             profile,
         } = options;
         let machines = match cache_scope {
@@ -109,7 +111,7 @@ impl FakeModel {
             ids: AtomicU64::new(rng_seed),
             scope: cache_scope,
             router: Router::new(machines),
-            audit: Audit::new(decision_log.as_deref())?,
+            audit: Audit::new(decision_log.as_deref(), cache_log.as_deref())?,
             dump_dir,
             turn_marker,
             profile,
@@ -196,25 +198,40 @@ fn tool_schemas(body: &Value) -> HashMap<String, Value> {
         .collect()
 }
 
+/// Routes the request to a cache, looks its prompt up, and logs where it
+/// went and what the machine held.
+fn look_up(model: &FakeModel, body: &Value, prompt: &[u8]) -> Lookup {
+    let mut route = None;
+    let key = match model.scope {
+        CacheScope::Key => cache_key(body),
+        CacheScope::Prefix => "shared".to_owned(),
+        CacheScope::Routed { .. } => {
+            let requested = body.get("prompt_cache_key").and_then(Value::as_str);
+            route = Some(model.router.route(requested, prompt, model.rng.next_u64()));
+            format!("machine-{}", route.map_or(0, |route| route.machine))
+        }
+    };
+    let lookup = model.cache.lookup_and_store(&key, prompt);
+    model.audit.log_cache(&json!({
+        "cache_key": body.get("prompt_cache_key"),
+        "machine": route.map(|route| route.machine),
+        "home": route.map(|route| route.home),
+        "per_minute": route.map(|route| route.per_minute),
+        "input_tokens": lookup.input_tokens,
+        "cached_tokens": lookup.cached_tokens,
+        "blocks": lookup.blocks,
+        "held": lookup.held,
+        "readable": lookup.readable,
+    }));
+    lookup
+}
+
 async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -> Response {
     model.stats.calls.fetch_add(1, Ordering::Relaxed);
     let timing = model.timing;
     let prompt = prompt_bytes(&body);
-    let key = match model.scope {
-        CacheScope::Key => cache_key(&body),
-        CacheScope::Prefix => "shared".to_owned(),
-        CacheScope::Routed { .. } => {
-            let requested = body.get("prompt_cache_key").and_then(Value::as_str);
-            format!(
-                "machine-{}",
-                model
-                    .router
-                    .machine(requested, &prompt, model.rng.next_u64())
-            )
-        }
-    };
     record_shape(&model, &body).await;
-    let lookup = model.cache.lookup_and_store(&key, &prompt);
+    let lookup = look_up(&model, &body, &prompt);
     let uncached = lookup.input_tokens - lookup.cached_tokens;
     #[expect(clippy::cast_precision_loss, reason = "token counts far below 2^52")]
     let prefill = Duration::from_secs_f64(

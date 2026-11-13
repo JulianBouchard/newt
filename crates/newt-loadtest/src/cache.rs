@@ -31,6 +31,21 @@ pub struct PrefixCache {
 pub struct Lookup {
     pub input_tokens: u64,
     pub cached_tokens: u64,
+    /// Whole blocks in the prompt.
+    pub blocks: u64,
+    /// Leading blocks this machine holds, readable or not yet.
+    pub held: u64,
+    /// Leading blocks it could serve: held and old enough to read.
+    pub readable: u64,
+}
+
+/// Where a request went: its machine, the machine its key belongs to, and
+/// how many requests that key sent in the last minute, this one included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Route {
+    pub machine: u64,
+    pub home: u64,
+    pub per_minute: usize,
 }
 
 fn fnv(seed: u64, bytes: &[u8]) -> u64 {
@@ -89,6 +104,10 @@ impl Router {
     }
 
     pub fn machine(&self, cache_key: Option<&str>, prompt: &[u8], roll: u64) -> u64 {
+        self.route(cache_key, prompt, roll).machine
+    }
+
+    pub fn route(&self, cache_key: Option<&str>, prompt: &[u8], roll: u64) -> Route {
         let route = cache_key.map_or_else(
             || fnv(0, prompt.get(..ROUTE_HEAD_BYTES).unwrap_or(prompt)),
             |key| fnv(1, key.as_bytes()),
@@ -107,10 +126,16 @@ impl Router {
         }
         window.push_back(now);
         let home = route % self.machines;
-        if window.len() <= OVERFLOW_PER_MINUTE || self.machines == 1 {
+        let per_minute = window.len();
+        let machine = if per_minute <= OVERFLOW_PER_MINUTE || self.machines == 1 {
             home
         } else {
             (home + 1 + roll % (self.machines - 1)) % self.machines
+        };
+        Route {
+            machine,
+            home,
+            per_minute,
         }
     }
 }
@@ -140,12 +165,21 @@ impl PrefixCache {
             Ok(entries) => entries,
             Err(poisoned) => poisoned.into_inner(),
         };
+        let alive = |hash: &u64| {
+            entries
+                .get(&(scope, *hash))
+                .filter(|entry| now.duration_since(entry.used) < self.rules.ttl)
+                .copied()
+        };
+        let held = hashes
+            .iter()
+            .take_while(|hash| alive(hash).is_some())
+            .count();
         let matched = hashes
             .iter()
             .take_while(|hash| {
-                entries.get(&(scope, **hash)).is_some_and(|entry| {
+                alive(hash).is_some_and(|entry| {
                     now.duration_since(entry.written) >= self.rules.readable_after
-                        && now.duration_since(entry.used) < self.rules.ttl
                 })
             })
             .count();
@@ -175,6 +209,9 @@ impl PrefixCache {
             } else {
                 0
             },
+            blocks: u64::try_from(hashes.len()).unwrap_or(u64::MAX),
+            held: u64::try_from(held).unwrap_or(u64::MAX),
+            readable: u64::try_from(matched).unwrap_or(u64::MAX),
         }
     }
 }
@@ -251,10 +288,11 @@ mod tests {
         let cache = PrefixCache::new(rules(Duration::from_secs(60)));
         let base = "x".repeat(8_000);
         cache.lookup_and_store("k", base.as_bytes());
-        assert_eq!(
-            cache.lookup_and_store("k", base.as_bytes()).cached_tokens,
-            0
-        );
+        let again = cache.lookup_and_store("k", base.as_bytes());
+        assert_eq!(again.cached_tokens, 0);
+        assert_eq!((again.blocks, again.held, again.readable), (15, 15, 0));
+        let elsewhere = cache.lookup_and_store("other", base.as_bytes());
+        assert_eq!((elsewhere.held, elsewhere.readable), (0, 0));
     }
 
     #[test]

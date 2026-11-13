@@ -29,11 +29,12 @@ pub(crate) async fn run_session<B: Backend, M: Model>(
 ) -> anyhow::Result<()> {
     let ttl = inner.config.lease_ttl;
     let started = std::time::Instant::now();
-    let claimed = inner.store.claim(agent, key, &inner.owner, ttl).await?;
+    let (claimed, pool_wait_ms) = inner.store.claim(agent, key, &inner.owner, ttl).await?;
     inner.emit(EventKind::SessionClaimed {
         session: format!("{agent}/{key}"),
         claimed: claimed.is_some(),
         claim_ms: elapsed_ms(started),
+        pool_wait_ms,
     });
     let Some(lease) = claimed else {
         return Ok(());
@@ -230,7 +231,7 @@ async fn ready_turn<B: Backend, M: Model>(
             return Ok(None);
         }
     };
-    let Some((history, history_ms)) = begun? else {
+    let Some((history, history_ms, pool_wait_ms)) = begun? else {
         tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before the turn started");
         return Ok(None);
     };
@@ -239,6 +240,7 @@ async fn ready_turn<B: Backend, M: Model>(
         turn: plan.turn_id.clone(),
         prepare_ms,
         history_ms,
+        pool_wait_ms,
     });
     Ok(Some(Ready {
         prepared,
@@ -253,13 +255,13 @@ async fn begin_turn<B: Backend, M: Model>(
     turn_id: &str,
     consumed: &[i64],
     fresh: bool,
-) -> anyhow::Result<Option<(Vec<Message>, u64)>> {
+) -> anyhow::Result<Option<(Vec<Message>, u64, u64)>> {
     let started = std::time::Instant::now();
     if fresh && !inner.store.start_turn(lease, turn_id, consumed).await? {
         return Ok(None);
     }
-    let history = inner.store.history(lease).await?;
-    Ok(Some((history, elapsed_ms(started))))
+    let (history, pool_wait_ms) = inner.store.history_timed(lease).await?;
+    Ok(Some((history, elapsed_ms(started), pool_wait_ms)))
 }
 
 async fn finish_turn<B: Backend, M: Model>(

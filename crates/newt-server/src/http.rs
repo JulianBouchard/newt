@@ -162,6 +162,7 @@ async fn post_event(
             session: format!("{agent}/{key}"),
             inbox_id: accepted.inbox_id,
             accept_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            pool_wait_ms: accepted.pool_wait_ms,
         }));
     }
     Ok((StatusCode::ACCEPTED, Json(accepted)).into_response())

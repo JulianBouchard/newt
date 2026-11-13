@@ -61,6 +61,9 @@ pub enum EventKind {
         turn: String,
         call: u32,
         model: String,
+        /// The prompt cache key the request carried.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        cache_key: String,
         effort: Option<Effort>,
         prefix: LayerFingerprint,
         history: LayerFingerprint,
@@ -145,6 +148,9 @@ pub enum EventKind {
         session: String,
         inbox_id: i64,
         accept_ms: u64,
+        /// Of the time above, how long it waited for a database connection.
+        #[serde(default)]
+        pool_wait_ms: u64,
     },
     SessionWoken {
         session: String,
@@ -154,12 +160,18 @@ pub enum EventKind {
         session: String,
         claimed: bool,
         claim_ms: u64,
+        /// Of the time above, how long it waited for a database connection.
+        #[serde(default)]
+        pool_wait_ms: u64,
     },
     TurnPrepared {
         session: String,
         turn: String,
         prepare_ms: u64,
         history_ms: u64,
+        /// Of the history time, how long it waited for a database connection.
+        #[serde(default)]
+        pool_wait_ms: u64,
     },
     TurnCommitted {
         session: String,

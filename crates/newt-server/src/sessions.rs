@@ -5,7 +5,7 @@ use std::time::Duration;
 use newt_core::message::Message;
 use sqlx::PgPool;
 
-use crate::store::Store;
+use crate::store::{Store, timed_connection};
 
 const MAX_BACKOFF_SECONDS: f64 = 300.0;
 
@@ -47,10 +47,11 @@ impl Store {
         key: &str,
         owner: &str,
         ttl: Duration,
-    ) -> Owned<Option<Lease>> {
+    ) -> Owned<(Option<Lease>, u64)> {
         let pool = self.pool().clone();
         let (agent, key, owner) = (agent.to_owned(), key.to_owned(), owner.to_owned());
         Box::pin(async move {
+            let (mut connection, waited) = timed_connection(&pool).await?;
             let epoch: Option<i64> = sqlx::query_scalar(
                 "update sessions set lease_owner = $3, lease_epoch = lease_epoch + 1, \
                    lease_expires_at = now() + make_interval(secs => $4) \
@@ -63,14 +64,15 @@ impl Store {
             .bind(&key)
             .bind(&owner)
             .bind(seconds(ttl))
-            .fetch_optional(&pool)
+            .fetch_optional(&mut *connection)
             .await?;
-            Ok(epoch.map(|epoch| Lease {
+            let lease = epoch.map(|epoch| Lease {
                 agent,
                 key,
                 owner,
                 epoch,
-            }))
+            });
+            Ok((lease, waited))
         })
     }
 

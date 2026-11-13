@@ -31,6 +31,7 @@ struct Log {
     card: CacheCard,
     at: OffsetDateTime,
     turn: u32,
+    key: String,
 }
 
 impl Log {
@@ -39,6 +40,7 @@ impl Log {
             card: CacheCard::new(300),
             at: OffsetDateTime::UNIX_EPOCH,
             turn: 0,
+            key: "assistant/0".into(),
         }
     }
 
@@ -68,6 +70,7 @@ impl Log {
             turn: turn.clone(),
             call: 0,
             model: "default".into(),
+            cache_key: self.key.clone(),
             effort: None,
             prefix: prompt.prefix_fingerprint(),
             history: prompt.history_fingerprint(),
@@ -187,6 +190,22 @@ fn history_rewritten_by_compaction_is_told_apart_from_a_routing_miss() {
                 compaction: true
             },
         ]
+    );
+}
+
+#[test]
+fn a_session_moved_to_another_cache_key_is_named_not_called_routing() {
+    let tools = [tool("add_task", "Add a task.")];
+    let mut log = Log::new();
+    log.turn(&tools, &[], false, 9_500);
+    log.key = "assistant/7".into();
+    log.turn(&tools, &[], false, 0);
+    assert_eq!(
+        log.causes(),
+        [Cause::KeyChanged {
+            from: "assistant/0".into(),
+            to: "assistant/7".into()
+        }]
     );
 }
 
