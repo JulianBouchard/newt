@@ -2,6 +2,7 @@
 //! `call.rs`.
 
 mod call;
+mod mrtr;
 mod pages;
 mod skills;
 
@@ -18,8 +19,9 @@ use newt_core::tools::{Retention, ToolDef};
 use newt_core::workspace::PageKey;
 use rmcp::handler::client::progress::ProgressDispatcher;
 use rmcp::model::{
-    JsonObject, ProgressNotificationParam, ProtocolVersion, ServerNotification, SubscriptionFilter,
-    Tool,
+    ClientConfig, ElicitationCapability, FormElicitationCapability, JsonObject,
+    ProgressNotificationParam, ProtocolVersion, ServerNotification, SubscriptionFilter,
+    TASKS_EXTENSION_ID, Tool, UrlElicitationCapability,
 };
 use rmcp::service::NotificationContext;
 use rmcp::service::RunningService;
@@ -89,6 +91,22 @@ struct Handler {
 }
 
 impl ClientHandler for Handler {
+    /// Newt can pass a form or a link to the person and come back with the
+    /// answer (2.5), and polls tools that run as tasks.
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
+        info.capabilities.elicitation = Some(
+            ElicitationCapability::new()
+                .with_form(FormElicitationCapability::new())
+                .with_url(UrlElicitationCapability::new()),
+        );
+        info.capabilities
+            .extensions
+            .get_or_insert_with(Default::default)
+            .insert(TASKS_EXTENSION_ID.to_owned(), JsonObject::new());
+        info
+    }
+
     async fn on_progress(
         &self,
         params: ProgressNotificationParam,

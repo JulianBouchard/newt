@@ -32,8 +32,12 @@ impl McpHost {
         let Some(remote) = self.tools.get(&call.name) else {
             return ToolOutput::error(format!("unknown tool `{}`", call.name));
         };
-        let Value::Object(arguments) = call.arguments.clone() else {
+        let Value::Object(mut arguments) = call.arguments.clone() else {
             return ToolOutput::error(format!("arguments for {} must be a JSON object", call.name));
+        };
+        let input = match super::mrtr::take_input(&mut arguments) {
+            Ok(input) => input,
+            Err(why) => return ToolOutput::error(why),
         };
         let mut meta = RequestMetaObject::new();
         meta.insert(META_SESSION.to_owned(), Value::from(self.session.as_str()));
@@ -57,13 +61,26 @@ impl McpHost {
         }
         let mut params = CallToolRequestParams::new(call.name.clone()).with_arguments(arguments);
         params.meta = Some(meta);
+        if let Some((responses, state)) = input {
+            params.input_responses = Some(responses);
+            params.request_state = state;
+        }
         match self.send(remote, params, context.progress.as_ref()).await {
             Ok(ServerResult::CallToolResult(result)) => tool_output(result),
-            Ok(ServerResult::InputRequiredResult(_)) => {
-                tracing::warn!(server = %remote.server, tool = %call.name, "MCP tool asked for input newt cannot give yet");
-                ToolOutput::error(
-                    "The tool asked for more input before it would act, which this runtime cannot give it yet, so nothing was done.",
-                )
+            Ok(ServerResult::InputRequiredResult(result)) => {
+                tracing::info!(server = %remote.server, tool = %call.name, "MCP tool asked for the person's input");
+                super::mrtr::ask(&call.name, &result)
+            }
+            Ok(ServerResult::CreateTaskResult(created)) => {
+                match super::mrtr::finish_task(&remote.client, created).await {
+                    Ok(result) => tool_output(result),
+                    Err(why) => {
+                        tracing::warn!(server = %remote.server, tool = %call.name, %why, "MCP task did not finish");
+                        ToolOutput::error(format!(
+                            "The tool call ran as a task, and {why}, so {OUTCOME_UNKNOWN}"
+                        ))
+                    }
+                }
             }
             Ok(_) => {
                 tracing::warn!(server = %remote.server, tool = %call.name, "MCP tool answered with something other than a result");
