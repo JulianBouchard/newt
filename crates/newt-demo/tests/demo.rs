@@ -11,7 +11,7 @@ use newt_core::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
 use newt_demo::{Demo, app};
-use newt_server::context::{ContextProviderBackend, ProviderEndpoint};
+use newt_server::context::{ContextProviderBackend, McpAgent, ProviderEndpoint};
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
 use serde_json::{Value, json};
@@ -25,6 +25,8 @@ const TOKEN: &str = "demo-test-token";
 struct Scripted {
     script: Mutex<VecDeque<Vec<Part>>>,
     reads: Mutex<Vec<String>>,
+    systems: Mutex<Vec<String>>,
+    tools: Mutex<Vec<String>>,
 }
 
 fn call(id: &str, name: &str, arguments: Value) -> Part {
@@ -42,6 +44,16 @@ impl Model for Scripted {
         _cancel: &CancellationToken,
         _on_event: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> impl Future<Output = Result<ModelResponse, ProviderError>> + Send {
+        self.systems
+            .lock()
+            .unwrap()
+            .push(request.prompt.system.to_owned());
+        *self.tools.lock().unwrap() = request
+            .prompt
+            .tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect();
         if let Some(last) = request.prompt.scratch.last() {
             for part in &last.parts {
                 if let Part::ToolResult(result) = part
@@ -105,6 +117,57 @@ async fn say(
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn the_demo_assistant_keeps_tasks_and_notes_and_replies(pool: PgPool) {
+    let model = converse(pool, |address| {
+        ContextProviderBackend::new(
+            BTreeMap::from([(
+                "assistant".to_owned(),
+                ProviderEndpoint {
+                    base_url: format!("http://{address}/assistant"),
+                    token: TOKEN.into(),
+                },
+            )]),
+            ["default".to_owned()],
+        )
+        .unwrap()
+    })
+    .await;
+    assert!(model.0[0].starts_with("You are a personal assistant"));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_same_assistant_runs_from_its_mcp_server_alone(pool: PgPool) {
+    let model = converse(pool, |address| {
+        ContextProviderBackend::new(BTreeMap::new(), ["default".to_owned()])
+            .unwrap()
+            .with_mcp_agents(BTreeMap::from([(
+                "assistant".to_owned(),
+                McpAgent {
+                    url: format!("http://{address}/mcp"),
+                    model: "default".into(),
+                    token: TOKEN.into(),
+                },
+            )]))
+    })
+    .await;
+    let system = &model.0[0];
+    assert!(
+        system.starts_with("You are a personal assistant"),
+        "{system}"
+    );
+    assert!(
+        system.contains("- assistant/writing: How to word a message to the person."),
+        "{system}"
+    );
+    assert!(model.1.contains(&"load_skill".to_owned()));
+}
+
+/// Two turns with the demo app: add a task and a note and reply, then
+/// complete the task and reply. Checks what the person got and what the
+/// model read, and returns the model to check more.
+async fn converse(
+    pool: PgPool,
+    backend: impl FnOnce(std::net::SocketAddr) -> ContextProviderBackend,
+) -> (Vec<String>, Vec<String>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let demo = Demo::new(TOKEN.into(), &format!("http://{address}"));
@@ -149,17 +212,7 @@ async fn the_demo_assistant_keeps_tasks_and_notes_and_replies(pool: PgPool) {
     let store = Store::new(pool.clone());
     let runner = Runner::new(
         Store::new(pool),
-        ContextProviderBackend::new(
-            BTreeMap::from([(
-                "assistant".to_owned(),
-                ProviderEndpoint {
-                    base_url: format!("http://{address}/assistant"),
-                    token: TOKEN.into(),
-                },
-            )]),
-            ["default".to_owned()],
-        )
-        .unwrap(),
+        backend(address),
         Scripted {
             script: Mutex::new(script.into()),
             ..Scripted::default()
@@ -195,4 +248,8 @@ async fn the_demo_assistant_keeps_tasks_and_notes_and_replies(pool: PgPool) {
         "{}",
         reads[1]
     );
+    let model = runner.model();
+    let systems = model.systems.lock().unwrap().clone();
+    let tools = model.tools.lock().unwrap().clone();
+    (systems, tools)
 }

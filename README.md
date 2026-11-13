@@ -31,7 +31,21 @@ Read on for a demo. The details live in [docs/design.md](docs/design.md) (why it
 
 ## Try it: a personal assistant
 
-`newt-demo` is a small assistant that keeps a person's notes and tasks and replies by chat. One process serves both halves an app gives newt: the context provider (`/assistant`) and the tools, over MCP (`/mcp`). Its state lives in memory.
+`newt-demo` is a small assistant that keeps a person's notes and tasks and replies by chat. One process serves both halves an app gives newt: the context provider (`/assistant`) and the tools, over MCP (`/mcp`). Its MCP server is also a complete agent on its own: instructions, tools, the person's notes and tasks as resources that announce their updates, and a skill served over MCP. Its state lives in memory. Copy `crates/newt-demo` to start your own app.
+
+With nothing but Docker, and no API key (the loadtest's fake model answers):
+
+```sh
+docker compose -f deploy/compose.yaml up --build -d
+curl -X POST localhost:7878/v1/agents/assistant-mcp/sessions/ana/events \
+  -H "Authorization: Bearer demo-token" -H 'content-type: application/json' \
+  -d '{"id":"m1","text":"Remind me to call the bank tomorrow."}'
+curl -N localhost:7878/v1/agents/assistant-mcp/sessions/ana/live -H "Authorization: Bearer demo-token"
+```
+
+`assistant` is the demo through its context provider, `assistant-mcp` the same demo as nothing but an MCP server. For a real model, set `OPENAI_API_KEY` and point `[models.default]` in `deploy/server.toml` at `openai`.
+
+From source:
 
 ```sh
 docker compose up -d --wait

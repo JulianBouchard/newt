@@ -2,6 +2,7 @@
 //! to-do assistant, used by the quickstart and the integration tests.
 
 mod provider;
+mod resources;
 mod tools;
 
 use std::collections::{HashMap, HashSet};
@@ -87,7 +88,7 @@ impl Session {
     }
 
     fn pages(&self) -> Vec<Page> {
-        ["notes", "tasks", "sent"]
+        resources::PAGES
             .iter()
             .filter_map(|name| self.page(name))
             .collect()
@@ -99,6 +100,8 @@ pub struct Demo {
     token: String,
     public_url: String,
     sessions: Mutex<HashMap<String, Session>>,
+    listeners: Mutex<Vec<(u64, rmcp::service::SubscriptionSink)>>,
+    next_listener: std::sync::atomic::AtomicU64,
 }
 
 impl Demo {
@@ -107,12 +110,21 @@ impl Demo {
             token,
             public_url: public_url.trim_end_matches('/').to_owned(),
             sessions: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(Vec::new()),
+            next_listener: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<String, Session>> {
         match self.sessions.lock() {
             Ok(sessions) => sessions,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn listeners(&self) -> MutexGuard<'_, Vec<(u64, rmcp::service::SubscriptionSink)>> {
+        match self.listeners.lock() {
+            Ok(listeners) => listeners,
             Err(poisoned) => poisoned.into_inner(),
         }
     }
@@ -143,12 +155,36 @@ async fn require_token(
     Ok(next.run(request).await)
 }
 
+/// rmcp only answers requests whose Host is local, against DNS rebinding.
+/// The demo also answers to the host of its public URL, such as `demo` in
+/// Docker Compose.
+fn allowed_hosts(public_url: &str) -> Vec<String> {
+    let host = public_url
+        .split_once("://")
+        .map_or(public_url, |(_, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    let mut hosts = vec![
+        "localhost".to_owned(),
+        "127.0.0.1".to_owned(),
+        "::1".to_owned(),
+    ];
+    if !host.is_empty() {
+        hosts.push(host.to_owned());
+        if let Some((name, _port)) = host.rsplit_once(':') {
+            hosts.push(name.to_owned());
+        }
+    }
+    hosts
+}
+
 pub fn app(demo: Arc<Demo>) -> Router {
     let mcp_demo = Arc::clone(&demo);
     let mcp: StreamableHttpService<tools::Tools, LocalSessionManager> = StreamableHttpService::new(
         move || Ok(tools::Tools(Arc::clone(&mcp_demo))),
         Arc::default(),
-        StreamableHttpServerConfig::default(),
+        StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts(&demo.public_url)),
     );
     Router::new()
         .merge(provider::routes())

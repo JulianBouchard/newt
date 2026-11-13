@@ -1,0 +1,35 @@
+# The config `docker compose up` runs: newt, the demo assistant twice (once
+# through its context provider, once as nothing but its MCP server), and the
+# loadtest's fake model, so it works without an API key.
+#
+# For a real model, set OPENAI_API_KEY in your shell and change the chain of
+# [models.default] to ["openai"].
+server = { listen = "0.0.0.0:7878" }
+database = { url_env = "NEWT_DATABASE_URL", max_connections = 10 }
+events = { jsonl = "/var/lib/newt/newt-events.jsonl" }
+
+[routes.fake]
+protocol = "openai-responses"
+model = "fake-model"
+base_url = "http://fake-model:9100/v1"
+key_env = "FAKE_MODEL_KEY"
+max_concurrent = 16
+
+[routes.openai]
+protocol = "openai-responses"
+model = "gpt-6.1-terra"
+base_url = "https://api.openai.com/v1"
+key_env = "OPENAI_API_KEY"
+max_concurrent = 6
+
+[models.default]
+chain = ["fake"]
+
+[agents.assistant]
+context_provider = "http://demo:4000/assistant"
+token_env = "ASSISTANT_TOKEN"
+
+[agents.assistant-mcp]
+mcp = "http://demo:4000/mcp"
+model = "default"
+token_env = "ASSISTANT_TOKEN"

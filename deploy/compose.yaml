@@ -1,0 +1,55 @@
+# docker compose -f deploy/compose.yaml up --build, then:
+#   curl -X POST localhost:7878/v1/agents/assistant-mcp/sessions/ana/events \
+#     -H "Authorization: Bearer demo-token" -H "content-type: application/json" \
+#     -d '{"id":"m1","text":"Remind me to call the bank tomorrow."}'
+#   curl -N localhost:7878/v1/agents/assistant-mcp/sessions/ana/live \
+#     -H "Authorization: Bearer demo-token"
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: newt
+      POSTGRES_PASSWORD: newt
+      POSTGRES_DB: newt
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "newt"]
+      interval: 1s
+      retries: 30
+
+  demo:
+    image: newt:local
+    build: ..
+    command: ["newt-demo"]
+    environment:
+      ASSISTANT_TOKEN: ${ASSISTANT_TOKEN:-demo-token}
+      NEWT_DEMO_LISTEN: 0.0.0.0:4000
+      NEWT_DEMO_URL: http://demo:4000
+
+  fake-model:
+    image: newt:local
+    build: ..
+    command: ["newt-loadtest", "fake-model", "--listen", "0.0.0.0:9100"]
+
+  newt:
+    image: newt:local
+    build: ..
+    depends_on:
+      postgres:
+        condition: service_healthy
+      demo:
+        condition: service_started
+      fake-model:
+        condition: service_started
+    ports:
+      - "${NEWT_PORT:-7878}:7878"
+    volumes:
+      - ./server.toml:/etc/newt/server.toml:ro
+      - newt-events:/var/lib/newt
+    environment:
+      NEWT_DATABASE_URL: postgres://newt:newt@postgres:5432/newt
+      ASSISTANT_TOKEN: ${ASSISTANT_TOKEN:-demo-token}
+      FAKE_MODEL_KEY: unused
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-unset}
+
+volumes:
+  newt-events:

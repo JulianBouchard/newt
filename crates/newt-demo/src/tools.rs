@@ -2,15 +2,32 @@ use std::sync::Arc;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
-    ListToolsResult, MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    ListResourcesResult, ListSkillsResult, ListToolsResult, MetaObject, PaginatedRequestParams,
+    ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerConfig,
+    SubscriptionFilter, Tool,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::{Demo, Task};
+use crate::{Demo, Task, resources};
+
+/// The pages a successful call of this tool changes, from its
+/// `newt/invalidates`.
+fn changes(name: &str) -> Vec<String> {
+    catalogue()
+        .into_iter()
+        .find(|tool| tool.name == name)
+        .and_then(|tool| tool.meta)
+        .and_then(|meta| meta.get("newt/invalidates").cloned())
+        .and_then(|keys| serde_json::from_value::<Vec<Vec<String>>>(keys).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|key| key.into_iter().next())
+        .collect()
+}
 
 #[derive(Clone)]
 pub(crate) struct Tools(pub(crate) Arc<Demo>);
@@ -175,7 +192,58 @@ impl Tools {
 
 impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_resources_subscribe()
+                .enable_skills()
+                .build(),
+        )
+        .with_instructions(crate::provider::INSTRUCTIONS)
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        Some(resources::accept(requested))
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        resources::listen(&self.0, context).await;
+        Ok(())
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + Send + '_ {
+        std::future::ready(match resources::session(&context.meta) {
+            Some(session) => Ok(resources::list(&self.0, session)),
+            None => Ok(ListResourcesResult::default()),
+        })
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + Send + '_ {
+        std::future::ready(resources::read(
+            &self.0,
+            resources::session(&context.meta),
+            &request,
+        ))
+    }
+
+    fn list_skills(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListSkillsResult, ErrorData>> + Send + '_ {
+        std::future::ready(Ok(resources::skills()))
     }
 
     fn list_tools(
@@ -198,15 +266,25 @@ impl ServerHandler for Tools {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         };
-        let result = match field("newt/session") {
-            Some(session) => self.run(
+        let session = field("newt/session");
+        let key = field("newt/idempotency_key");
+        async move {
+            let Some(session) = session else {
+                return Ok(refused(
+                    "This server only takes calls from newt: newt/session is missing.",
+                )
+                .into());
+            };
+            let result = self.run(
                 &request.name,
                 &request.arguments.unwrap_or_default(),
                 &session,
-                field("newt/idempotency_key").as_deref(),
-            ),
-            None => refused("This server only takes calls from newt: newt/session is missing."),
-        };
-        std::future::ready(Ok(result.into()))
+                key.as_deref(),
+            );
+            if result.is_error != Some(true) {
+                resources::announce(&self.0, &session, &changes(&request.name)).await;
+            }
+            Ok(result.into())
+        }
     }
 }

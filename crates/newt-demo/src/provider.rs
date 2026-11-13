@@ -12,7 +12,7 @@ use crate::Demo;
 
 const VERSION: &str = "demo-1";
 
-const INSTRUCTIONS: &str = "You are a personal assistant for one person, reached by chat.\n\
+pub(crate) const INSTRUCTIONS: &str = "You are a personal assistant for one person, reached by chat.\n\
 The person only sees what you send with send_message: reply with it, briefly and specifically.\n\
 Your workspace holds their notes, their tasks and the messages you already sent. Read it before you answer, and keep it current: add_note for facts worth keeping about them, add_task and complete_task for things to do.\n\
 Use remember only for preferences and standing instructions that should shape how you work with them.\n\
