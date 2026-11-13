@@ -1,5 +1,6 @@
 mod anthropic;
 mod capture;
+mod chat;
 mod openai;
 
 use std::collections::BTreeMap;
@@ -36,6 +37,8 @@ const REQUEST_ID_HEADERS: [&str; 5] = [
 pub enum Protocol {
     AnthropicMessages,
     OpenaiResponses,
+    /// Chat Completions, which vLLM, Ollama and most other hosts speak.
+    OpenaiChat,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,7 +210,7 @@ impl ProviderClient {
             .build()?;
         let auth = match protocol {
             Protocol::AnthropicMessages => Auth::Header("x-api-key".to_owned()),
-            Protocol::OpenaiResponses => Auth::Bearer,
+            Protocol::OpenaiResponses | Protocol::OpenaiChat => Auth::Bearer,
         };
         Ok(Self {
             http,
@@ -262,6 +265,10 @@ impl Model for ProviderClient {
                 format!("{}/responses", self.base_url),
                 openai::request_body(request),
             ),
+            Protocol::OpenaiChat => (
+                format!("{}/chat/completions", self.base_url),
+                chat::request_body(request),
+            ),
         };
         let capture = match &self.capture {
             Some(capture) => Some(capture.begin(&body).await.map_err(ProviderError::Capture)?),
@@ -278,6 +285,9 @@ impl Model for ProviderClient {
                 }
                 Protocol::OpenaiResponses => {
                     run_stream::<openai::Decoder>(http, capture, cancel, on_event).await
+                }
+                Protocol::OpenaiChat => {
+                    run_stream::<chat::Decoder>(http, capture, cancel, on_event).await
                 }
             }
         };

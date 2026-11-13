@@ -4,7 +4,7 @@ An agent runtime for products: a long-lived agent per customer, your backend as 
 
 Newts regrow what they lose. So does this: every turn strips the context back and grows it from the workspace and the history, so stale reads never pile up and the prompt cache stays warm.
 
-Early days, not yet in production. In so far: streaming Anthropic and OpenAI clients, the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, a reactive workspace fed by a context provider, MCP tools, compaction and OTLP tracing.
+Early days, not yet in production. In so far: streaming clients for Anthropic, OpenAI and any Chat Completions host (vLLM, Ollama, OpenRouter), the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, a reactive workspace fed by a context provider, MCP tools, compaction and OTLP tracing.
 
 **Status:** pre-1.0. The crates are not published to crates.io; build from source (Rust 1.99, Postgres 18).
 

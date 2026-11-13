@@ -116,6 +116,7 @@ pub struct Route {
 pub enum Protocol {
     AnthropicMessages,
     OpenaiResponses,
+    OpenaiChat,
 }
 
 #[derive(Debug, Deserialize)]

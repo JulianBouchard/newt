@@ -261,6 +261,77 @@ async fn openai_stream_keeps_reasoning_items_and_reports_cached_tokens() {
 }
 
 #[tokio::test]
+async fn openai_chat_stream_assembles_text_and_split_tool_calls_and_reports_cached_tokens() {
+    let fixture = include_str!("fixtures/openai_chat_tool_use.sse");
+    let (base, captured) = serve("/chat/completions", StatusCode::OK, Body::from(fixture)).await;
+    let client = ProviderClient::new(Protocol::OpenaiChat, base, "key").unwrap();
+
+    let (result, events) = stream_once(&client, &CancellationToken::new()).await;
+    let response = result.unwrap();
+    assert_eq!(
+        response.message.parts,
+        vec![
+            Part::text("Checking the profile."),
+            Part::ToolCall(ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: json!({ "paths": ["profile.md"] }),
+            }),
+            Part::ToolCall(ToolCall {
+                id: "call_2".into(),
+                name: "end_turn".into(),
+                arguments: json!({}),
+            }),
+        ]
+    );
+    assert_eq!(
+        (
+            response.usage.input_tokens,
+            response.usage.cache_read_tokens,
+            response.usage.reasoning_tokens
+        ),
+        (3000, 2048, 12)
+    );
+    assert_eq!(response.response_id.as_deref(), Some("chatcmpl_1"));
+    assert_eq!(response.stop, StopReason::ToolUse);
+    assert_eq!(
+        events,
+        vec![
+            StreamEvent::OutputStarted,
+            StreamEvent::ToolCallStarted {
+                id: "call_1".into(),
+                name: "read_file".into()
+            },
+            StreamEvent::ToolCallStarted {
+                id: "call_2".into(),
+                name: "end_turn".into()
+            },
+        ]
+    );
+
+    let body = captured.lock().await.take().unwrap();
+    assert_eq!(body["stream_options"]["include_usage"], true);
+    assert_eq!(body["reasoning_effort"], "low");
+    assert_eq!(body["tools"][0]["function"]["name"], "read_file");
+    let roles: Vec<&str> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        roles,
+        ["system", "user", "assistant", "user", "assistant", "tool"]
+    );
+    assert_eq!(
+        body["messages"][4]["tool_calls"][0]["function"]["arguments"],
+        r#"{"paths":["profile.md"]}"#
+    );
+    assert_eq!(body["messages"][4]["content"], Value::Null);
+    assert_eq!(body["messages"][5]["tool_call_id"], "toolu_0");
+}
+
+#[tokio::test]
 async fn an_error_status_surfaces_the_status_and_body() {
     let (base, _) = serve(
         "/v1/messages",

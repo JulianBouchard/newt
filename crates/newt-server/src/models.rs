@@ -79,6 +79,7 @@ impl Routes {
             let protocol = match route.protocol {
                 Protocol::AnthropicMessages => CoreProtocol::AnthropicMessages,
                 Protocol::OpenaiResponses => CoreProtocol::OpenaiResponses,
+                Protocol::OpenaiChat => CoreProtocol::OpenaiChat,
             };
             let mut client = ProviderClient::new(protocol, &route.base_url, key)?;
             if let Some(header) = &route.api_key_header {

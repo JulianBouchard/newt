@@ -71,9 +71,9 @@ A route is one way to reach one model.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `protocol` | `"anthropic-messages"` or `"openai-responses"` | required | The wire protocol. |
+| `protocol` | `"anthropic-messages"`, `"openai-responses"` or `"openai-chat"` | required | The wire protocol. `openai-chat` is Chat Completions, which vLLM, Ollama, OpenRouter, Together, Groq and most other hosts speak; it carries no reasoning between calls and sends no `prompt_cache_key`. |
 | `model` | string | required | The provider's model id, sent in the request. |
-| `base_url` | string | required | Must start with `http://` or `https://`. Newt appends `/v1/messages` for `anthropic-messages` (so use `https://api.anthropic.com`) and `/responses` for `openai-responses` (so use `https://api.openai.com/v1`). |
+| `base_url` | string | required | Must start with `http://` or `https://`. Newt appends `/v1/messages` for `anthropic-messages` (so use `https://api.anthropic.com`), `/responses` for `openai-responses` (so use `https://api.openai.com/v1`) and `/chat/completions` for `openai-chat` (for example `http://localhost:11434/v1` for Ollama, `https://openrouter.ai/api/v1` for OpenRouter). |
 | `key_env` | string | required | Name of the environment variable that holds the API key. |
 | `api_key_header` | string | none | Header that carries the key. By default `anthropic-messages` sends `x-api-key` and `openai-responses` sends `Authorization: Bearer`. Set it for gateways that use another header, such as `api-key`. |
 | `max_concurrent` | integer, at least 1 | required | Model calls in flight on this route. Further calls wait. Calls from background-priority turns may use at most `max_concurrent - 1` of the slots (at least 1), which keeps a slot free for interactive turns. |
