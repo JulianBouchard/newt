@@ -4,17 +4,27 @@ An agent runtime for products: a long-lived agent per customer, your backend as 
 
 Newts regrow what they lose. So does this: every turn strips the context back and grows it from the workspace and the history, so stale reads never pile up and the prompt cache stays warm.
 
-Early days, not yet in production. In so far: streaming clients for Anthropic, OpenAI and any Chat Completions host (vLLM, Ollama, OpenRouter), the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, a reactive workspace fed by a context provider, MCP tools, compaction and OTLP tracing.
+In it: streaming clients for Anthropic, OpenAI and any Chat Completions host (vLLM, Ollama, OpenRouter), the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, a reactive workspace fed by a context provider, MCP tools, approvals and tasks over MCP, compaction and OTLP tracing.
 
-**Status:** pre-1.0. The crates are not published to crates.io; build from source (Rust 1.99; newt runs its own Postgres 18 or connects to yours).
+**Status:** 1.0. Each release ships `newt` binaries for Linux (x86_64, arm64) and macOS (arm64) and a Docker image at `ghcr.io/julianbouchard/newt`. To build from source you need Rust 1.99. newt runs its own Postgres 18 or connects to yours.
 
 | Maturity | What |
 |---|---|
-| Stable | The turn loop and retention classes, steering, the crash-safe journal, fenced leases, the events API and live feed, the context provider, MCP tools, compaction, prompt cache keys, OTLP tracing, embedded Postgres |
-| Experimental | Agents made of one MCP server; skills over MCP (SEP-2640, a draft); approvals through MCP `input_required`; MCP tasks; replay and fork; the `openai-chat` protocol; the turn token budget |
-| Being measured | Recitation, the goal note on long turns: on everywhere today, and the subject of `examples/recitation_eval.rs` before it becomes a setting |
+| Stable | The turn loop and retention classes, steering, the crash-safe journal, fenced leases and several instances on one Postgres, the events API and live feed, deleting sessions and pruning old rows, the context provider, MCP tools, approvals through MCP `input_required`, MCP tasks, agents made of one MCP server, compaction, prompt cache keys, OTLP tracing, embedded Postgres |
+| Experimental | Skills over MCP (SEP-2640, a draft spec); replay and fork; the `openai-chat` protocol; the turn token budget; recitation (`recite` in the bootstrap, off by default) |
 
-Experimental features work and are tested, including end to end against `newt-demo`, but the specs or the shape of their settings may still change.
+Experimental features work and are tested, including end to end against `newt-demo`, but the specs they follow or the shape of their settings may still change.
+
+### Stability
+
+From 1.0 newt follows semantic versioning. Within 1.x, nothing below changes in a way that breaks a working setup:
+
+- the event API (`docs/protocol.md`, section 5): paths, fields, status codes;
+- the context-provider protocol and the `newt/*` MCP `_meta` fields (sections 1 to 4);
+- the `server.toml` keys and their defaults (`docs/config.md`);
+- the database: newt applies its own migrations on start, and within 1.x they only add tables, columns and indexes. Upgrading is replacing the binary. Downgrading is not supported.
+
+Minor releases may add things: optional fields, endpoints, live feed event types, config keys. Clients should ignore fields they do not know. Experimental features are outside the promise: a minor release may change them, and the changelog says so. The Rust crates are not published, and their APIs, the JSONL event file and the OTLP span attributes are not covered.
 
 ```
               events (POST)                        live feed (SSE)

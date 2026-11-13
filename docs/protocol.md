@@ -46,6 +46,7 @@ Response:
 | `max_output_tokens` | integer | no | 4096 | Per model call. Must be at least 1. |
 | `max_model_calls` | integer | no | 8 | Model calls per turn. The turn fails if it uses them all without ending. Must be at least 1. |
 | `max_turn_tokens` | integer | no | none | Input plus output tokens one turn may spend across its model calls. Past it, the model is told to send what it has and call `end_turn`; if its next call does not end the turn, the turn fails. |
+| `recite` | boolean | no | `false` | Recitation: on long turns, from the fifth model call and every fourth after, append a `<goal>` note quoting the turn's events. Lives in scratch only. Experimental. |
 | `history_budget` | integer | no | 60000 | Tokens of live history before compaction. Must be at least 1000. |
 | `skills` | array of skill | no | `[]` | See 1.7. |
 | `mcp_servers` | array of server | no | `[]` | See 2.1. |
@@ -414,9 +415,10 @@ Authentication is the same bearer token. Agent and session key are in the path.
 | `GET /v1/agents/{agent}/sessions/{key}/live` | Server-sent events for the session. |
 | `GET /v1/agents/{agent}/sessions/{key}/history` | The session's history. |
 | `POST /v1/agents/{agent}/sessions/{key}/fork` | A new session that starts with this one's history. |
+| `DELETE /v1/agents/{agent}/sessions/{key}` | Delete the session and everything stored for it. |
 | `GET /healthz` | 200 when Postgres answers, 503 otherwise. No auth. |
 
-Errors are `{ "error": "<message>" }` with status 400 (bad body or key), 401 (missing or wrong token, or unknown agent), 404 (no such session) or 500.
+Errors are `{ "error": "<message>" }` with status 400 (bad body or key), 401 (missing or wrong token, or unknown agent), 404 (no such session), 409 (conflict, see each endpoint) or 500.
 
 ### 5.1 `POST .../events`
 
@@ -426,7 +428,7 @@ Errors are `{ "error": "<message>" }` with status 400 (bad body or key), 401 (mi
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `id` | string | yes | | Your id for the event, 1 to 200 bytes. A repeat of the same `id` in the same session is accepted and not queued again. |
+| `id` | string | yes | | Your id for the event, 1 to 200 bytes. A repeat of the same `id` in the same session is accepted and not queued again, for as long as newt keeps the consumed event (`[retention] inbox_days`, 30 days by default). |
 | `text` | string | yes | | What the agent reads. Must not be empty after trimming. |
 | `kind` | `"message"` or `"signal"` | no | `"message"` | Stored. Nothing else reads it. |
 | `policy` | `"steer"`, `"queue"` or `"collect"` | no | `"steer"` | `steer`: if a turn is running, the event joins it between model calls, and interrupts a model call that has not started producing output. `queue` and `collect`: the event waits for the next turn. Only `steer` is treated differently in code. |
@@ -449,7 +451,7 @@ Unknown fields are rejected. Response, status 202:
 
 ### 5.3 `GET .../live`
 
-A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
+A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. Frames older than `[retention] live_days` (7 days by default) are deleted, so a resume from further back starts at the oldest frame kept. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
 
 ```
 id: 1
@@ -481,7 +483,7 @@ The session's history entries in order. 404 if there is no such session.
 | `agent` | string | no | the same agent | The new session's agent. The bearer token must be valid for it too. |
 | `through_turn` | string | no | all of it | Copy history through this turn (a `turn` from 5.4). |
 
-Newt creates the session with a copy of the history and checkpoints up to the cut, and nothing else: no pending events, journal, outbox or live feed. The next event sent to it starts a turn on that history, as the target agent, with its prompt, tools and model. Response, status 201:
+Newt creates the session with a copy of the history and checkpoints up to the cut, and nothing else: no pending events, journal or live feed. The next event sent to it starts a turn on that history, as the target agent, with its prompt, tools and model. Response, status 201:
 
 ```json
 { "agent": "assistant-canary", "key": "ana-try", "history_entries": 12 }
@@ -491,3 +493,6 @@ Newt creates the session with a copy of the history and checkpoints up to the cu
 
 `newt-replay` builds on these two. `newt-replay assistant/ana assistant-canary/ana-replay` sends each turn's events from `assistant/ana` to the new session again, one turn at a time, waits for the turn to finish, and prints what the turn did then and what it did now. `--from-turn N` forks the first N turns in instead of replaying them, and `--turns N` stops after N. Point it at a server with `--url`, and name the variable holding the token with `--token-env` (default `NEWT_TOKEN`). A replay runs the target agent's tools for real, so give the target agent an MCP server that is safe to call: a staging app, or `newt-loadtest mock-app`. Give it the `newt-loadtest fake-model` route to replay for free, or a real model to compare prompts or models.
 
+### 5.6 `DELETE .../sessions/{key}`
+
+Deletes the session with its pending events, history, checkpoints, journal and live feed. Use it when a customer leaves or asks for their data to be erased; newt never deletes history on its own. Status 204 on success, 404 if there is no such session, 409 while a runner holds the session's lease (a turn is running or about to). Retry a 409 after the turn ends. An event sent after the delete starts a new, empty session under the same key.

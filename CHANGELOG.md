@@ -1,8 +1,12 @@
 # Changelog
 
-All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). newt is pre-1.0 and has no tagged releases yet.
+All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and newt follows [semantic versioning](https://semver.org/) from 1.0; what that covers is under Stability in the README.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-11-13
+
+The first release.
 
 ### Added
 
@@ -12,7 +16,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - **Context provider.** Bootstrap per version, per-turn context (`instructions`, `constraints`, `pinned`) and page refetch over HTTP. Skills as a first-class feature, loaded on demand with `load_skill`, and visible to tools through `newt/skills_loaded`.
 - **MCP.** Tools from MCP servers over Streamable HTTP, with the `newt/*` `_meta` fields for retention, invalidation, idempotency, summaries and page data. Speaks MCP `2026-07-28` with a fallback to `2025-11-25`. Tools sorted by name per server so the cached prefix stays stable. Relists tools after `notifications/tools/list_changed` over `subscriptions/listen`. A call stays alive while it reports progress (90 seconds quiet, 10 minutes total) and is cancelled when abandoned. Each call carries the `traceparent` of its tool span, and its progress notifications reach the live feed as `tool_progress`. Skills served over MCP (SEP-2640): listed on connect as `{server}/{skill path}`, fetched only when loaded, checked against the listing's digest, size and frontmatter, cached, with their supporting files readable through `load_skill`'s `file`. An agent can be one MCP server and nothing else (`[agents.x] mcp = ...`): its instructions are the server's, its workspace pages are the session's resources, and `notifications/resources/updated` over `subscriptions/listen` marks a page stale.
 - **Approvals and tasks.** A tool that answers `input_required` with elicitations becomes a question to the person: the model asks, then calls the tool again with `_input` answers that newt sends as MCP input responses, with no state stored in between. Tools that run as MCP tasks are polled for up to an hour.
-- **Turn guards.** `max_turn_tokens` in the bootstrap: past it the model is told to finish, and one more call that does not end the turn fails it. On long turns a `<goal>` note restates the turn's events (recitation), in scratch only.
+- **Turn guards.** `max_turn_tokens` in the bootstrap: past it the model is told to finish, and one more call that does not end the turn fails it. Recitation, experimental and off by default: with `recite` in the bootstrap, a `<goal>` note restates the turn's events on long turns, in scratch only. An eval (`examples/recitation_eval.rs`) found no gain on a strong model and 1 to 12% more input tokens.
 - **Replay and fork.** `GET .../history` and `POST .../fork` (a new session, under the same or another agent, with a copy of the history up to a turn). `newt-replay` sends a session's events to a fork turn by turn and prints what each turn did then and now.
 - **Compaction.** Checkpoints written by the agent's own model, with commitments that cannot be dropped silently, a kept tail of recent turns, and raw history left in place. The built-in `remember` tool for durable facts.
 - **Observability.** One typed event stream feeding a JSONL file, the live feed and an OTLP/HTTP sink (one trace per turn, with a Langfuse profile, an enricher and a redactor). `newt-report` summarises timing and flags from the JSONL file, and prints a cache report card: cached share, cost at `--prices`, and for every miss the cause (first call, model change, the first changed piece of the prefix with its offset, history rewritten from message n, compaction, idle past `--ttl`, or routing). Prefix and history fingerprints carry a hash per tool and per message for it.
@@ -22,4 +26,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - **Turn start and cache keys.** Starting a turn takes three connections from the pool instead of five: the next turn's events are read on one, and the turn's start is written and its history read on another. A session keeps its cache key while its prefix is still cached and the key is not crowded, so adding keys moves no one who is fine where they are.
 - **Benchmark.** `scripts/bench.sh` runs the fake model, the mock app and newt and reports load, CPU, memory and the cache report card, with no API key, in a `steady` scenario paced like people and a `burst` worst case; method in `docs/benchmark.md`.
 - **Demo.** `newt-demo`, a personal assistant that serves a context provider and MCP tools in one process. Its MCP server is also a complete agent on its own (instructions, resources with update notifications, a skill served over MCP), run as `assistant-mcp`. Its MCP server also dogfoods approvals (`clear_tasks` asks first) and tasks (`weekly_review`, polled until done). A Dockerfile with every binary and `deploy/compose.yaml`, which runs Postgres, the demo, the fake model and newt with no API key.
+- **Retention.** `[retention]` prunes consumed events after `inbox_days` (30) and live feed frames after `live_days` (7), hourly and in batches. `DELETE /v1/agents/{agent}/sessions/{key}` deletes a session and everything stored for it, and answers 409 while a turn holds its lease. History is never deleted on its own.
+- **Several instances.** A test runs two runners against one Postgres and checks that every event reaches history exactly once and every model call belongs to one committed turn.
+- **Releases.** A `v*` tag builds `newt`, `newt-report` and `newt-replay` for Linux x86_64 and macOS arm64, pushes the image to `ghcr.io/julianbouchard/newt`, and publishes a GitHub release with this changelog's section as notes.
 - **Workspace setup.** Cargo workspace with `newt-core`, `newt-server`, `newt-demo` and `newt-loadtest`; dual `Apache-2.0 OR MIT` licensing; CI running format, clippy, tests, `cargo deny`, `cargo machete` and a boot smoke test; the newt logo.

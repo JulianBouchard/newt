@@ -30,7 +30,7 @@ At startup newt connects to Postgres and applies the files in `migrations/`, the
 
 Set exactly one of `url_env` and `embedded`. With `embedded`, newt downloads the Postgres 18 binaries for this platform once (zonky's builds from Maven Central, which bring their own libraries; into `~/.theseus/postgresql`, checked against their published hash), creates the database in `<embedded>/data` on the first start, runs the server on a free local port while newt runs and stops it on exit. A server left running by a newt that was killed is stopped and restarted. It is meant for one machine: several newt instances share a Postgres you run, through `url_env`. Postgres refuses to run as root, so neither does `embedded`; the Docker setup in `deploy/` uses its own Postgres container. Builds without the default `embedded-postgres` feature reject `embedded`.
 
-The pool serves event accepts, turn starts and commits, journal writes, the sweeper and live feeds.
+The pool serves event accepts, turn starts and commits, journal writes, the sweeper and live feeds. Accepting an event takes one connection and starting a turn three, so under a burst (hundreds of sessions receiving events in the same second) turns wait for the pool, not the model. Size it for your bursts: roughly one connection per session you expect to start in the same second, up to what your Postgres allows (`max_connections` there is 100 by default, shared by every newt instance).
 
 ## `[events]`
 
@@ -67,6 +67,17 @@ These are constants in `RunnerConfig::default()` (`crates/newt-server/src/runner
 | Retry backoff after a failed turn | 2 s doubling per failed attempt, capped at 300 s. |
 | Attempts before dead-lettering a turn that had no effects | 5 |
 | Shutdown grace period | 8 s, then running turns are cancelled and given 5 s more. |
+
+## `[retention]`
+
+Optional. newt deletes rows that only serve operations once they are old. History and checkpoints are the agent's memory and are never deleted on their own: delete a whole session with `DELETE /v1/agents/{agent}/sessions/{key}` (`docs/protocol.md`, 5.6).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `inbox_days` | integer | `30` | Keep events this many days after the turn that consumed them committed, dead-lettered ones included. A repeat of an event id is recognised for as long as the event is kept. `0` keeps them forever. |
+| `live_days` | integer | `7` | Keep live feed frames this many days. `0` keeps them forever. |
+
+Each instance prunes once at start and then every hour, in batches of 5,000 rows.
 
 ## `[routes.<name>]`
 
@@ -125,6 +136,7 @@ server = { listen = "127.0.0.1:7878" }
 database = { url_env = "NEWT_DATABASE_URL", max_connections = 10 }
 events = { jsonl = "newt-events.jsonl" }
 runner = { max_sessions = 64, cache_key_buckets = "auto" }
+retention = { inbox_days = 30, live_days = 7 }
 
 [routes.openai]
 protocol = "openai-responses"
