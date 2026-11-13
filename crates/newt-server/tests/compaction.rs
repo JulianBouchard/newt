@@ -45,6 +45,7 @@ impl Backend for Budgeted {
             effort: None,
             max_output_tokens: 1024,
             max_model_calls: 4,
+            max_turn_tokens: None,
             history_budget: BUDGET,
             host: NoTools,
         }))

@@ -33,6 +33,8 @@ pub struct Bootstrap {
     pub max_output_tokens: u32,
     #[serde(default = "default_max_model_calls")]
     pub max_model_calls: u32,
+    #[serde(default)]
+    pub max_turn_tokens: Option<u64>,
     #[serde(default = "default_history_budget")]
     pub history_budget: u32,
     #[serde(default)]
@@ -351,6 +353,7 @@ impl ContextProviderBackend {
             effort: bootstrap.effort,
             max_output_tokens: bootstrap.max_output_tokens,
             max_model_calls: bootstrap.max_model_calls,
+            max_turn_tokens: bootstrap.max_turn_tokens,
             history_budget: bootstrap.history_budget,
             host: loaded.toolset.host(key),
         })

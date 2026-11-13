@@ -177,6 +177,7 @@ async fn run(
             effort: None,
             max_output_tokens: 1024,
             max_model_calls: 6,
+            max_turn_tokens: None,
             lane: Lane::Interactive,
             compaction: None,
         },

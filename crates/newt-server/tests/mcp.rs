@@ -66,10 +66,10 @@ async fn report_progress(context: &RequestContext<RoleServer>, every: Duration, 
         tokio::time::sleep(every).await;
         context
             .peer
-            .notify_progress(ProgressNotificationParam::new(
-                token.clone(),
-                f64::from(step),
-            ))
+            .notify_progress(
+                ProgressNotificationParam::new(token.clone(), f64::from(step))
+                    .with_total(f64::from(times)),
+            )
             .await
             .unwrap();
     }
@@ -337,6 +337,7 @@ async fn a_call_sends_the_session_and_idempotency_key_and_reads_result_meta() {
                     version: "3".into(),
                 }],
                 traceparent: None,
+                progress: None,
             },
         )
         .await;
@@ -483,6 +484,7 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
             effort: None,
             max_output_tokens: 1024,
             max_model_calls: 6,
+            max_turn_tokens: None,
             lane: Lane::Interactive,
             compaction: None,
         },
@@ -651,15 +653,28 @@ fn tight_limits(toolset: Toolset) -> Toolset {
 }
 
 #[tokio::test]
-async fn progress_keeps_a_long_call_alive_past_the_quiet_limit() {
+async fn progress_keeps_a_long_call_alive_past_the_quiet_limit_and_reaches_the_turn() {
     let calls = Arc::new(Calls::default());
     let toolset = tight_limits(connect(&calls, true).await.unwrap());
+    let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let context = CallContext {
+        progress: Some(newt_core::tools::Progress(sender)),
+        ..key("k1")
+    };
     let output = toolset
         .host("customer-7")
-        .call(&call("c1", "slow_search", json!({})), &key("k1"))
+        .call(&call("c1", "slow_search", json!({})), &context)
         .await;
     assert!(!output.is_error, "{}", output.content);
     assert_eq!(output.content, "found 3");
+    let mut seen = Vec::new();
+    while let Ok(report) = reports.try_recv() {
+        seen.push(report);
+    }
+    assert_eq!(
+        seen,
+        ["0 of 6", "1 of 6", "2 of 6", "3 of 6", "4 of 6", "5 of 6"]
+    );
 }
 
 #[tokio::test]
@@ -746,6 +761,7 @@ async fn a_call_carries_its_traceparent_to_the_server() {
             &call("c1", "plain_tool", json!({})),
             &CallContext {
                 traceparent: Some(traceparent.into()),
+                progress: None,
                 ..key("k1")
             },
         )

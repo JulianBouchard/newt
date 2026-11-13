@@ -25,8 +25,11 @@ fn user_text(item: &Value) -> String {
     }
 }
 
+/// A user message that starts a turn: not a goal reminder, which quotes the
+/// turn's events back to the model in the middle of a long turn.
 fn is_user(item: &Value) -> bool {
     item.get("role").and_then(Value::as_str) == Some("user")
+        && !user_text(item).starts_with("<goal>")
 }
 
 pub(crate) fn read_turn(input: &[Value], marker: Option<&str>) -> Turn {

@@ -136,6 +136,7 @@ fn apply(turns: &mut Vec<TurnReport>, event: Event) {
     let at = event.at;
     match event.kind {
         EventKind::ServerReady { .. }
+        | EventKind::ToolProgress { .. }
         | EventKind::TurnSteered { .. }
         | EventKind::ModelCallReplayed { .. }
         | EventKind::EventAccepted { .. }

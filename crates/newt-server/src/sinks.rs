@@ -112,6 +112,7 @@ fn is_live(kind: &EventKind) -> bool {
         EventKind::TurnStarted { .. }
             | EventKind::TurnSteered { .. }
             | EventKind::ToolStarted { .. }
+            | EventKind::ToolProgress { .. }
             | EventKind::ToolFinished { .. }
             | EventKind::TurnCompleted { .. }
             | EventKind::TurnFailed { .. }

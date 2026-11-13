@@ -45,6 +45,7 @@ Response:
 | `effort` | `"low"`, `"medium"` or `"high"` | no | none | Effort for later calls in the turn. |
 | `max_output_tokens` | integer | no | 4096 | Per model call. Must be at least 1. |
 | `max_model_calls` | integer | no | 8 | Model calls per turn. The turn fails if it uses them all without ending. Must be at least 1. |
+| `max_turn_tokens` | integer | no | none | Input plus output tokens one turn may spend across its model calls. Past it, the model is told to send what it has and call `end_turn`; if its next call does not end the turn, the turn fails. |
 | `history_budget` | integer | no | 60000 | Tokens of live history before compaction. Must be at least 1000. |
 | `skills` | array of skill | no | `[]` | See 1.7. |
 | `mcp_servers` | array of server | no | `[]` | See 2.1. |
@@ -218,7 +219,7 @@ Newt sorts each server's tools by name, so the tool list in the cached prompt pr
 
 If a server accepts `subscriptions/listen` for `toolsListChanged`, newt keeps that subscription open. A `notifications/tools/list_changed` marks the tool set stale, and so does the subscription ending. A stale tool set is also what a closed or unsendable transport causes during a call. Either way, the next turn fetches the bootstrap again, reconnects and lists the tools again. A server that does not offer the subscription is only relisted on a new bootstrap version or a broken connection. A proxy that cuts long-lived streams causes one relist per cut.
 
-Every call may go 90 seconds without a result or a `notifications/progress` for its progress token (newt always sends one), and at most 10 minutes in total, however much progress it reports. A call past either limit is cancelled with `notifications/cancelled`, and so is a call whose turn ends before it answers.
+Every call may go 90 seconds without a result or a `notifications/progress` for its progress token (newt always sends one), and at most 10 minutes in total, however much progress it reports. A call past either limit is cancelled with `notifications/cancelled`, and so is a call whose turn ends before it answers. Each progress notification also reaches the session's live feed as a `tool_progress` event (5.3) carrying the notification's `message`, or `{progress} of {total}` without one, so the app can show "searching…" while a tool runs.
 
 ### 2.2 Tool `_meta`
 
@@ -447,7 +448,7 @@ Unknown fields are rejected. Response, status 202:
 
 ### 5.3 `GET .../live`
 
-A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
+A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
 
 ```
 id: 1

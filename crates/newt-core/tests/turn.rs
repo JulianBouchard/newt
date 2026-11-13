@@ -92,9 +92,12 @@ impl ToolHost for RecordingHost {
     fn call(
         &self,
         call: &ToolCall,
-        _context: &CallContext,
+        context: &CallContext,
     ) -> impl Future<Output = ToolOutput> + Send {
         self.calls.lock().unwrap().push(call.name.clone());
+        if let Some(progress) = &context.progress {
+            progress.report(format!("running {}", call.name));
+        }
         let output = match call.name.as_str() {
             "save_note" => ToolOutput {
                 content: "{\"note\":{\"id\":7}}".into(),
@@ -183,7 +186,7 @@ struct Run {
 }
 
 async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> Run {
-    run_with(script, max_model_calls, tools, None, None).await
+    run_with(script, max_model_calls, tools, None, None, None).await
 }
 
 async fn run_with(
@@ -192,6 +195,7 @@ async fn run_with(
     tools: &[ToolDef],
     context: Option<String>,
     compaction: Option<&[String]>,
+    max_turn_tokens: Option<u64>,
 ) -> Run {
     let model = ScriptedModel::new(script);
     let host = RecordingHost::default();
@@ -229,6 +233,7 @@ async fn run_with(
             effort: Some(Effort::Medium),
             max_output_tokens: 4096,
             max_model_calls,
+            max_turn_tokens,
             lane: Lane::Interactive,
             compaction: compaction.map(|open_commitments| Compaction {
                 open_commitments,
@@ -309,6 +314,22 @@ async fn a_full_turn_commits_writes_and_sends_and_drops_reads() {
     assert_eq!(
         started,
         vec!["read_file", "save_note", "send_message", "end_turn"]
+    );
+    let progress: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ToolProgress { name, message, .. } => {
+                Some((name.as_str(), message.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        progress,
+        [
+            ("save_note", "running save_note"),
+            ("send_message", "running send_message")
+        ]
     );
     assert!(events.iter().any(|event| matches!(
         event.kind,
@@ -526,6 +547,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             effort: None,
             max_output_tokens: 1024,
             max_model_calls: 1,
+            max_turn_tokens: None,
             lane: Lane::Interactive,
             compaction: None,
         },
@@ -787,6 +809,7 @@ async fn turn_context_reaches_the_model_first_and_is_never_committed() {
         &external_tools(),
         Some("<turn_context>no sends before 9am</turn_context>".into()),
         None,
+        None,
     )
     .await;
     let outcome = run.outcome.unwrap();
@@ -835,7 +858,7 @@ async fn compaction_flushes_refuses_sends_and_ends_on_a_checkpoint_that_keeps_co
         assistant(vec![checkpoint(json!([]))]),
         assistant(vec![checkpoint(json!(["Send Maria the Acme brief"]))]),
     ];
-    let run = run_with(script, 6, &external_tools(), None, Some(&open)).await;
+    let run = run_with(script, 6, &external_tools(), None, Some(&open), None).await;
     assert!(
         run.host.calls.lock().unwrap().is_empty(),
         "nothing is sent while compacting"
@@ -880,4 +903,93 @@ async fn a_failed_turn_that_only_remembered_has_no_effects() {
     )])];
     let failure = run(script, 4, &external_tools()).await.outcome.unwrap_err();
     assert!(!failure.effects, "remember changes nothing outside newt");
+}
+
+fn note_texts(scratch: &[Message]) -> Vec<String> {
+    scratch
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            Part::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_turn_past_its_token_budget_is_told_to_end_then_fails_if_it_does_not() {
+    let save = || assistant(vec![call("n1", "save_note", json!({ "text": "x" }))]);
+    let run = run_with(
+        vec![save(), save()],
+        6,
+        &external_tools(),
+        None,
+        None,
+        Some(0),
+    )
+    .await;
+    assert!(
+        matches!(
+            &run.outcome,
+            Err(TurnFailure {
+                error: TurnError::OverBudget(0),
+                ..
+            })
+        ),
+        "{:?}",
+        run.outcome
+    );
+    let first_scratch = run.model.seen.lock().unwrap()[0].scratch.clone();
+    assert_eq!(run.model.seen.lock().unwrap().len(), 1);
+    assert!(
+        note_texts(&first_scratch)
+            .iter()
+            .any(|text| text.contains("spent its token budget")),
+    );
+
+    let ends = vec![assistant(vec![call(
+        "e1",
+        "end_turn",
+        json!({ "nothing_new": "out of budget" }),
+    )])];
+    let run = run_with(ends, 6, &external_tools(), None, None, Some(0)).await;
+    let outcome = run.outcome.unwrap();
+    assert!(outcome.committed.iter().all(|message| {
+        !note_texts(std::slice::from_ref(message))
+            .iter()
+            .any(|text| text.contains("token budget"))
+    }));
+}
+
+#[tokio::test]
+async fn a_long_turn_is_reminded_what_it_is_answering_and_the_reminder_is_never_committed() {
+    let mut script: Vec<Message> = (0..5)
+        .map(|index| {
+            assistant(vec![call(
+                &format!("r{index}"),
+                "read_file",
+                json!({ "paths": ["profile.md"] }),
+            )])
+        })
+        .collect();
+    script.push(assistant(vec![call(
+        "e1",
+        "end_turn",
+        json!({ "nothing_new": "just reading" }),
+    )]));
+    let run = run(script, 8, &external_tools()).await;
+    let outcome = run.outcome.unwrap();
+    let seen = run.model.seen.lock().unwrap();
+    let reminded = |call: usize| {
+        note_texts(&seen[call].scratch)
+            .iter()
+            .filter(|text| text.contains("This turn is answering:\n- Only remote roles please."))
+            .count()
+    };
+    assert_eq!((reminded(3), reminded(4), reminded(5)), (0, 1, 1));
+    assert!(outcome.committed.iter().all(|message| {
+        !note_texts(std::slice::from_ref(message))
+            .iter()
+            .any(|text| text.contains("<goal>"))
+    }));
 }

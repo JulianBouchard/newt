@@ -16,13 +16,16 @@ use newt_core::prompt::ToolSpec;
 use newt_core::skills::Skill;
 use newt_core::tools::{Retention, ToolDef};
 use newt_core::workspace::PageKey;
+use rmcp::handler::client::progress::ProgressDispatcher;
 use rmcp::model::{
-    ClientConfig, JsonObject, ProtocolVersion, ServerNotification, SubscriptionFilter, Tool,
+    JsonObject, ProgressNotificationParam, ProtocolVersion, ServerNotification, SubscriptionFilter,
+    Tool,
 };
+use rmcp::service::NotificationContext;
 use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient};
+use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, RoleClient};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -76,7 +79,24 @@ impl std::fmt::Debug for McpServer {
     }
 }
 
-type Client = RunningService<RoleClient, ClientConfig>;
+type Client = RunningService<RoleClient, Handler>;
+
+/// Newt's side of each MCP connection: hands progress notifications to the
+/// call that is waiting for them.
+#[derive(Debug, Clone, Default)]
+struct Handler {
+    progress: ProgressDispatcher,
+}
+
+impl ClientHandler for Handler {
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        self.progress.handle_notification(params).await;
+    }
+}
 
 struct Remote {
     client: Arc<Client>,
@@ -325,7 +345,7 @@ async fn connect(server: &McpServer, agent_token: &str) -> Result<Client, String
     if server.auth == McpAuth::AgentToken {
         config = config.auth_header(agent_token);
     }
-    ClientConfig::default()
+    Handler::default()
         .serve_with_lifecycle(
             StreamableHttpClientTransport::from_config(config),
             ClientLifecycleMode::Auto {

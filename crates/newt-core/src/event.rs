@@ -107,6 +107,13 @@ pub enum EventKind {
         call_id: String,
         name: String,
     },
+    ToolProgress {
+        session: String,
+        turn: String,
+        call_id: String,
+        name: String,
+        message: String,
+    },
     ToolFinished {
         session: String,
         turn: String,

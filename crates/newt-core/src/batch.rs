@@ -102,7 +102,9 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     let calls: Vec<_> = concurrent
         .iter()
         .zip(&contexts)
-        .map(|(&slot, call_context)| timed_call(host, &tool_calls[slot], call_context))
+        .map(|(&slot, call_context)| {
+            timed_call(host, &tool_calls[slot], call_context, context, deps.sink)
+        })
         .collect();
     let reads: Vec<_> = workspace_reads
         .iter()
@@ -267,7 +269,14 @@ async fn run_outward<M, H: ToolHost, S, J: Journal>(
         let output = if let Some(reason) = &skip_reason {
             (failure(reason.clone()), 0)
         } else {
-            let output = timed_call(deps.host, call, &call_context(context, call)).await;
+            let output = timed_call(
+                deps.host,
+                call,
+                &call_context(context, call),
+                context,
+                deps.sink,
+            )
+            .await;
             record_output(deps.journal, call, &output.0);
             if output.0.is_error {
                 skip_reason = Some(OUTWARD_SKIPPED.to_owned());
@@ -323,13 +332,41 @@ async fn timed_read(context: &TurnContext<'_>, call: &ToolCall) -> (ToolOutput, 
     (output, elapsed_ms(started))
 }
 
+/// Runs one host call, passing the progress it reports to the sink.
 async fn timed_call<H: ToolHost>(
     host: &H,
     call: &ToolCall,
     call_context: &CallContext,
+    context: &TurnContext<'_>,
+    sink: &dyn EventSink,
 ) -> (ToolOutput, u64) {
     let started = Instant::now();
-    let output = host.call(call, call_context).await;
+    let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let call_context = CallContext {
+        progress: Some(crate::tools::Progress(sender)),
+        ..call_context.clone()
+    };
+    let report = |message: String| {
+        sink.emit(Event::now(EventKind::ToolProgress {
+            session: context.ids.session.to_owned(),
+            turn: context.ids.turn.to_owned(),
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            message,
+        }));
+    };
+    let running = host.call(call, &call_context);
+    tokio::pin!(running);
+    let output = loop {
+        tokio::select! {
+            biased;
+            Some(message) = reports.recv() => report(message),
+            output = &mut running => break output,
+        }
+    };
+    while let Ok(message) = reports.try_recv() {
+        report(message);
+    }
     (output, elapsed_ms(started))
 }
 
@@ -352,6 +389,7 @@ fn call_context(context: &TurnContext<'_>, call: &ToolCall) -> CallContext {
             context.ids.started,
             &call.id,
         )),
+        progress: None,
     }
 }
 

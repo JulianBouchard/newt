@@ -72,12 +72,33 @@ pub struct PageRead {
     pub version: String,
 }
 
+/// Where a running call reports progress, in the words of the tool's
+/// server. Newt passes each report to the live feed as `tool_progress`.
+#[derive(Debug, Clone)]
+pub struct Progress(pub tokio::sync::mpsc::UnboundedSender<String>);
+
+impl Progress {
+    pub fn report(&self, message: impl Into<String>) {
+        let _ = self.0.send(message.into());
+    }
+}
+
+impl PartialEq for Progress {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same_channel(&other.0)
+    }
+}
+
+impl Eq for Progress {}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CallContext {
     pub idempotency_key: String,
     pub skills_loaded: Vec<String>,
     pub pages_read: Vec<PageRead>,
     pub traceparent: Option<String>,
+    #[serde(skip)]
+    pub progress: Option<Progress>,
 }
 
 pub trait ToolHost: Send + Sync {

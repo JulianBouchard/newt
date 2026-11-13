@@ -180,6 +180,7 @@ impl Assembler {
             EventKind::ServerReady { .. }
             | EventKind::TurnSteered { .. }
             | EventKind::ToolStarted { .. }
+            | EventKind::ToolProgress { .. }
             | EventKind::ModelCallReplayed { .. }
             | EventKind::CompactionCompleted { .. }
             | EventKind::EventAccepted { .. }
@@ -242,6 +243,7 @@ pub(super) fn event_turn(kind: &EventKind) -> Option<(String, String)> {
         | EventKind::TurnCompleted { session, turn, .. }
         | EventKind::TurnFailed { session, turn, .. } => Some((session.clone(), turn.clone())),
         EventKind::ServerReady { .. }
+        | EventKind::ToolProgress { .. }
         | EventKind::TurnSteered { .. }
         | EventKind::ModelCallReplayed { .. }
         | EventKind::CompactionCompleted { .. }

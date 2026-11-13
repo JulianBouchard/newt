@@ -65,6 +65,7 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
             effort: prepared.effort,
             max_output_tokens: prepared.max_output_tokens,
             max_model_calls: prepared.max_model_calls,
+            max_turn_tokens: None,
             lane: Lane::Background,
             compaction: Some(Compaction {
                 open_commitments: &state.open_commitments,

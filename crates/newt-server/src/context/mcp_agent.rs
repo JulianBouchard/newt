@@ -61,6 +61,7 @@ impl ContextProviderBackend {
             effort: None,
             max_output_tokens: default_max_output_tokens(),
             max_model_calls: default_max_model_calls(),
+            max_turn_tokens: None,
             history_budget: default_history_budget(),
             skills: Vec::new(),
             mcp_servers: vec![server],
@@ -109,6 +110,7 @@ impl ContextProviderBackend {
             effort: bootstrap.effort,
             max_output_tokens: bootstrap.max_output_tokens,
             max_model_calls: bootstrap.max_model_calls,
+            max_turn_tokens: bootstrap.max_turn_tokens,
             history_budget: bootstrap.history_budget,
             host: loaded.toolset.host(key),
         })

@@ -4,14 +4,15 @@
 use std::future::Future;
 use std::sync::atomic::Ordering;
 
+use futures_util::{FutureExt, StreamExt};
 use newt_core::message::ToolCall;
 use newt_core::skills::Skill;
-use newt_core::tools::{CallContext, ToolHost, ToolOutput};
+use newt_core::tools::{CallContext, Progress, ToolHost, ToolOutput};
 use newt_core::workspace::{Page, PageKey};
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotification,
-    CancelledNotificationParam, ClientRequest, ContentBlock, RequestId, RequestMetaObject,
-    ServerResult,
+    CancelledNotificationParam, ClientRequest, ContentBlock, ProgressNotificationParam, RequestId,
+    RequestMetaObject, ServerResult,
 };
 use rmcp::service::{Peer, PeerRequestOptions};
 use rmcp::{RoleClient, ServiceError};
@@ -56,7 +57,7 @@ impl McpHost {
         }
         let mut params = CallToolRequestParams::new(call.name.clone()).with_arguments(arguments);
         params.meta = Some(meta);
-        match self.send(remote, params).await {
+        match self.send(remote, params, context.progress.as_ref()).await {
             Ok(ServerResult::CallToolResult(result)) => tool_output(result),
             Ok(ServerResult::InputRequiredResult(_)) => {
                 tracing::warn!(server = %remote.server, tool = %call.name, "MCP tool asked for input newt cannot give yet");
@@ -107,6 +108,7 @@ impl McpHost {
         &self,
         remote: &Remote,
         params: CallToolRequestParams,
+        progress: Option<&Progress>,
     ) -> Result<ServerResult, ServiceError> {
         let mut options = PeerRequestOptions::with_timeout(self.limits.quiet);
         options.reset_timeout_on_progress = true;
@@ -119,9 +121,38 @@ impl McpHost {
             )
             .await?;
         let mut abandoned = CancelIfAbandoned(Some((handle.peer.clone(), handle.id.clone())));
-        let response = handle.await_response().await;
+        let dispatcher = &remote.client.service().progress;
+        let token = handle.progress_token.clone();
+        let mut reports = dispatcher.subscribe(token.clone()).await;
+        let response = handle.await_response();
+        tokio::pin!(response);
+        let response = loop {
+            tokio::select! {
+                response = &mut response => break response,
+                Some(report) = reports.next() => {
+                    if let Some(progress) = progress {
+                        progress.report(describe(&report));
+                    }
+                }
+            }
+        };
+        while let Some(Some(report)) = reports.next().now_or_never() {
+            if let Some(progress) = progress {
+                progress.report(describe(&report));
+            }
+        }
+        dispatcher.unsubscribe(&token).await;
         abandoned.0 = None;
         response
+    }
+}
+
+/// A progress report in words: the server's message, or how far it got.
+fn describe(report: &ProgressNotificationParam) -> String {
+    match (&report.message, report.total) {
+        (Some(message), _) if !message.trim().is_empty() => message.trim().to_owned(),
+        (_, Some(total)) => format!("{} of {total}", report.progress),
+        (_, None) => format!("{}", report.progress),
     }
 }
 
