@@ -1,6 +1,7 @@
 //! A small reference app for newt: a context provider and an MCP tool server for a
 //! to-do assistant, used by the quickstart and the integration tests.
 
+mod flows;
 mod provider;
 mod resources;
 mod tools;
@@ -102,6 +103,7 @@ pub struct Demo {
     sessions: Mutex<HashMap<String, Session>>,
     listeners: Mutex<Vec<(u64, rmcp::service::SubscriptionSink)>>,
     next_listener: std::sync::atomic::AtomicU64,
+    reviews: Mutex<HashMap<String, (std::time::Instant, String)>>,
 }
 
 impl Demo {
@@ -112,6 +114,7 @@ impl Demo {
             sessions: Mutex::new(HashMap::new()),
             listeners: Mutex::new(Vec::new()),
             next_listener: std::sync::atomic::AtomicU64::new(0),
+            reviews: Mutex::new(HashMap::new()),
         })
     }
 
@@ -132,6 +135,30 @@ impl Demo {
     fn with<T>(&self, key: &str, change: impl FnOnce(&mut Session) -> T) -> T {
         let mut sessions = self.lock();
         change(sessions.entry(key.to_owned()).or_default())
+    }
+
+    fn reviews(&self) -> MutexGuard<'_, HashMap<String, (std::time::Instant, String)>> {
+        match self.reviews.lock() {
+            Ok(reviews) => reviews,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn start_review(&self, session: &str, at: std::time::Instant) -> String {
+        let mut reviews = self.reviews();
+        let id = format!("review-{}", reviews.len() + 1);
+        reviews.insert(id.clone(), (at, session.to_owned()));
+        id
+    }
+
+    fn review(&self, id: &str) -> Option<(std::time::Instant, String)> {
+        self.reviews().get(id).cloned()
+    }
+
+    pub fn tasks(&self, key: &str) -> Vec<String> {
+        self.with(key, |session| {
+            session.tasks.iter().map(|task| task.text.clone()).collect()
+        })
     }
 
     pub fn sent(&self, key: &str) -> Vec<String> {

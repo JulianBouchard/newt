@@ -8,6 +8,14 @@ Early days, not yet in production. In so far: streaming clients for Anthropic, O
 
 **Status:** pre-1.0. The crates are not published to crates.io; build from source (Rust 1.99; newt runs its own Postgres 18 or connects to yours).
 
+| Maturity | What |
+|---|---|
+| Stable | The turn loop and retention classes, steering, the crash-safe journal, fenced leases, the events API and live feed, the context provider, MCP tools, compaction, prompt cache keys, OTLP tracing, embedded Postgres |
+| Experimental | Agents made of one MCP server; skills over MCP (SEP-2640, a draft); approvals through MCP `input_required`; MCP tasks; replay and fork; the `openai-chat` protocol; the turn token budget |
+| Being measured | Recitation, the goal note on long turns: on everywhere today, and the subject of `examples/recitation_eval.rs` before it becomes a setting |
+
+Experimental features work and are tested, including end to end against `newt-demo`, but the specs or the shape of their settings may still change.
+
 ```
               events (POST)                        live feed (SSE)
   your app ----------------------+   +--------------------------> your app
@@ -43,7 +51,7 @@ curl -X POST localhost:7878/v1/agents/assistant-mcp/sessions/ana/events \
 curl -N localhost:7878/v1/agents/assistant-mcp/sessions/ana/live -H "Authorization: Bearer demo-token"
 ```
 
-`assistant` is the demo through its context provider, `assistant-mcp` the same demo as nothing but an MCP server. For a real model, set `OPENAI_API_KEY` and point `[models.default]` in `deploy/server.toml` at `openai`.
+`assistant` is the demo through its context provider, `assistant-mcp` the same demo as nothing but an MCP server. Its MCP server also shows the experimental flows: `clear_tasks` asks the person to approve before it deletes anything (MCP `input_required`), and `weekly_review` runs as an MCP task that newt polls until it is done. For a real model, set `OPENAI_API_KEY` and point `[models.default]` in `deploy/server.toml` at `openai`.
 
 From source, with no database to set up (newt runs its own Postgres in `.newt/postgres`, downloading the binaries once):
 

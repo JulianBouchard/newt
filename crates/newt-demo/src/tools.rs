@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
-    ListResourcesResult, ListSkillsResult, ListToolsResult, MetaObject, PaginatedRequestParams,
-    ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerConfig,
-    SubscriptionFilter, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetTaskParams,
+    GetTaskResult, JsonObject, ListResourcesResult, ListSkillsResult, ListToolsResult, MetaObject,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerConfig, SubscriptionFilter, Tool,
 };
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::{Demo, Task, resources};
+use crate::{Demo, Task, flows, resources};
 
 /// The pages a successful call of this tool changes, from its
 /// `newt/invalidates`.
@@ -85,6 +85,18 @@ fn catalogue() -> Vec<Tool> {
             "Mark a task done by its number.",
             json!({ "id": { "type": "integer" } }),
             json!({ "newt/retention": "durable", "newt/invalidates": [["tasks"]] }),
+        ),
+        tool(
+            "clear_tasks",
+            "Delete every task on the list. The person is asked to approve first.",
+            json!({}),
+            json!({ "newt/retention": "durable", "newt/invalidates": [["tasks"]] }),
+        ),
+        tool(
+            "weekly_review",
+            "Review the person's week: open and done tasks, notes and messages. Takes a few seconds.",
+            json!({}),
+            json!({ "newt/retention": "ephemeral" }),
         ),
         tool(
             "send_message",
@@ -198,6 +210,7 @@ impl ServerHandler for Tools {
                 .enable_resources()
                 .enable_resources_subscribe()
                 .enable_skills()
+                .enable_tasks()
                 .build(),
         )
         .with_instructions(crate::provider::INSTRUCTIONS)
@@ -275,6 +288,17 @@ impl ServerHandler for Tools {
                 )
                 .into());
             };
+            match request.name.as_ref() {
+                "clear_tasks" => {
+                    let (response, changed) = flows::clear_tasks(&self.0, &session, &request);
+                    if changed {
+                        resources::announce(&self.0, &session, &changes("clear_tasks")).await;
+                    }
+                    return Ok(response);
+                }
+                "weekly_review" => return Ok(flows::start_review(&self.0, &session)),
+                _ => {}
+            }
             let result = self.run(
                 &request.name,
                 &request.arguments.unwrap_or_default(),
@@ -286,5 +310,16 @@ impl ServerHandler for Tools {
             }
             Ok(result.into())
         }
+    }
+
+    fn get_task(
+        &self,
+        request: GetTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<GetTaskResult, ErrorData>> + Send + '_ {
+        std::future::ready(
+            flows::review(&self.0, &request.task_id)
+                .ok_or_else(|| ErrorData::invalid_params("no such task", None)),
+        )
     }
 }
