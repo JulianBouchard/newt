@@ -2,21 +2,18 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
+use crate::live::Watch;
+use crate::sessions::{Lease, PendingEvent};
+use crate::store::Store;
 use newt_core::message::Message;
 use newt_core::steering::{Steered, Steering};
-use tokio::sync::broadcast;
-
-use crate::live::{Channel, Notification};
-use crate::sessions::{Lease, PendingEvent};
-use crate::store::{Store, live_topic};
 
 #[derive(Debug)]
 struct State {
     store: Store,
     lease: Lease,
-    topic: String,
     seen: Mutex<HashSet<i64>>,
-    receiver: tokio::sync::Mutex<broadcast::Receiver<Notification>>,
+    inbox: tokio::sync::Mutex<Watch>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,15 +26,14 @@ impl SessionSteering {
         store: Store,
         lease: Lease,
         already_in_turn: impl IntoIterator<Item = i64>,
-        notifications: broadcast::Receiver<Notification>,
+        inbox: Watch,
     ) -> Self {
         Self {
             state: Arc::new(State {
-                topic: live_topic(&lease.agent, &lease.key),
                 store,
                 lease,
                 seen: Mutex::new(already_in_turn.into_iter().collect()),
-                receiver: tokio::sync::Mutex::new(notifications),
+                inbox: tokio::sync::Mutex::new(inbox),
             }),
         }
     }
@@ -96,24 +92,11 @@ impl Steering for SessionSteering {
     fn arrived(&self) -> impl Future<Output = ()> + Send {
         let state = Arc::clone(&self.state);
         async move {
-            let mut receiver = state.receiver.lock().await;
+            let mut inbox = state.inbox.lock().await;
             loop {
-                match receiver.recv().await {
-                    Ok(notification)
-                        if notification.channel == Channel::Inbox
-                            && notification.topic == state.topic =>
-                    {
-                        if state.has_unseen_steer().await {
-                            return;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        if state.has_unseen_steer().await {
-                            return;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Closed) => std::future::pending::<()>().await,
+                inbox.changed().await;
+                if state.has_unseen_steer().await {
+                    return;
                 }
             }
         }

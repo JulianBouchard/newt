@@ -7,10 +7,12 @@ use newt_core::turn::{TurnDeps, TurnError, TurnInput, TurnSettings, run_turn};
 
 use crate::backend::{Backend, Prepared};
 use crate::journal::TurnJournal;
+use crate::live::Channel;
 use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{CommitError, Lease, PendingEvent};
 use crate::sinks::{LiveSink, TeeSink};
 use crate::steering::SessionSteering;
+use crate::store::live_topic;
 
 struct TurnPlan {
     turn_id: String,
@@ -111,7 +113,9 @@ async fn run_one_turn<B: Backend, M: Model>(
         inner.store.clone(),
         lease.clone(),
         consumed.iter().copied().chain(steered_before),
-        inner.notifications.subscribe(),
+        inner
+            .notifications
+            .watch(Channel::Inbox, live_topic(&lease.agent, &lease.key)),
     );
     let turn_cancel = inner.turns.child_token();
     let (journal, journal_writer) = TurnJournal::spawn(

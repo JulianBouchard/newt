@@ -4,10 +4,10 @@ use newt_core::event::{Event, EventKind};
 use newt_core::sink::EventSink;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::live::{Channel, Notification};
+use crate::live::{Channel, Notification, Topics};
 use crate::store::{Store, live_topic};
 
 const LIVE_BUFFER: usize = 256;
@@ -22,7 +22,7 @@ pub struct LiveSink {
 impl LiveSink {
     pub fn spawn(
         store: Store,
-        local: broadcast::Sender<Notification>,
+        local: Topics,
         agent: String,
         key: String,
     ) -> (Self, JoinHandle<()>) {
@@ -47,7 +47,7 @@ fn encode(batch: &mut Vec<Event>) -> Vec<serde_json::Value> {
 
 async fn write_live(
     store: Store,
-    local: broadcast::Sender<Notification>,
+    local: Topics,
     agent: String,
     key: String,
     mut receiver: mpsc::Receiver<Event>,
@@ -80,15 +80,10 @@ async fn write_live(
                 let encoded = encode(&mut batch);
                 match store.append_live_batch(&agent, &key, encoded, remote).await {
                     Ok(()) => {
-                        if local
-                            .send(Notification {
-                                channel: Channel::Live,
-                                topic: topic.clone(),
-                            })
-                            .is_err()
-                        {
-                            tracing::trace!("no local live subscribers");
-                        }
+                        local.publish(Notification {
+                            channel: Channel::Live,
+                            topic: topic.clone(),
+                        });
                         if remote {
                             last_remote = Some(Instant::now());
                         }

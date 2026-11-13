@@ -14,7 +14,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::backend::Backend;
 use crate::cache_keys::{Buckets, CacheKeys};
-use crate::live::{Channel, Notification};
+use crate::live::Topics;
 use crate::store::Store;
 
 const SWEEP_LIMIT: i64 = 100;
@@ -76,7 +76,7 @@ pub(crate) struct Inner<B, M> {
     pub(crate) config: RunnerConfig,
     pub(crate) cache_keys: CacheKeys,
     pub(crate) instrumentation: Option<Arc<dyn EventSink>>,
-    pub(crate) notifications: broadcast::Sender<Notification>,
+    pub(crate) notifications: Topics,
     in_flight: Mutex<HashSet<Session>>,
     sessions: Semaphore,
     tasks: TaskTracker,
@@ -121,7 +121,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         model: M,
         config: RunnerConfig,
         instrumentation: Option<Arc<dyn EventSink>>,
-        notifications: broadcast::Sender<Notification>,
+        notifications: Topics,
     ) -> Self {
         let owner = format!(
             "{}-{}-{}",
@@ -206,15 +206,13 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
     }
 
     async fn wake_on_notify(self, nudge: Arc<tokio::sync::Notify>) {
-        let mut topics = self.inner.notifications.subscribe();
+        let mut topics = self.inner.notifications.inbox();
         loop {
             tokio::select! {
                 () = self.inner.stopping.cancelled() => return,
                 topic = topics.recv() => match topic {
-                    Ok(notification) => {
-                        if notification.channel == Channel::Inbox
-                            && let Some((agent, key)) = notification.topic.split_once('/')
-                        {
+                    Ok(topic) => {
+                        if let Some((agent, key)) = topic.split_once('/') {
                             self.wake_from(agent, key, WakeSource::Notify);
                         }
                     }

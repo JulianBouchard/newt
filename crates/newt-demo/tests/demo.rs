@@ -16,7 +16,6 @@ use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 const TOKEN: &str = "demo-test-token";
@@ -219,7 +218,7 @@ async fn converse(
         },
         RunnerConfig::default(),
         None,
-        broadcast::channel(16).0,
+        newt_server::live::Topics::default(),
     );
 
     say(

@@ -17,11 +17,11 @@ use newt_core::provider::{
 use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::workspace::Workspace;
 use newt_server::backend::{Backend, BackendError, Prepared};
+use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
 use serde_json::json;
 use sqlx::PgPool;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +182,7 @@ fn runner(
             cache_key_buckets: newt_server::cache_keys::Buckets::Fixed(1),
         },
         None,
-        broadcast::channel(16).0,
+        Topics::default(),
     )
 }
 

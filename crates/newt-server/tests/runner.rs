@@ -12,12 +12,11 @@ use newt_core::provider::{
 use newt_core::workspace::Workspace;
 use newt_server::backend::StaticBackend;
 use newt_server::http::{AppState, router};
-use newt_server::live::{Notification, spawn_listener};
+use newt_server::live::{Topics, spawn_listener};
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, SessionStatus, Store};
 use serde_json::json;
 use sqlx::PgPool;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 struct ScriptedModel {
@@ -96,7 +95,7 @@ fn runner(
     pool: &PgPool,
     script: Vec<Message>,
     steal: bool,
-    notifications: broadcast::Sender<Notification>,
+    notifications: Topics,
 ) -> Runner<StaticBackend, ScriptedModel> {
     slow_runner(
         pool,
@@ -112,7 +111,7 @@ fn slow_runner(
     pool: &PgPool,
     script: Vec<Message>,
     steal: bool,
-    notifications: broadcast::Sender<Notification>,
+    notifications: Topics,
     delay: Duration,
     started: Arc<tokio::sync::Notify>,
 ) -> Runner<StaticBackend, ScriptedModel> {
@@ -219,7 +218,7 @@ async fn queued_events_are_all_processed(pool: PgPool) {
         &pool,
         vec![reply_and_end("a"), reply_and_end("b")],
         false,
-        broadcast::channel(16).0,
+        Topics::default(),
     );
 
     runner.wake("assistant", "t2");
@@ -242,7 +241,7 @@ async fn a_failing_turn_backs_off_and_keeps_its_events(pool: PgPool) {
         role: Role::Assistant,
         parts: vec![Part::text("Let me think about that...")],
     };
-    let runner = runner(&pool, vec![thinking_aloud], false, broadcast::channel(16).0);
+    let runner = runner(&pool, vec![thinking_aloud], false, Topics::default());
 
     runner.wake("assistant", "t3");
     runner.idle().await;
@@ -276,7 +275,7 @@ async fn a_runner_that_lost_its_lease_cannot_commit(pool: PgPool) {
         &pool,
         vec![reply_and_end("too late")],
         true,
-        broadcast::channel(16).0,
+        Topics::default(),
     );
 
     runner.wake("assistant", "t4");
@@ -310,7 +309,7 @@ async fn the_sweeper_picks_up_an_orphaned_session(pool: PgPool) {
         &pool,
         vec![reply_and_end("recovered")],
         false,
-        broadcast::channel(16).0,
+        Topics::default(),
     );
 
     let _loops = runner.spawn_loops();
@@ -425,7 +424,7 @@ async fn a_session_whose_task_panics_recovers_after_its_lease_expires(pool: PgPo
         },
         fast(),
         None,
-        broadcast::channel(16).0,
+        Topics::default(),
     );
 
     let _loops = runner.spawn_loops();
@@ -444,7 +443,7 @@ async fn a_turn_that_keeps_failing_is_dead_lettered(pool: PgPool) {
         .accept_event("assistant", "t8", &event("e1", "hi"))
         .await
         .unwrap();
-    let runner = runner(&pool, Vec::new(), false, broadcast::channel(16).0);
+    let runner = runner(&pool, Vec::new(), false, Topics::default());
 
     let _loops = runner.spawn_loops();
     wait_for(&store, "t8", |s| {

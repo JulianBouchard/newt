@@ -16,10 +16,9 @@ use newt_core::event::{Event, EventKind};
 use newt_core::sink::EventSink;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-use crate::live::{Channel, Notification};
+use crate::live::{Channel, Topics, Watch};
 use crate::store::{InboundEvent, LiveEvent, Store, live_topic};
 
 mod fork;
@@ -34,7 +33,7 @@ const MAX_NAME_BYTES: usize = 200;
 pub struct AppState {
     pub store: Store,
     pub tokens: Arc<HashMap<String, String>>,
-    pub live: broadcast::Sender<Notification>,
+    pub live: Topics,
     pub shutdown: CancellationToken,
     pub instrumentation: Option<Arc<dyn EventSink>>,
 }
@@ -199,8 +198,7 @@ async fn live(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse().ok());
     let feed = LiveFeed {
-        topic: live_topic(&agent, &key),
-        receiver: state.live.subscribe(),
+        receiver: state.live.watch(Channel::Live, live_topic(&agent, &key)),
         store: state.store,
         agent,
         key,
@@ -215,9 +213,8 @@ struct LiveFeed {
     store: Store,
     agent: String,
     key: String,
-    topic: String,
     cursor: i64,
-    receiver: broadcast::Receiver<Notification>,
+    receiver: Watch,
     buffer: VecDeque<LiveEvent>,
     shutdown: CancellationToken,
 }
@@ -255,22 +252,10 @@ impl LiveFeed {
     }
 
     async fn wait_for_topic(&mut self) {
-        let deadline = tokio::time::sleep(LIVE_POLL);
-        tokio::pin!(deadline);
-        loop {
-            tokio::select! {
-                () = &mut deadline => return,
-                () = self.shutdown.cancelled() => return,
-                received = self.receiver.recv() => match received {
-                    Ok(notification)
-                        if notification.channel != Channel::Live || notification.topic != self.topic => {}
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => return,
-                    Err(broadcast::error::RecvError::Closed) => {
-                        deadline.as_mut().await;
-                        return;
-                    }
-                },
-            }
+        tokio::select! {
+            () = tokio::time::sleep(LIVE_POLL) => {}
+            () = self.shutdown.cancelled() => {}
+            () = self.receiver.changed() => {}
         }
     }
 }

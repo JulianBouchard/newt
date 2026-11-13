@@ -13,12 +13,12 @@ use newt_core::provider::{
 use newt_core::tools::NoTools;
 use newt_core::workspace::Workspace;
 use newt_server::backend::{Backend, BackendError, Prepared};
+use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::sessions::Lease;
 use newt_server::store::{InboundEvent, Store};
 use serde_json::json;
 use sqlx::PgPool;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 const BUDGET: u32 = 2_000;
@@ -236,7 +236,7 @@ fn runner(pool: &PgPool, model: Chatty) -> Runner<Budgeted, Chatty> {
             ..RunnerConfig::default()
         },
         None,
-        broadcast::channel(16).0,
+        Topics::default(),
     )
 }
 
