@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use newt_server::config::ServerConfig;
-use newt_server::context::{ContextProviderBackend, ProviderEndpoint};
+use newt_server::context::{ContextProviderBackend, McpAgent, ProviderEndpoint};
 use newt_server::http::{self, AppState};
 use newt_server::models::Routes;
 use newt_server::runner::{Runner, RunnerConfig};
@@ -74,13 +74,14 @@ async fn main() -> anyhow::Result<()> {
         sink.emit(Event::now(EventKind::ServerReady { boot_ms }));
     }
 
-    let (tokens, endpoints) = agent_access(&config)?;
+    let access = agent_access(&config)?;
     let (live_topics, _listener_task) = live::spawn_listener(pool.clone())
         .await
         .context("subscribing to Postgres notifications")?;
     let instrumentation = instrumentation(jsonl.as_ref(), otlp.as_ref());
     let http_instrumentation = instrumentation.clone();
-    let backend = ContextProviderBackend::new(endpoints, config.models.keys().cloned())?;
+    let backend = ContextProviderBackend::new(access.providers, config.models.keys().cloned())?
+        .with_mcp_agents(access.mcp);
     let runner = Runner::new(
         Store::new(pool.clone()),
         backend,
@@ -97,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     let shutdown = CancellationToken::new();
     let state = AppState {
         store: Store::new(pool),
-        tokens: Arc::new(tokens),
+        tokens: Arc::new(access.tokens),
         live: live_topics,
         shutdown: shutdown.clone(),
         instrumentation: http_instrumentation,
@@ -163,27 +164,49 @@ fn instrumentation(
     (!sinks.is_empty()).then(|| Arc::new(MultiSink(sinks)) as Arc<dyn EventSink>)
 }
 
-type AgentAccess = (HashMap<String, String>, BTreeMap<String, ProviderEndpoint>);
+struct AgentAccess {
+    tokens: HashMap<String, String>,
+    providers: BTreeMap<String, ProviderEndpoint>,
+    mcp: BTreeMap<String, McpAgent>,
+}
 
 fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
-    let mut tokens = HashMap::new();
-    let mut endpoints = BTreeMap::new();
+    let mut access = AgentAccess {
+        tokens: HashMap::new(),
+        providers: BTreeMap::new(),
+        mcp: BTreeMap::new(),
+    };
     for (name, agent) in &config.agents {
         let token = std::env::var(&agent.token_env)
             .with_context(|| format!("environment variable {} is not set", agent.token_env))?;
         if token.trim().is_empty() {
             anyhow::bail!("environment variable {} is empty", agent.token_env);
         }
-        endpoints.insert(
-            name.clone(),
-            ProviderEndpoint {
-                base_url: agent.context_provider.clone(),
-                token: token.clone(),
-            },
-        );
-        tokens.insert(name.clone(), token);
+        match (&agent.context_provider, &agent.mcp, &agent.model) {
+            (Some(base_url), _, _) => {
+                access.providers.insert(
+                    name.clone(),
+                    ProviderEndpoint {
+                        base_url: base_url.clone(),
+                        token: token.clone(),
+                    },
+                );
+            }
+            (None, Some(url), Some(model)) => {
+                access.mcp.insert(
+                    name.clone(),
+                    McpAgent {
+                        url: url.clone(),
+                        model: model.clone(),
+                        token: token.clone(),
+                    },
+                );
+            }
+            _ => anyhow::bail!("agent `{name}` needs exactly one of context_provider and mcp"),
+        }
+        access.tokens.insert(name.clone(), token);
     }
-    Ok((tokens, endpoints))
+    Ok(access)
 }
 
 async fn shutdown_signal() {

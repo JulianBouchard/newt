@@ -12,6 +12,10 @@ use serde_json::json;
 use crate::backend::{Backend, BackendError, Prepared};
 use crate::mcp::{McpHost, McpServer, Toolset};
 
+mod mcp_agent;
+
+pub use mcp_agent::McpAgent;
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const ERROR_BODY_LIMIT: usize = 300;
 
@@ -195,6 +199,7 @@ impl PageSource for ProviderPages {
 pub struct ContextProviderBackend {
     http: reqwest::Client,
     agents: HashMap<String, Arc<ProviderEndpoint>>,
+    mcp_agents: HashMap<String, Arc<McpAgent>>,
     models: HashSet<String>,
     loaded: HashMap<String, tokio::sync::Mutex<Option<Arc<Loaded>>>>,
 }
@@ -225,6 +230,7 @@ impl ContextProviderBackend {
                 .into_iter()
                 .map(|(name, endpoint)| (name, Arc::new(endpoint)))
                 .collect(),
+            mcp_agents: HashMap::new(),
             models: models.into_iter().collect(),
         })
     }
@@ -235,11 +241,7 @@ impl ContextProviderBackend {
         client: &Client,
         version: &str,
     ) -> Result<Arc<Loaded>, String> {
-        let slot = self
-            .loaded
-            .get(agent)
-            .ok_or_else(|| format!("agent `{agent}` is not in server.toml"))?;
-        let mut slot = slot.lock().await;
+        let mut slot = self.slot(agent)?.lock().await;
         if let Some(loaded) = slot
             .as_ref()
             .filter(|loaded| loaded.bootstrap.version == version && !loaded.toolset.is_stale())
@@ -272,6 +274,12 @@ impl ContextProviderBackend {
         Ok(loaded)
     }
 
+    fn slot(&self, agent: &str) -> Result<&tokio::sync::Mutex<Option<Arc<Loaded>>>, String> {
+        self.loaded
+            .get(agent)
+            .ok_or_else(|| format!("agent `{agent}` is not in server.toml"))
+    }
+
     fn check_bootstrap(&self, bootstrap: &Bootstrap) -> Result<(), String> {
         if bootstrap.version.trim().is_empty() {
             return Err("bootstrap version is empty".to_owned());
@@ -296,7 +304,21 @@ impl ContextProviderBackend {
         Ok(())
     }
 
+    /// Agents defined by an MCP server alone (`[agents.x] mcp = ...`).
+    #[must_use]
+    pub fn with_mcp_agents(mut self, agents: BTreeMap<String, McpAgent>) -> Self {
+        for (name, agent) in agents {
+            self.loaded
+                .insert(name.clone(), tokio::sync::Mutex::new(None));
+            self.mcp_agents.insert(name, Arc::new(agent));
+        }
+        self
+    }
+
     async fn prepare_turn(&self, agent: &str, key: &str) -> Result<Prepared<McpHost>, String> {
+        if let Some(mcp) = self.mcp_agents.get(agent) {
+            return self.prepare_mcp_turn(agent, key, mcp).await;
+        }
         let endpoint = self
             .agents
             .get(agent)

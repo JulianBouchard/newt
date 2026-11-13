@@ -2,7 +2,7 @@
 
 This document specifies the two interfaces an application implements for newt, and the small event API it uses to talk to newt:
 
-1. the **context provider**, three JSON endpoints newt calls over HTTP;
+1. the **context provider**, three JSON endpoints newt calls over HTTP, which an agent can skip by being only an MCP server (2.7);
 2. **MCP tools**, served over Streamable HTTP, with newt's `_meta` fields;
 3. the **event API**, which the application calls on newt.
 
@@ -197,8 +197,6 @@ MCP servers can serve skills too (section 2.6). Those follow the bootstrap's ski
 
 ## 2. MCP tools
 
-## 2. MCP tools
-
 Tools come from the servers in the bootstrap's `mcp_servers`. A server that knows nothing about newt still works; its tools are `durable` and invalidate nothing.
 
 ### 2.1 Servers and connections
@@ -333,6 +331,37 @@ Read one with load_skill and `file`:
 ```
 
 When any skill is served over MCP, `load_skill` also takes `file`, a path relative to the skill. Only files the listing names can be read, each checked the same way. Absolute paths, `..`, `.` and empty segments are refused. Verified files are cached by server, URI and digest for as long as the tool set lives. A file that fails a check is never shown to the model: the call fails, and the tool set is marked stale so the next turn lists the skills again. Only text contents are read.
+
+### 2.7 An agent that is only an MCP server
+
+An agent can skip the context provider entirely: `[agents.<name>] mcp = "<url>"` with a `model` (`docs/config.md`). Newt then gets everything from that one server, over plain MCP:
+
+| Context provider field | From the MCP server |
+|---|---|
+| bootstrap `instructions` | The server's `instructions` (`server/discover`, or `initialize` on `2025-11-25`). Empty instructions fail the turn. |
+| bootstrap `model` | `model` in `server.toml`. The other bootstrap knobs take their defaults (1.3). |
+| bootstrap `skills` | `skills/list` (2.6). Skills are named `{agent}/{skill path}`. |
+| bootstrap `mcp_servers` | The server itself, with `auth: "agent_token"`. |
+| `version` | None. Newt reconnects when the tool set goes stale (2.1), which includes the server restarting. |
+| turn `pages` | The server's resources for the session, loaded lazily (1.5). |
+| turn `pinned`, `instructions`, `constraints` | None. |
+
+**Pages as resources.** At the start of each turn newt calls `resources/list` (every page) and reads each resource with `resources/read`, both with `_meta: { "newt/session": "<session key>" }`, so one server can serve every session. Each text resource becomes a page:
+
+| Page field | From the resource |
+|---|---|
+| `path` | `name` |
+| `key` | `_meta["newt/key"]` when set (an array of string), otherwise `[uri]` |
+| `version` | The `sha256:` digest of the text |
+| `content` | The text contents whose `uri` matches |
+
+Resources with a `skill://` URI are skills, not pages, and are left out. A resource with no text contents is left out with a warning. The page rules of 1.5 apply: two resources with the same `name` fail the load. Refetching a stale page lists the resources again and reads the matching ones, so a page that is no longer listed disappears and a new one appears.
+
+**Invalidation.** Once the pages are listed, newt opens `subscriptions/listen` with `resourceSubscriptions` set to the session's resource URIs, and `resourcesListChanged`, for the rest of the turn. `notifications/resources/updated` marks that resource's page stale, and `notifications/resources/list_changed` marks every page stale; the next read refetches. The subscription follows the URIs of the latest listing and closes when the turn ends. A server that does not accept resource subscriptions still works: its pages are fresh at the start of each turn, and tool `_meta` (2.2, 2.4) can still invalidate them during one.
+
+The update notification travels on its own stream, so it can arrive after the tool result that caused it. A tool that changes a page and wants the model's next read to see the change for certain should also return `newt/invalidate` or the page itself in `newt/pages` (2.4).
+
+A minimal agent is an MCP server with instructions, tools that do things, and resources that show the person's state. Nothing in it needs to know about newt.
 
 ## 3. Retention classes
 

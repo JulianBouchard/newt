@@ -107,6 +107,27 @@ impl std::fmt::Debug for Workspace {
     }
 }
 
+/// Marks pages of a workspace stale from outside the turn, such as a
+/// subscription to the pages' source.
+#[derive(Clone)]
+pub struct Invalidator(std::sync::Weak<Inner>);
+
+impl std::fmt::Debug for Invalidator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Invalidator")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Invalidator {
+    /// The paths marked stale, or `None` once the workspace is gone.
+    pub fn invalidate(&self, prefixes: &[PageKey]) -> Option<Vec<String>> {
+        let inner = self.0.upgrade()?;
+        Some(Workspace { inner }.invalidate(prefixes))
+    }
+}
+
 pub fn key_starts_with(key: &[String], prefix: &[String]) -> bool {
     key.len() >= prefix.len() && key.iter().zip(prefix).all(|(a, b)| a == b)
 }
@@ -167,6 +188,17 @@ impl Workspace {
         });
         workspace.track(task.abort_handle());
         workspace
+    }
+
+    /// Runs `watch` for as long as this workspace lives. It gets an
+    /// [`Invalidator`], which marks pages stale without keeping the
+    /// workspace alive.
+    pub fn watch<F>(&self, watch: impl FnOnce(Invalidator) -> F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let task = tokio::spawn(watch(Invalidator(Arc::downgrade(&self.inner))));
+        self.track(task.abort_handle());
     }
 
     fn track(&self, handle: tokio::task::AbortHandle) {

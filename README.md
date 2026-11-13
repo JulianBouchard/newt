@@ -108,6 +108,8 @@ A skill is instructions for one kind of task, loaded only when the agent needs i
 
 Tools come from the MCP servers the bootstrap lists: `{ name, url, headers?, auth? }`, where `auth: "agent_token"` sends the agent's token as the bearer and the default sends none. Headers are static and must not hold secrets. Newt connects once per agent and bootstrap version over Streamable HTTP (MCP `2026-07-28`, falling back to `2025-11-25`), lists the tools, and keeps those connections for every session of that version, relisting when a server announces its tools changed. A server can also serve skills over MCP (the `io.modelcontextprotocol/skills` extension); newt lists them, loads them on demand and verifies every file against the listing.
 
+An agent can also be nothing but an MCP server: `[agents.x] mcp = "https://app.example.com/mcp"` with a `model`. The server's instructions become the system prompt, its tools and skills are the agent's, and its resources, listed and read per session, are the workspace. A `notifications/resources/updated` marks a page stale. Build an MCP server and the agent comes with it ([docs/protocol.md](docs/protocol.md) 2.7).
+
 The full contract is in [docs/protocol.md](docs/protocol.md). Newt reads and writes a few `_meta` fields; a server that ignores them still works, and its tools count as durable with no invalidation.
 
 | Where | Field | Meaning |

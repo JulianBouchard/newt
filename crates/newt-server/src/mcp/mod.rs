@@ -2,7 +2,10 @@
 //! `call.rs`.
 
 mod call;
+mod pages;
 mod skills;
+
+pub use pages::{META_KEY, McpPages};
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -124,7 +127,10 @@ pub struct Toolset {
     pub tools: Vec<ToolDef>,
     /// Skills the servers serve, sorted by name, named `{server}/{skill path}`.
     pub skills: Vec<Skill>,
+    /// What the servers tell the model about themselves, in server order.
+    pub instructions: Vec<String>,
     remotes: Arc<HashMap<String, Remote>>,
+    resources: Option<(String, Arc<Client>)>,
     served: Arc<HashMap<String, skills::Served>>,
     verified: skills::Verified,
     stale: Arc<AtomicBool>,
@@ -166,6 +172,14 @@ impl Toolset {
         skills::merge(bootstrap, &self.skills)
     }
 
+    /// One session's workspace pages, from the first server that offers
+    /// resources, or `None` when no server does.
+    pub fn pages(&self, session: &str) -> Option<Arc<McpPages>> {
+        self.resources
+            .as_ref()
+            .map(|(server, client)| Arc::new(McpPages::new(Arc::clone(client), server, session)))
+    }
+
     #[must_use]
     pub fn with_call_limits(mut self, limits: CallLimits) -> Self {
         self.limits = limits;
@@ -177,9 +191,21 @@ impl Toolset {
         let mut remotes = HashMap::new();
         let mut offered = Vec::new();
         let mut served = HashMap::new();
+        let mut instructions = Vec::new();
+        let mut resources = None;
         let stale = Arc::new(AtomicBool::new(false));
         for server in servers {
             let client = Arc::new(connect(server, agent_token).await?);
+            if let Some(info) = client.peer_info() {
+                if let Some(text) = info.instructions.as_deref().map(str::trim)
+                    && !text.is_empty()
+                {
+                    instructions.push(text.to_owned());
+                }
+                if resources.is_none() && info.capabilities.resources.is_some() {
+                    resources = Some((server.name.clone(), Arc::clone(&client)));
+                }
+            }
             let mut listed = client
                 .list_all_tools()
                 .await
@@ -210,7 +236,9 @@ impl Toolset {
         Ok(Self {
             tools,
             skills: offered,
+            instructions,
             remotes: Arc::new(remotes),
+            resources,
             served: Arc::new(served),
             verified: skills::Verified::default(),
             stale,

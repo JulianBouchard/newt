@@ -94,8 +94,10 @@ An agent is the name in the event API path (`/v1/agents/{name}/...`).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `context_provider` | string | required | Base URL of the agent's context provider; must start with `http://` or `https://`. See `docs/protocol.md`. |
-| `token_env` | string | required | Name of the environment variable that holds the agent's token. It must be set and non-empty. The same token authenticates callers of the event API, and newt sends it to the context provider and to MCP servers that ask for `auth: "agent_token"`. |
+| `context_provider` | string | one of `context_provider` and `mcp` | Base URL of the agent's context provider; must start with `http://` or `https://`. See `docs/protocol.md`. |
+| `mcp` | string | one of `context_provider` and `mcp` | Streamable HTTP URL of the one MCP server the agent is made of: its instructions, tools, skills and resources (`docs/protocol.md` 2.7). Must start with `http://` or `https://`. |
+| `model` | string | required with `mcp`, not allowed with `context_provider` | A `[models]` alias. A context provider names its model in the bootstrap instead. |
+| `token_env` | string | required | Name of the environment variable that holds the agent's token. It must be set and non-empty. The same token authenticates callers of the event API, and newt sends it to the context provider, to MCP servers that ask for `auth: "agent_token"`, and to an `mcp` agent's server. |
 
 ## `[tracing]`
 
@@ -139,6 +141,11 @@ chain = ["openai", "anthropic"]
 [agents.assistant]
 context_provider = "http://localhost:4000/assistant"
 token_env = "ASSISTANT_TOKEN"
+
+[agents.tasks]
+mcp = "http://localhost:4000/tasks/mcp"
+model = "default"
+token_env = "TASKS_TOKEN"
 
 [tracing]
 endpoint = "https://cloud.langfuse.com/api/public/otel/v1/traces"
