@@ -90,7 +90,7 @@ async fn clearing_tasks_waits_for_the_persons_approval() {
         (approved.content.as_str(), approved.is_error),
         ("{\"cleared\":2}", false)
     );
-    assert!(demo.tasks("ana").is_empty());
+    assert_eq!(demo.tasks("ana"), Vec::<String>::new());
 }
 
 #[tokio::test]
