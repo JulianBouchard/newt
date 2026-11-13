@@ -90,7 +90,7 @@ LOADTEST_TOKEN=... newt-loadtest run --base http://127.0.0.1:7878 --agent assist
   --fake http://127.0.0.1:9100 --mock http://127.0.0.1:9200
 ```
 
-Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `context_provider` at `http://127.0.0.1:9200/agent`.
+Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `context_provider` at `http://127.0.0.1:9200/agent`. `scripts/bench.sh` does all of this in one command and adds newt's CPU, memory and cache report card; see [docs/benchmark.md](docs/benchmark.md).
 
 ## Running the tests
 
