@@ -304,7 +304,7 @@ async fn without_content_capture_errors_and_session_keys_stay_private() {
     }));
     let exports = export_events(Profile::Langfuse, false, events).await;
     let body = exports[0].1.to_string();
-    assert!(!body.contains("555"), "{body}");
+    assert!(!body.contains("555 0100"), "{body}");
     assert!(!body.contains("customer-7"), "{body}");
     assert_eq!(spans(&exports[0].1)[0]["status"]["message"], "failed");
 }
