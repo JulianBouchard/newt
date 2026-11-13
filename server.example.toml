@@ -1,11 +1,10 @@
 server = { listen = "127.0.0.1:7878" }
 database = { url_env = "NEWT_DATABASE_URL", max_connections = 10 }
 events = { jsonl = "newt-events.jsonl" }
-# cache_key_buckets: sessions of one agent share this many prompt cache keys.
-# One key lets a new session reuse the cached system prompt of every other
-# session. OpenAI spills a key to more machines past roughly 15 requests a
-# minute, so raise it until each key stays under that at peak.
-runner = { max_sessions = 64, cache_key_buckets = 1 }
+# cache_key_buckets: how many prompt cache keys the sessions of one agent
+# share. "auto" (the default) measures each agent's calls a minute and uses
+# just enough keys to keep each under OpenAI's spill point; a number fixes it.
+runner = { max_sessions = 64, cache_key_buckets = "auto" }
 
 [routes.openai]
 protocol = "openai-responses"

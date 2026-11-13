@@ -43,13 +43,15 @@ Optional. The JSONL event file, used for local runs, sims and `newt-report`.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `max_sessions` | integer, at least 1 | `64` | Sessions this process runs turns for at once. Others wait. |
-| `cache_key_buckets` | integer, at least 1 | `1` | How many prompt cache keys the sessions of one agent share. See below. |
+| `cache_key_buckets` | integer, at least 1, or `"auto"` | `"auto"` | How many prompt cache keys the sessions of one agent share. See below. |
 
 ### `cache_key_buckets`
 
-For `openai-responses` routes newt sends `prompt_cache_key = "{agent}/{n}"`, where `n` is a hash of the session key modulo `cache_key_buckets`. A session always uses the same key. Anthropic routes do not use it.
+For `openai-responses` routes newt sends `prompt_cache_key = "{agent}/{n}"`. Anthropic routes do not use it.
 
-Sessions of one agent share the same system prompt and tools. With one key, a brand-new session can reuse the cached system prompt that every other session has already written, so its first call is not a full miss. The cost: OpenAI spreads one key across more machines once it receives more than roughly 15 requests a minute, and a request that lands on another machine misses the cache. Raise `cache_key_buckets` so that, at peak, each key stays under that rate: the agent's peak requests per minute divided by 15, rounded up, is a starting point. More buckets means fewer sessions share a warm prefix, so do not raise it past what the rate needs.
+Sessions of one agent share the same system prompt and tools. With one key, a brand-new session can reuse the cached system prompt that every other session has already written, so its first call is not a full miss. The cost: OpenAI spreads one key across more machines once it receives more than roughly 15 requests a minute, and a request that lands on another machine misses the cache. So each key should carry as much traffic as it can without passing that rate.
+
+With `"auto"` newt counts each agent's model calls over the last minute and keeps every key under 12 calls a minute: it adds keys as soon as the rate needs them, up to 64, and gives them up only after the rate has stayed low for 10 minutes, so a quiet minute does not reshuffle sessions. An agent starts with one key. A number fixes the count instead. Either way `n` comes from the session key by jump consistent hashing: a session keeps its key while the count holds, and going from n to n + 1 keys moves only one session in n + 1.
 
 ### Fixed runner settings
 
@@ -119,7 +121,7 @@ Span ids derive from the session, turn and call, so exporting the same turn twic
 server = { listen = "127.0.0.1:7878" }
 database = { url_env = "NEWT_DATABASE_URL", max_connections = 10 }
 events = { jsonl = "newt-events.jsonl" }
-runner = { max_sessions = 64, cache_key_buckets = 1 }
+runner = { max_sessions = 64, cache_key_buckets = "auto" }
 
 [routes.openai]
 protocol = "openai-responses"

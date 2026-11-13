@@ -1,3 +1,4 @@
+use crate::cache_keys::Buckets;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -78,7 +79,7 @@ pub struct Runner {
     #[serde(default = "default_max_sessions")]
     pub max_sessions: usize,
     #[serde(default = "default_cache_key_buckets")]
-    pub cache_key_buckets: u32,
+    pub cache_key_buckets: Buckets,
 }
 
 impl Default for Runner {
@@ -90,8 +91,8 @@ impl Default for Runner {
     }
 }
 
-const fn default_cache_key_buckets() -> u32 {
-    1
+const fn default_cache_key_buckets() -> Buckets {
+    Buckets::AUTO
 }
 
 const fn default_max_sessions() -> usize {
@@ -147,7 +148,7 @@ impl ServerConfig {
         config.check_routes()?;
         config.check_model_chains()?;
         config.check_agents()?;
-        if config.runner.cache_key_buckets == 0 {
+        if config.runner.cache_key_buckets == Buckets::Fixed(0) {
             bail!("runner cache_key_buckets must be at least 1");
         }
         if config.runner.max_sessions == 0 {

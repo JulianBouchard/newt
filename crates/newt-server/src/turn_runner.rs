@@ -128,7 +128,8 @@ async fn run_one_turn<B: Backend, M: Model>(
         lease.key.clone(),
     );
     let session = format!("{}/{}", lease.agent, lease.key);
-    let cache_key = inner.config.cache_key(&lease.agent, &lease.key);
+    let cache_key = inner.cache_keys.key(&lease.agent, &lease.key);
+    let count_model_call = || inner.cache_keys.record_call(&lease.agent);
 
     let result = run_turn(
         &TurnDeps {
@@ -139,6 +140,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             sink: &TeeSink {
                 live: &live,
                 instrumentation: inner.instrumentation.as_ref(),
+                on_model_call: Some(&count_model_call),
             },
             cancel: &turn_cancel,
         },

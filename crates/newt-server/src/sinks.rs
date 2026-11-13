@@ -130,6 +130,8 @@ impl EventSink for LiveSink {
 pub struct TeeSink<'a> {
     pub live: &'a LiveSink,
     pub instrumentation: Option<&'a Arc<dyn EventSink>>,
+    /// Called on every model call the turn starts.
+    pub on_model_call: Option<&'a (dyn Fn() + Sync)>,
 }
 
 impl std::fmt::Debug for TeeSink<'_> {
@@ -143,6 +145,11 @@ impl std::fmt::Debug for TeeSink<'_> {
 
 impl EventSink for TeeSink<'_> {
     fn emit(&self, event: Event) {
+        if let (Some(on_model_call), EventKind::ModelCallStarted { .. }) =
+            (self.on_model_call, &event.kind)
+        {
+            on_model_call();
+        }
         if let Some(instrumentation) = self.instrumentation {
             instrumentation.emit(event.clone());
         }

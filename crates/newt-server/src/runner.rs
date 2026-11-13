@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::backend::Backend;
+use crate::cache_keys::{Buckets, CacheKeys};
 use crate::live::{Channel, Notification};
 use crate::store::Store;
 
@@ -27,19 +28,7 @@ pub struct RunnerConfig {
     pub backoff_base: Duration,
     pub max_attempts: i32,
     pub max_sessions: usize,
-    pub cache_key_buckets: u32,
-}
-
-impl RunnerConfig {
-    pub(crate) fn cache_key(&self, agent: &str, key: &str) -> String {
-        let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-        });
-        format!(
-            "{agent}/{}",
-            hash % u64::from(self.cache_key_buckets.max(1))
-        )
-    }
+    pub cache_key_buckets: Buckets,
 }
 
 impl Default for RunnerConfig {
@@ -51,7 +40,7 @@ impl Default for RunnerConfig {
             backoff_base: Duration::from_secs(2),
             max_attempts: 5,
             max_sessions: 16,
-            cache_key_buckets: 1,
+            cache_key_buckets: Buckets::Fixed(1),
         }
     }
 }
@@ -85,6 +74,7 @@ pub(crate) struct Inner<B, M> {
     pub(crate) model: M,
     pub(crate) owner: String,
     pub(crate) config: RunnerConfig,
+    pub(crate) cache_keys: CacheKeys,
     pub(crate) instrumentation: Option<Arc<dyn EventSink>>,
     pub(crate) notifications: broadcast::Sender<Notification>,
     in_flight: Mutex<HashSet<Session>>,
@@ -146,6 +136,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 model,
                 owner,
                 config,
+                cache_keys: CacheKeys::new(config.cache_key_buckets),
                 instrumentation,
                 notifications,
                 in_flight: Mutex::new(HashSet::new()),
@@ -314,34 +305,5 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         while !self.inner.running().is_empty() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::RunnerConfig;
-
-    #[test]
-    fn one_bucket_shares_one_cache_key_across_every_session_of_an_agent() {
-        let config = RunnerConfig::default();
-        assert_eq!(config.cache_key("assistant", "customer-1"), "assistant/0");
-        assert_eq!(config.cache_key("assistant", "customer-2"), "assistant/0");
-    }
-
-    #[test]
-    fn buckets_keep_a_session_on_one_key_and_spread_sessions_across_keys() {
-        let config = RunnerConfig {
-            cache_key_buckets: 8,
-            ..RunnerConfig::default()
-        };
-        assert_eq!(
-            config.cache_key("assistant", "customer-1"),
-            config.cache_key("assistant", "customer-1")
-        );
-        let keys: std::collections::BTreeSet<String> = (0..200)
-            .map(|customer| config.cache_key("assistant", &format!("customer-{customer}")))
-            .collect();
-        assert_eq!(keys.len(), 8);
-        assert!(keys.iter().all(|key| key.starts_with("assistant/")));
     }
 }
