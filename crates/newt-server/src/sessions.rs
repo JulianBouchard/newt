@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use newt_core::message::Message;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::store::{Store, timed_connection};
 
@@ -80,26 +80,8 @@ impl Store {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
-            let rows: Vec<(i64, String, i16, String, Option<String>)> = sqlx::query_as(
-                "select id, event_id, priority, policy, payload->>'text' from inbox \
-                 where agent = $1 and key = $2 and consumed_at is null order by id",
-            )
-            .bind(&lease.agent)
-            .bind(&lease.key)
-            .fetch_all(&pool)
-            .await?;
-            Ok(rows
-                .into_iter()
-                .map(
-                    |(inbox_id, event_id, priority, policy, text)| PendingEvent {
-                        inbox_id,
-                        event_id,
-                        interactive: priority == 0,
-                        steer: policy == "steer",
-                        text: text.unwrap_or_default(),
-                    },
-                )
-                .collect())
+            let mut connection = pool.acquire().await?;
+            pending_events_on(&mut connection, &lease).await
         })
     }
 
@@ -343,4 +325,30 @@ async fn commit(
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+pub(crate) async fn pending_events_on(
+    connection: &mut PgConnection,
+    lease: &Lease,
+) -> Result<Vec<PendingEvent>, sqlx::Error> {
+    let rows: Vec<(i64, String, i16, String, Option<String>)> = sqlx::query_as(
+        "select id, event_id, priority, policy, payload->>'text' from inbox \
+         where agent = $1 and key = $2 and consumed_at is null order by id",
+    )
+    .bind(&lease.agent)
+    .bind(&lease.key)
+    .fetch_all(&mut *connection)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(inbox_id, event_id, priority, policy, text)| PendingEvent {
+                inbox_id,
+                event_id,
+                interactive: priority == 0,
+                steer: policy == "steer",
+                text: text.unwrap_or_default(),
+            },
+        )
+        .collect())
 }

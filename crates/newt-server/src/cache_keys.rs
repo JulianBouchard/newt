@@ -9,7 +9,11 @@
 //! [`CALLS_PER_KEY`] a minute: it adds keys as soon as the rate needs them and
 //! drops them only after the rate has stayed low for [`SHRINK_AFTER`].
 //! Sessions map to keys by jump consistent hashing, so going from n to n + 1
-//! keys moves only one session in n + 1 to another key.
+//! keys moves only one session in n + 1 to another key. A session whose
+//! provider cache is still warm keeps the key it used last while that key
+//! stays under [`CALLS_PER_KEY`], so adding keys moves no session that is
+//! fine where it is: new and idle sessions, and those on a busy key, take
+//! their hashed key.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -22,6 +26,12 @@ pub const CALLS_PER_KEY: usize = 12;
 /// How long the rate must stay low before an agent gives up keys.
 pub const SHRINK_AFTER: Duration = Duration::from_mins(10);
 const MAX_BUCKETS: u32 = 256;
+/// How long a session keeps its last key: about as long as a provider keeps
+/// an idle prefix cached. After that the cache is cold and a new key is free.
+const STICK_FOR: Duration = Duration::from_mins(10);
+/// Past this many remembered sessions, those idle longer than [`STICK_FOR`]
+/// are forgotten.
+const FORGET_ABOVE: usize = 4096;
 const WINDOW: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -52,6 +62,8 @@ struct Rate {
 pub struct CacheKeys {
     buckets: Buckets,
     agents: Mutex<HashMap<String, Rate>>,
+    last: Mutex<HashMap<(String, String), (u32, Instant)>>,
+    per_key: Mutex<HashMap<String, VecDeque<Instant>>>,
 }
 
 impl CacheKeys {
@@ -59,12 +71,37 @@ impl CacheKeys {
         Self {
             buckets,
             agents: Mutex::new(HashMap::new()),
+            last: Mutex::new(HashMap::new()),
+            per_key: Mutex::new(HashMap::new()),
         }
     }
 
     /// The key a session's model calls carry: `{agent}/{bucket}`.
     pub fn key(&self, agent: &str, session: &str) -> String {
-        format!("{agent}/{}", jump(fnv1a(session), self.buckets(agent)))
+        self.key_at(agent, session, Instant::now())
+    }
+
+    fn key_at(&self, agent: &str, session: &str, now: Instant) -> String {
+        let count = self.buckets(agent);
+        let busy = |bucket: u32| self.calls_on(&format!("{agent}/{bucket}"), now) >= CALLS_PER_KEY;
+        let mut last = match self.last.lock() {
+            Ok(last) => last,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let id = (agent.to_owned(), session.to_owned());
+        let bucket = match last.get(&id) {
+            Some((bucket, used))
+                if *bucket < count && now.duration_since(*used) < STICK_FOR && !busy(*bucket) =>
+            {
+                *bucket
+            }
+            _ => jump(fnv1a(session), count),
+        };
+        last.insert(id, (bucket, now));
+        if last.len() > FORGET_ABOVE {
+            last.retain(|_, (_, used)| now.duration_since(*used) < STICK_FOR);
+        }
+        format!("{agent}/{bucket}")
     }
 
     pub fn buckets(&self, agent: &str) -> u32 {
@@ -74,14 +111,42 @@ impl CacheKeys {
         }
     }
 
-    /// Counts one model call of `agent`, made now.
-    pub fn record_call(&self, agent: &str) {
-        self.record_call_at(agent, Instant::now());
+    /// Counts one model call of `agent` on `key`, made now.
+    pub fn record_call(&self, agent: &str, key: &str) {
+        self.record_call_at(agent, key, Instant::now());
     }
 
-    fn record_call_at(&self, agent: &str, now: Instant) {
+    /// Model calls on `key` in the last minute.
+    fn calls_on(&self, key: &str, now: Instant) -> usize {
+        let per_key = match self.per_key.lock() {
+            Ok(per_key) => per_key,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        per_key.get(key).map_or(0, |calls| {
+            calls
+                .iter()
+                .filter(|call| now.duration_since(**call) <= WINDOW)
+                .count()
+        })
+    }
+
+    fn record_call_at(&self, agent: &str, key: &str, now: Instant) {
         if matches!(self.buckets, Buckets::Fixed(_)) {
             return;
+        }
+        {
+            let mut per_key = match self.per_key.lock() {
+                Ok(per_key) => per_key,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let calls = per_key.entry(key.to_owned()).or_default();
+            calls.push_back(now);
+            while calls
+                .front()
+                .is_some_and(|call| now.duration_since(*call) > WINDOW)
+            {
+                calls.pop_front();
+            }
         }
         let mut agents = self.agents();
         let rate = agents.entry(agent.to_owned()).or_insert_with(|| Rate {
@@ -164,7 +229,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::time::{Duration, Instant};
 
-    use super::{Buckets, CALLS_PER_KEY, CacheKeys, SHRINK_AFTER, jump};
+    use super::{Buckets, CALLS_PER_KEY, CacheKeys, SHRINK_AFTER, STICK_FOR, jump};
 
     #[test]
     fn a_fixed_count_spreads_sessions_and_keeps_each_on_one_key() {
@@ -201,6 +266,7 @@ mod tests {
         for call in 0..(CALLS_PER_KEY * 3) {
             keys.record_call_at(
                 "assistant",
+                "assistant/0",
                 start + Duration::from_millis(call as u64 * 100),
             );
         }
@@ -208,15 +274,72 @@ mod tests {
         assert_eq!(keys.buckets("other"), 1);
 
         let quiet = start + Duration::from_mins(5);
-        keys.record_call_at("assistant", quiet);
+        keys.record_call_at("assistant", "assistant/0", quiet);
         assert_eq!(keys.buckets("assistant"), 3);
         keys.record_call_at(
             "assistant",
+            "assistant/0",
             quiet + Duration::from_secs(SHRINK_AFTER.as_secs() - 1),
         );
         assert_eq!(keys.buckets("assistant"), 3);
-        keys.record_call_at("assistant", quiet + SHRINK_AFTER);
+        keys.record_call_at("assistant", "assistant/0", quiet + SHRINK_AFTER);
         assert_eq!(keys.buckets("assistant"), 1);
+    }
+
+    #[test]
+    fn a_warm_session_keeps_its_key_until_that_key_gets_busy() {
+        let keys = CacheKeys::new(Buckets::AUTO);
+        let start = Instant::now();
+        let sessions: Vec<String> = (0..200).map(|n| format!("customer-{n}")).collect();
+        for session in &sessions {
+            assert_eq!(keys.key_at("assistant", session, start), "assistant/0");
+        }
+        for call in 0..(CALLS_PER_KEY * 8) {
+            let other = format!("assistant/{}", 1 + call % 7);
+            keys.record_call_at(
+                "assistant",
+                &other,
+                start + Duration::from_millis(call as u64 * 100),
+            );
+        }
+        assert_eq!(keys.buckets("assistant"), 8);
+        let soon = start + Duration::from_secs(30);
+        for session in &sessions {
+            assert_eq!(keys.key_at("assistant", session, soon), "assistant/0");
+        }
+        let newcomers: BTreeSet<String> = (0..200)
+            .map(|n| keys.key_at("assistant", &format!("new-{n}"), soon))
+            .collect();
+        assert_eq!(newcomers.len(), 8);
+
+        for call in 0..CALLS_PER_KEY {
+            keys.record_call_at(
+                "assistant",
+                "assistant/0",
+                soon + Duration::from_millis(call as u64),
+            );
+        }
+        let busy = soon + Duration::from_secs(1);
+        let moved: BTreeSet<String> = sessions
+            .iter()
+            .map(|session| keys.key_at("assistant", session, busy))
+            .collect();
+        assert_eq!(moved.len(), keys.buckets("assistant") as usize);
+    }
+
+    #[test]
+    fn an_idle_session_takes_its_hashed_key() {
+        let keys = CacheKeys::new(Buckets::Fixed(8));
+        let start = Instant::now();
+        let first = keys.key_at("assistant", "customer-1", start);
+        assert_eq!(
+            keys.key_at("assistant", "customer-1", start + STICK_FOR),
+            first
+        );
+        assert_eq!(
+            first,
+            format!("assistant/{}", jump(super::fnv1a("customer-1"), 8))
+        );
     }
 
     #[test]

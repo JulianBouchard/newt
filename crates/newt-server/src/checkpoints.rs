@@ -4,7 +4,7 @@ use sqlx::PgConnection;
 use sqlx::types::Json;
 
 use crate::sessions::{CommitError, Lease, Owned, fence, insert_history};
-use crate::store::{Store, timed_connection};
+use crate::store::Store;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveRow {
@@ -51,33 +51,11 @@ async fn latest(pool: &mut PgConnection, lease: &Lease) -> Result<Option<Latest>
 
 impl Store {
     pub fn history(&self, lease: &Lease) -> Owned<Vec<Message>> {
-        let timed = self.history_timed(lease);
-        Box::pin(async move { Ok(timed.await?.0) })
-    }
-
-    /// The history, and the milliseconds spent waiting for a connection.
-    pub fn history_timed(&self, lease: &Lease) -> Owned<(Vec<Message>, u64)> {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
-            let (mut connection, waited) = timed_connection(&pool).await?;
-            let latest = latest(&mut connection, &lease).await?;
-            let through = latest.as_ref().map_or(-1, |latest| latest.through_seq);
-            let rows: Vec<Json<Message>> = sqlx::query_scalar(
-                "select entry from history \
-                 where agent = $1 and key = $2 and seq > $3 and kind = 'message' order by seq",
-            )
-            .bind(&lease.agent)
-            .bind(&lease.key)
-            .bind(through)
-            .fetch_all(&mut *connection)
-            .await?;
-            let mut history = Vec::with_capacity(rows.len() + 1);
-            if let Some(latest) = latest {
-                history.push(Message::user_text(latest.summary));
-            }
-            history.extend(rows.into_iter().map(|Json(message)| message));
-            Ok((history, waited))
+            let mut connection = pool.acquire().await?;
+            history_on(&mut connection, &lease).await
         })
     }
 
@@ -209,6 +187,29 @@ pub fn tail_cut(rows: &[LiveRow], tail_budget: i64) -> Option<i64> {
         .checked_sub(1)
         .and_then(|last_compacted| rows.get(last_compacted))
         .map(|row| row.seq)
+}
+
+pub(crate) async fn history_on(
+    connection: &mut PgConnection,
+    lease: &Lease,
+) -> Result<Vec<Message>, sqlx::Error> {
+    let latest = latest(connection, lease).await?;
+    let through = latest.as_ref().map_or(-1, |latest| latest.through_seq);
+    let rows: Vec<Json<Message>> = sqlx::query_scalar(
+        "select entry from history \
+         where agent = $1 and key = $2 and seq > $3 and kind = 'message' order by seq",
+    )
+    .bind(&lease.agent)
+    .bind(&lease.key)
+    .bind(through)
+    .fetch_all(&mut *connection)
+    .await?;
+    let mut history = Vec::with_capacity(rows.len() + 1);
+    if let Some(latest) = latest {
+        history.push(Message::user_text(latest.summary));
+    }
+    history.extend(rows.into_iter().map(|Json(message)| message));
+    Ok(history)
 }
 
 #[cfg(test)]

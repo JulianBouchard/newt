@@ -13,6 +13,7 @@ use crate::sessions::{CommitError, Lease, PendingEvent};
 use crate::sinks::{LiveSink, TeeSink};
 use crate::steering::SessionSteering;
 use crate::store::live_topic;
+use crate::turn_start::NextTurn;
 
 struct TurnPlan {
     turn_id: String,
@@ -61,30 +62,30 @@ async fn session_loop<B: Backend, M: Model>(
             inner.store.release(&lease).await?;
             return Ok(());
         }
-        let plan = if let Some(open) = inner.store.open_turn(&lease).await? {
-            tracing::info!(agent, key, turn = %open.turn_id, "resuming an interrupted turn");
-            TurnPlan {
-                events: inner.store.events_by_ids(&lease, &open.inbox_ids).await?,
-                turn_id: open.turn_id,
-                replay: open.entries,
-                next_seq: open.next_seq,
-                fresh: false,
+        let plan = match inner.store.next_turn(&lease).await? {
+            NextTurn::Resume { open, events } => {
+                tracing::info!(agent, key, turn = %open.turn_id, "resuming an interrupted turn");
+                TurnPlan {
+                    events,
+                    turn_id: open.turn_id,
+                    replay: open.entries,
+                    next_seq: open.next_seq,
+                    fresh: false,
+                }
             }
-        } else {
-            let pending = inner.store.pending_events(&lease).await?;
-            if pending.is_empty() {
+            NextTurn::Fresh(pending) if pending.is_empty() => {
                 if inner.store.release_if_idle(&lease).await? {
                     return Ok(());
                 }
                 continue;
             }
-            TurnPlan {
+            NextTurn::Fresh(pending) => TurnPlan {
                 turn_id: uuid::Uuid::now_v7().to_string(),
                 events: pending,
                 replay: Vec::new(),
                 next_seq: 1,
                 fresh: true,
-            }
+            },
         };
         if !run_one_turn(inner, &lease, plan).await? {
             return Ok(());
@@ -134,7 +135,7 @@ async fn run_one_turn<B: Backend, M: Model>(
     );
     let session = format!("{}/{}", lease.agent, lease.key);
     let cache_key = inner.cache_keys.key(&lease.agent, &lease.key);
-    let count_model_call = || inner.cache_keys.record_call(&lease.agent);
+    let count_model_call = || inner.cache_keys.record_call(&lease.agent, &cache_key);
 
     let result = run_turn(
         &TurnDeps {
@@ -257,10 +258,13 @@ async fn begin_turn<B: Backend, M: Model>(
     fresh: bool,
 ) -> anyhow::Result<Option<(Vec<Message>, u64, u64)>> {
     let started = std::time::Instant::now();
-    if fresh && !inner.store.start_turn(lease, turn_id, consumed).await? {
+    let Some((history, pool_wait_ms)) = inner
+        .store
+        .begin_turn(lease, turn_id, consumed, fresh)
+        .await?
+    else {
         return Ok(None);
-    }
-    let (history, pool_wait_ms) = inner.store.history_timed(lease).await?;
+    };
     Ok(Some((history, elapsed_ms(started), pool_wait_ms)))
 }
 
