@@ -18,6 +18,7 @@ pub struct Prepared<H> {
     pub max_output_tokens: u32,
     pub max_model_calls: u32,
     pub max_turn_tokens: Option<u64>,
+    pub recite: bool,
     pub history_budget: u32,
     pub host: H,
 }
@@ -63,6 +64,7 @@ impl Backend for StaticBackend {
             max_output_tokens: 4096,
             max_model_calls: 8,
             max_turn_tokens: None,
+            recite: false,
             history_budget: 60_000,
             host: NoTools,
         }))

@@ -72,7 +72,7 @@ pub async fn history(
 
 /// Creates the target session with the source's history and checkpoints up
 /// to the cut, and returns how many history entries it copied. Nothing else
-/// is copied: no pending events, journal, outbox or live feed.
+/// is copied: no pending events, journal or live feed.
 pub async fn fork(pool: &PgPool, fork: Fork<'_>) -> Result<i64, ForkError> {
     let mut tx = pool.begin().await?;
     let next: Option<(i64,)> = sqlx::query_as(

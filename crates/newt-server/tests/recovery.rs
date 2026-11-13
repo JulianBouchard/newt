@@ -114,6 +114,7 @@ impl Backend for WorldBackend {
             max_output_tokens: 1024,
             max_model_calls: 6,
             max_turn_tokens: None,
+            recite: false,
             history_budget: 60_000,
             host: Host(Arc::clone(&self.0)),
         }))
@@ -180,6 +181,7 @@ fn runner(
             max_attempts: 5,
             max_sessions: 8,
             cache_key_buckets: newt_server::cache_keys::Buckets::Fixed(1),
+            retention: newt_server::retention::Retention::default(),
         },
         None,
         Topics::default(),

@@ -84,6 +84,7 @@ fn fast() -> RunnerConfig {
         max_attempts: 3,
         max_sessions: 8,
         cache_key_buckets: newt_server::cache_keys::Buckets::Fixed(1),
+        retention: newt_server::retention::Retention::default(),
     }
 }
 

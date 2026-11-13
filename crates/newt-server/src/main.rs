@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
         RunnerConfig {
             max_sessions: config.runner.max_sessions,
             cache_key_buckets: config.runner.cache_key_buckets,
+            retention: config.retention.retention(),
             ..RunnerConfig::default()
         },
         instrumentation,

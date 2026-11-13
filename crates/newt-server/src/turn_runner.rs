@@ -170,7 +170,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             max_output_tokens: prepared.max_output_tokens,
             max_model_calls: prepared.max_model_calls,
             max_turn_tokens: prepared.max_turn_tokens,
-            recite: true,
+            recite: prepared.recite,
             lane,
             compaction: None,
         },

@@ -24,6 +24,7 @@ pub mod mcp;
 pub mod models;
 pub mod profile;
 pub mod replay;
+pub mod retention;
 pub mod runner;
 pub mod sessions;
 pub mod sinks;

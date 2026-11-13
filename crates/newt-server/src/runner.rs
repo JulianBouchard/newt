@@ -15,10 +15,12 @@ use tokio_util::task::TaskTracker;
 use crate::backend::Backend;
 use crate::cache_keys::{Buckets, CacheKeys};
 use crate::live::Topics;
+use crate::retention::Retention;
 use crate::store::Store;
 
 const SWEEP_LIMIT: i64 = 100;
 const FINAL_WAIT: Duration = Duration::from_secs(5);
+const PRUNE_EVERY: Duration = Duration::from_hours(1);
 
 #[derive(Debug, Clone, Copy)]
 pub struct RunnerConfig {
@@ -29,6 +31,7 @@ pub struct RunnerConfig {
     pub max_attempts: i32,
     pub max_sessions: usize,
     pub cache_key_buckets: Buckets,
+    pub retention: Retention,
 }
 
 impl Default for RunnerConfig {
@@ -41,6 +44,7 @@ impl Default for RunnerConfig {
             max_attempts: 5,
             max_sessions: 16,
             cache_key_buckets: Buckets::Fixed(1),
+            retention: Retention::default(),
         }
     }
 }
@@ -200,8 +204,9 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         let wakes = self.clone().wake_on_notify(Arc::clone(&nudge));
         let sweeps = self.clone().sweep_periodically(nudge);
         let heartbeats = self.clone().heartbeat_periodically();
+        let prunes = self.clone().prune_periodically();
         tokio::spawn(async move {
-            tokio::join!(wakes, sweeps, heartbeats);
+            tokio::join!(wakes, sweeps, heartbeats, prunes);
         })
     }
 
@@ -241,6 +246,24 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
             tokio::select! {
                 () = self.inner.stopping.cancelled() => return,
                 _ = every.tick() => self.heartbeat().await,
+            }
+        }
+    }
+
+    async fn prune_periodically(self) {
+        let mut every = tokio::time::interval(PRUNE_EVERY);
+        loop {
+            tokio::select! {
+                () = self.inner.stopping.cancelled() => return,
+                _ = every.tick() => {}
+            }
+            match self.inner.store.prune(self.inner.config.retention).await {
+                Ok(pruned) => tracing::info!(
+                    inbox = pruned.inbox,
+                    live = pruned.live,
+                    "pruned consumed events and live feed rows"
+                ),
+                Err(error) => tracing::error!(%error, "pruning failed"),
             }
         }
     }

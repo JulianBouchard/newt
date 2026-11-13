@@ -19,6 +19,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use crate::live::{Channel, Topics, Watch};
+use crate::retention::Deleted;
 use crate::store::{InboundEvent, LiveEvent, Store, live_topic};
 
 mod fork;
@@ -51,7 +52,10 @@ impl std::fmt::Debug for AppState {
 pub fn router(state: AppState) -> axum::Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/v1/agents/{agent}/sessions/{key}", get(session_status))
+        .route(
+            "/v1/agents/{agent}/sessions/{key}",
+            get(session_status).delete(delete_session),
+        )
         .route("/v1/agents/{agent}/sessions/{key}/events", post(post_event))
         .route("/v1/agents/{agent}/sessions/{key}/live", get(live))
         .route(
@@ -180,6 +184,21 @@ async fn session_status(
         .await?
         .ok_or(ApiError::NotFound)?;
     Ok(Json(status).into_response())
+}
+
+async fn delete_session(
+    State(state): State<AppState>,
+    Path((agent, key)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    authorize(&state, &agent, &key, &headers)?;
+    match state.store.delete_session(&agent, &key).await? {
+        Deleted::Deleted => Ok(StatusCode::NO_CONTENT),
+        Deleted::NotFound => Err(ApiError::NotFound),
+        Deleted::Running => Err(ApiError::Conflict(
+            "the session is running a turn; try again when it is idle",
+        )),
+    }
 }
 
 #[derive(Debug, Deserialize)]
