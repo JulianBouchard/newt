@@ -51,7 +51,7 @@ For `openai-responses` routes newt sends `prompt_cache_key = "{agent}/{n}"`. Ant
 
 Sessions of one agent share the same system prompt and tools. With one key, a brand-new session can reuse the cached system prompt that every other session has already written, so its first call is not a full miss. The cost: OpenAI spreads one key across more machines once it receives more than roughly 15 requests a minute, and a request that lands on another machine misses the cache. So each key should carry as much traffic as it can without passing that rate.
 
-With `"auto"` newt counts each agent's model calls over the last minute and keeps every key under 12 calls a minute: it adds keys as soon as the rate needs them, up to 64, and gives them up only after the rate has stayed low for 10 minutes, so a quiet minute does not reshuffle sessions. An agent starts with one key. A number fixes the count instead. Either way `n` comes from the session key by jump consistent hashing: a session keeps its key while the count holds, and going from n to n + 1 keys moves only one session in n + 1.
+With `"auto"` newt counts each agent's model calls over the last minute and keeps every key under 12 calls a minute: it adds keys as soon as the rate needs them, up to 256 (about 3,000 calls a minute), and gives them up only after the rate has stayed low for 10 minutes, so a quiet minute does not reshuffle sessions. An agent starts with one key. A number fixes the count instead. Either way `n` comes from the session key by jump consistent hashing: a session keeps its key while the count holds, and going from n to n + 1 keys moves only one session in n + 1.
 
 ### Fixed runner settings
 

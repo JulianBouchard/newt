@@ -21,7 +21,7 @@ use serde::Deserialize;
 pub const CALLS_PER_KEY: usize = 12;
 /// How long the rate must stay low before an agent gives up keys.
 pub const SHRINK_AFTER: Duration = Duration::from_mins(10);
-const MAX_BUCKETS: u32 = 64;
+const MAX_BUCKETS: u32 = 256;
 const WINDOW: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
