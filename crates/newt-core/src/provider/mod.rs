@@ -136,7 +136,11 @@ impl ProviderError {
             Self::Status { status, .. } => matches!(status, 408 | 409 | 429 | 500..=599),
             Self::Api { kind, .. } => matches!(
                 kind.as_str(),
-                "overloaded_error" | "api_error" | "rate_limit_error" | "server_error"
+                "overloaded_error"
+                    | "api_error"
+                    | "rate_limit_error"
+                    | "server_error"
+                    | "service_unavailable_error"
             ),
             Self::Sse(_)
             | Self::Decode { .. }

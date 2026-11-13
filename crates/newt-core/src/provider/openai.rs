@@ -107,10 +107,24 @@ enum Event {
     Error {
         #[serde(default)]
         code: Option<String>,
-        message: String,
+        #[serde(default)]
+        message: Option<String>,
+        /// OpenAI nests the details: `{"type":"error","error":{"type":..,"code":..,"message":..}}`.
+        #[serde(default)]
+        error: Option<ErrorDetail>,
     },
     #[serde(other)]
     Other,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ErrorDetail {
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,10 +315,22 @@ impl super::Decoder for Decoder {
                 );
                 return Err(ProviderError::Api { kind, message });
             }
-            Event::Error { code, message } => {
+            Event::Error {
+                code,
+                message,
+                error,
+            } => {
+                let detail = error.unwrap_or_default();
                 return Err(ProviderError::Api {
-                    kind: code.unwrap_or_else(|| "error".to_owned()),
-                    message,
+                    kind: detail
+                        .kind
+                        .or(detail.code)
+                        .or(code)
+                        .unwrap_or_else(|| "error".to_owned()),
+                    message: detail
+                        .message
+                        .or(message)
+                        .unwrap_or_else(|| "the provider sent an error".to_owned()),
                 });
             }
             Event::ItemAdded { .. } | Event::Other => {}

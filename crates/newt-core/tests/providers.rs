@@ -465,6 +465,29 @@ async fn a_mid_stream_overload_is_a_retryable_api_error() {
 }
 
 #[tokio::test]
+async fn an_openai_overload_mid_stream_is_a_retryable_api_error() {
+    let overloaded = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"sequence_number\":3,\"error\":{\"message\":\"Our servers are currently overloaded. Please try again later.\",\"type\":\"service_unavailable_error\",\"param\":null,\"code\":\"server_is_overloaded\"}}\n\n",
+    );
+    let (base, _) = serve("/responses", StatusCode::OK, Body::from(overloaded)).await;
+    let client = ProviderClient::new(Protocol::OpenaiResponses, base, "key").unwrap();
+
+    let error = stream_once(&client, &CancellationToken::new())
+        .await
+        .0
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, ProviderError::Api { kind, message } if kind == "service_unavailable_error" && message.starts_with("Our servers")),
+        "{error:?}"
+    );
+    assert!(error.retryable());
+}
+
+#[tokio::test]
 async fn an_api_key_header_route_sends_that_header_and_no_bearer_token() {
     let seen: Arc<Mutex<Option<axum::http::HeaderMap>>> = Arc::new(Mutex::new(None));
     let sink = Arc::clone(&seen);
