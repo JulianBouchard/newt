@@ -1,5 +1,7 @@
 server = { listen = "127.0.0.1:7878" }
-database = { url_env = "NEWT_DATABASE_URL", max_connections = 10 }
+# newt runs its own Postgres in .newt/postgres. For a Postgres you run, use
+# database = { url_env = "NEWT_DATABASE_URL", max_connections = 10 }
+database = { embedded = ".newt/postgres", max_connections = 10 }
 events = { jsonl = "newt-events.jsonl" }
 # cache_key_buckets: how many prompt cache keys the sessions of one agent
 # share. "auto" (the default) measures each agent's calls a minute and uses

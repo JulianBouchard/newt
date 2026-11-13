@@ -6,7 +6,7 @@ Newts regrow what they lose. So does this: every turn strips the context back an
 
 Early days, not yet in production. In so far: streaming clients for Anthropic, OpenAI and any Chat Completions host (vLLM, Ollama, OpenRouter), the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, a reactive workspace fed by a context provider, MCP tools, compaction and OTLP tracing.
 
-**Status:** pre-1.0. The crates are not published to crates.io; build from source (Rust 1.99, Postgres 18).
+**Status:** pre-1.0. The crates are not published to crates.io; build from source (Rust 1.99; newt runs its own Postgres 18 or connects to yours).
 
 ```
               events (POST)                        live feed (SSE)
@@ -45,11 +45,9 @@ curl -N localhost:7878/v1/agents/assistant-mcp/sessions/ana/live -H "Authorizati
 
 `assistant` is the demo through its context provider, `assistant-mcp` the same demo as nothing but an MCP server. For a real model, set `OPENAI_API_KEY` and point `[models.default]` in `deploy/server.toml` at `openai`.
 
-From source:
+From source, with no database to set up (newt runs its own Postgres in `.newt/postgres`, downloading the binaries once):
 
 ```sh
-docker compose up -d --wait
-export NEWT_DATABASE_URL=postgres://newt:newt@localhost:55432/newt
 export ASSISTANT_TOKEN=$(openssl rand -hex 16)
 
 # terminal 1: the app side

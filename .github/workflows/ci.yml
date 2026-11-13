@@ -37,6 +37,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: cargo clippy -p newt-server --no-default-features --all-targets -- -D warnings
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
@@ -45,7 +48,7 @@ jobs:
       - name: boot smoke test
         env:
           NEWT_CONFIG: server.example.toml
-          NEWT_DATABASE_URL: postgres://newt:newt@localhost:5432/newt
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: unused
           ANTHROPIC_API_KEY: unused
           ASSISTANT_TOKEN: unused
@@ -53,7 +56,7 @@ jobs:
           cargo build --release -p newt-server
           ./target/release/newt &
           pid=$!
-          for _ in $(seq 1 50); do
+          for _ in $(seq 1 300); do
             curl -sf localhost:7878/healthz && break
             sleep 0.2
           done

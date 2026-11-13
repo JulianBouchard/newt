@@ -16,6 +16,7 @@ allow = [
     "Zlib",
     "CDLA-Permissive-2.0",
     "OpenSSL",
+    "PostgreSQL",
 ]
 confidence-threshold = 0.9
 

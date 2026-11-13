@@ -57,7 +57,8 @@ async fn main() -> anyhow::Result<()> {
     });
     let otlp = otlp_sink(&config)?;
 
-    let pool = db::connect_and_migrate(&config.database).await?;
+    let database = db::connect_and_migrate(&config.database).await?;
+    let pool = database.pool.clone();
     let listener = TcpListener::bind(config.server.listen)
         .await
         .with_context(|| format!("binding {}", config.server.listen))?;
@@ -75,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let access = agent_access(&config)?;
-    let (live_topics, _listener_task) = live::spawn_listener(pool.clone())
+    let (live_topics, listener_task) = live::spawn_listener(pool.clone())
         .await
         .context("subscribing to Postgres notifications")?;
     let instrumentation = instrumentation(jsonl.as_ref(), otlp.as_ref());
@@ -124,6 +125,9 @@ async fn main() -> anyhow::Result<()> {
         drop(sink);
         exporter.await.context("trace exporter panicked")?;
     }
+    listener_task.abort();
+    database.pool.close().await;
+    drop(database);
     Ok(())
 }
 

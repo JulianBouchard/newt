@@ -1,5 +1,6 @@
 /target
 /server.toml
+/.newt/
 *.jsonl
 .env
 CLAUDE.md

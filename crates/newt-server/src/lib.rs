@@ -13,6 +13,8 @@ mod compaction;
 pub mod config;
 pub mod context;
 pub mod db;
+#[cfg(feature = "embedded-postgres")]
+pub mod embedded;
 pub mod fork;
 pub mod http;
 pub mod journal;

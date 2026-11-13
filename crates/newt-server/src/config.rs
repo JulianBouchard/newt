@@ -56,7 +56,8 @@ pub struct Listen {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Database {
-    pub url_env: String,
+    pub url_env: Option<String>,
+    pub embedded: Option<PathBuf>,
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
 }
@@ -149,6 +150,9 @@ impl ServerConfig {
         config.check_routes()?;
         config.check_model_chains()?;
         config.check_agents()?;
+        if config.database.url_env.is_some() == config.database.embedded.is_some() {
+            bail!("database needs exactly one of url_env and embedded");
+        }
         if config.runner.cache_key_buckets == Buckets::Fixed(0) {
             bail!("runner cache_key_buckets must be at least 1");
         }
