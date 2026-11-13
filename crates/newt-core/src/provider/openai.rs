@@ -109,7 +109,7 @@ enum Event {
         code: Option<String>,
         #[serde(default)]
         message: Option<String>,
-        /// OpenAI nests the details: `{"type":"error","error":{"type":..,"code":..,"message":..}}`.
+        /// `OpenAI` nests the details: `{"type":"error","error":{"type":..,"code":..,"message":..}}`.
         #[serde(default)]
         error: Option<ErrorDetail>,
     },
