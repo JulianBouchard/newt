@@ -9,6 +9,7 @@ pub async fn connect_and_migrate(config: &Database) -> anyhow::Result<PgPool> {
         .with_context(|| format!("environment variable {} is not set", config.url_env))?;
     let pool = PgPoolOptions::new()
         .max_connections(config.max_connections)
+        .min_connections(config.max_connections)
         .connect(&url)
         .await
         .context("connecting to postgres")?;

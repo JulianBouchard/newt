@@ -25,7 +25,7 @@ At startup newt connects to Postgres and applies the files in `migrations/`, the
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `url_env` | string | required | Name of the environment variable that holds the Postgres connection URL. |
-| `max_connections` | integer | `10` | Size of the connection pool. |
+| `max_connections` | integer | `10` | Size of the connection pool. newt opens every connection at startup, so a burst of sessions does not wait for the pool to grow. |
 
 The pool serves event accepts, turn starts and commits, journal writes, the sweeper and live feeds.
 
