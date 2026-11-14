@@ -1,0 +1,18 @@
+---
+import Default from "@astrojs/starlight/components/Footer.astro";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const repoRoot = join(process.cwd(), "..");
+const commit = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
+const version = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8").match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1];
+if (!version) throw new Error("Footer: CHANGELOG.md has no released version");
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+---
+
+<Default {...Astro.props} />
+<p class="newt-footer">
+  <span class="newt-footer-spot" aria-hidden="true"></span>
+  newt {version} · regrown from <code>{commit}</code> · <a href={`${base}/llms.txt`}>llms.txt</a>
+</p>

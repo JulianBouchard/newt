@@ -1,0 +1,24 @@
+---
+import Default from "@astrojs/starlight/components/TableOfContents.astro";
+import DecorateTocLabels from "./DecorateTocLabels.astro";
+---
+
+<DecorateTocLabels><Default /></DecorateTocLabels>
+
+<script>
+  function trackReadProgress(toc: HTMLElement) {
+    const list = toc.querySelector<HTMLElement>("nav > ul");
+    if (!list) return;
+    const links = [...list.querySelectorAll<HTMLAnchorElement>("a")];
+    const update = () => {
+      const current = links.findIndex((link) => link.getAttribute("aria-current") === "true");
+      links.forEach((link, index) => link.toggleAttribute("data-read", index < current));
+      const active = links[current];
+      const progress = active ? active.offsetTop + active.offsetHeight / 2 : 0;
+      list.style.setProperty("--newt-toc-progress", `${progress}px`);
+    };
+    new MutationObserver(update).observe(list, { subtree: true, attributeFilter: ["aria-current"] });
+    update();
+  }
+  document.querySelectorAll<HTMLElement>("starlight-toc").forEach(trackReadProgress);
+</script>
