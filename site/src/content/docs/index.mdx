@@ -1,0 +1,70 @@
+---
+title: newt
+description: An agent runtime for products. A long-lived agent per customer, your backend as its world, and a database's discipline about context.
+template: splash
+hero:
+  title: Agents that regrow their context.
+  tagline: A long-lived agent per customer, your backend as its world, and a database's discipline about context. One Rust binary plus Postgres.
+  image:
+    file: ../../assets/generated/mark.svg
+    alt: The newt mark
+  actions:
+    - text: Quickstart
+      link: quickstart/
+      icon: right-arrow
+    - text: Read the design
+      link: design/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/JulianBouchard/newt
+      icon: github
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+Newts regrow what they lose. So does this: every turn strips the context back and grows it from the workspace and the history, so stale reads never pile up and the prompt cache stays warm.
+
+## Why it is shaped this way
+
+<CardGrid>
+  <Card title="Append, never rewrite" icon="seti:db">
+    The prompt is a frozen prefix, committed history and the turn's scratch. Each turn is the previous prompt plus a suffix, so the provider's prefix cache covers everything before it.
+  </Card>
+  <Card title="Retention classes" icon="list-format">
+    Every tool declares what survives the turn: `ephemeral` reads are dropped, `durable` writes keep a summary, `outward` effects are journaled.
+  </Card>
+  <Card title="A reactive workspace" icon="document">
+    Your app serves the agent text pages. Tools mark pages stale by key, and the next read fetches them again. The agent never acts on a copy it knows is out of date.
+  </Card>
+  <Card title="Exactly-once outward calls" icon="approve-check">
+    An intent entry hits Postgres before every outward call, and the call carries a stable idempotency key. A crash mid-turn replays without sending twice.
+  </Card>
+  <Card title="Compaction that keeps promises" icon="pencil">
+    The agent writes its own checkpoint. newt refuses one that drops a commitment it has not marked resolved. Raw history is never deleted.
+  </Card>
+  <Card title="One binary plus Postgres" icon="rocket">
+    Leases with fencing, `LISTEN` wakeups and sweeps let any instance run any session. Bring your Postgres, or let newt run its own.
+  </Card>
+</CardGrid>
+
+## Try it without an API key
+
+The loadtest's fake model answers, so all you need is Docker.
+
+```sh
+docker compose -f deploy/compose.yaml up --build -d
+curl -X POST localhost:7878/v1/agents/assistant-mcp/sessions/ana/events \
+  -H "Authorization: Bearer demo-token" -H 'content-type: application/json' \
+  -d '{"id":"m1","text":"Remind me to call the bank tomorrow."}'
+curl -N localhost:7878/v1/agents/assistant-mcp/sessions/ana/live -H "Authorization: Bearer demo-token"
+```
+
+## Where to go next
+
+<CardGrid>
+  <LinkCard title="Quickstart" description="Run the demo assistant and watch a turn live." href="quickstart/" />
+  <LinkCard title="Context provider" description="The three endpoints your app serves to newt." href="context-provider/" />
+  <LinkCard title="Tools over MCP" description="Retention, invalidation and idempotency in `_meta`." href="tools/" />
+  <LinkCard title="Configuration" description="Every `server.toml` key and its default." href="configuration/" />
+</CardGrid>
