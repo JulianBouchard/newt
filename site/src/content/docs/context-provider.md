@@ -79,6 +79,7 @@ You answer with the session's pages and this turn's guidance:
 - `instructions` and `constraints` reach the model at the start of this turn only and never enter history.
 - `state` (optional) replaces the session state. See [Session state](#session-state).
 - `turn_state` (optional) is the value the turn's tool calls start with, for facts only this call knows, such as the channel to reply on. See [Turn state](../tools/#turn-state).
+- `model`, `effort`, `first_call_effort` and `reset` (optional) change how this one turn runs. See [Pick the model for one turn](#pick-the-model-for-one-turn).
 
 :::caution
 Constraints are text the model reads. They do not block a tool call. Enforce any rule that must hold in your tool handlers too.
@@ -98,6 +99,33 @@ A page is one file the agent can read with `read_file`, `glob` and `grep`.
 Pages are rebuilt from your app, never edited by newt. When a tool marks a page stale, the next read calls `POST {base}/pages` with that key, and a page missing from the answer is gone.
 
 **Slow pages?** Leave `pages` out of the turn response. newt starts the first model call at once and loads every page in the background. The first read waits for that load.
+
+## Pick the model for one turn
+
+A `/turn` response can override the bootstrap for this turn only:
+
+```json title="/turn response"
+{
+  "version": "2026-11-12.1",
+  "model": "strong",
+  "effort": "high",
+  "first_call_effort": "medium"
+}
+```
+
+- `model` is a `[models]` alias from `server.toml`, resolved through its routes like the bootstrap's. An alias that does not exist fails the turn before anything reaches the model, and the turn retries with backoff.
+- `model`, `effort` and `first_call_effort` apply to every model call of this turn and to the compaction right after it. The next turn starts from the bootstrap again.
+- A different model is a prompt cache miss for this turn and for the next one on the usual model, so keep it for turns that are worth it.
+
+### Start the conversation over
+
+`"reset": true` runs the turn as if the session had no history. The model sees no earlier messages and no earlier checkpoint; the turn's events and its own messages start the new conversation. The session keeps its key, inbox, state and live feed. Use it when a conversation has gone cold, or when your prompt has moved on and the old history no longer fits it.
+
+- Nothing is deleted. [History and fork](../replay/) still see every entry; they are only never loaded into the prompt again.
+- The reset is saved by the statement that commits the turn. A turn that does not commit resets nothing, and its retry asks `/turn` again.
+- Once a turn has journaled a model call, a resume after a crash keeps the model, efforts and reset it chose, whatever `/turn` answers the second time.
+
+The live feed's `turn_started` frame carries the turn's `model` and `reset`.
 
 ## Session state
 
@@ -140,9 +168,12 @@ Set `"turn_end": true` in the bootstrap and newt calls `POST {base}/turn_end` af
   "outcome": "completed",
   "events": [{ "id": "m1", "meta": { "channel": "whatsapp" } }],
   "state": { "last_seen_task": 13 },
-  "turn_state": { "sent": true }
+  "turn_state": { "sent": true },
+  "reply": "Done: the bank call is on your list for tomorrow at 9."
 }
 ```
+
+`reply` is what the agent said when it finished: the text of the message that called `end_turn`, or of the text-only message just before it. Post it to a chat or a thread from here, and the agent needs no send tool. It is `null` when there is no such text, and always for `failed` and `dead_lettered`.
 
 | `outcome` | When |
 |---|---|

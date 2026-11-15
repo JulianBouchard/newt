@@ -39,7 +39,7 @@ newt answers `202` with `{ "inbox_id": 41, "duplicate": false }`. Retrying a pos
 curl -N localhost:7878/v1/agents/assistant/sessions/ana/live -H "Authorization: Bearer $TOKEN"
 ```
 
-Each frame has an `id` (its sequence number) and a JSON payload with a `type`: `received`, `turn_started`, `turn_steered`, `tool_started`, `tool_progress`, `tool_finished`, `turn_completed` or `turn_failed`. Payloads hold names, counts and timings, not message text. Resume with `Last-Event-ID` or `?cursor=<seq>`.
+Each frame has an `id` (its sequence number) and a JSON payload with a `type`: `received`, `turn_started`, `turn_steered`, `tool_started`, `tool_progress`, `tool_finished`, `turn_completed` or `turn_failed`. `turn_started` also carries the turn's `model` alias and whether it runs on a `reset` history. Payloads hold names, counts and timings, not message text. Resume with `Last-Event-ID` or `?cursor=<seq>`.
 
 Replies reach the person through your own outward tool, such as `send_message`, not through the feed.
 

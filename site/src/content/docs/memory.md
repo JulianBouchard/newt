@@ -35,6 +35,10 @@ Raw history is never deleted. The checkpoint is a cut point, not a replacement. 
 Compaction is the one planned cache miss in a long session: it replaces the older part of history once per budget crossing.
 :::
 
+## Starting over
+
+Compaction keeps a long conversation going. To end one instead, your context provider returns `"reset": true` from `/turn`: that turn runs as if the session had no history, and later compactions consider only what came after it. Raw history stays, as with a checkpoint. See [Start the conversation over](../context-provider/#start-the-conversation-over).
+
 ## Next
 
 - [Design: compaction, checkpoints and commitments](../design/#compaction-checkpoints-and-commitments).

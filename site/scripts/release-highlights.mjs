@@ -1,4 +1,12 @@
 export const RELEASE_HIGHLIGHTS = {
+  "1.6.0": {
+    title: "A model per turn, and starting a session over",
+    body: "`/turn` can pick the model and effort for one turn, such as a stronger model for a hard request, and `reset: true` runs the turn as if the session had no history. Nothing is deleted: history and fork still see every entry. [Context provider](../context-provider/#pick-the-model-for-one-turn)",
+  },
+  "1.5.0": {
+    title: "The agent's reply in the turn-end callback",
+    body: "The callback carries `reply`, what the agent said when it finished, so your provider can post it to a chat or a thread without a send tool on the agent. [Context provider](../context-provider/#hear-when-a-turn-ends)",
+  },
   "1.4.0": {
     title: "Tools read the session state",
     body: "A tool handler can check what your provider recorded for the session, such as the task list the agent saw last turn, straight from the call's `_meta`, with no lookup of its own. [Tools over MCP](../tools/#what-newt-sends-with-every-call)",
