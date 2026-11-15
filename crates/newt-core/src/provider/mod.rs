@@ -186,6 +186,7 @@ pub struct ProviderClient {
     auth: Auth,
     capture: Option<Capture>,
     deadline: Duration,
+    replay_reasoning: bool,
 }
 
 impl fmt::Debug for ProviderClient {
@@ -198,6 +199,7 @@ impl fmt::Debug for ProviderClient {
             .field("auth", &self.auth)
             .field("capture", &self.capture)
             .field("deadline", &self.deadline)
+            .field("replay_reasoning", &self.replay_reasoning)
             .finish_non_exhaustive()
     }
 }
@@ -224,6 +226,7 @@ impl ProviderClient {
             auth,
             capture: None,
             deadline: CALL_DEADLINE,
+            replay_reasoning: true,
         })
     }
 
@@ -236,6 +239,12 @@ impl ProviderClient {
     #[must_use]
     pub fn with_api_key_header(mut self, header: impl Into<String>) -> Self {
         self.auth = Auth::Header(header.into());
+        self
+    }
+
+    #[must_use]
+    pub fn without_reasoning_replay(mut self) -> Self {
+        self.replay_reasoning = false;
         self
     }
 
@@ -267,7 +276,7 @@ impl Model for ProviderClient {
             ),
             Protocol::OpenaiResponses => (
                 format!("{}/responses", self.base_url),
-                openai::request_body(request),
+                openai::request_body(request, self.replay_reasoning),
             ),
             Protocol::OpenaiChat => (
                 format!("{}/chat/completions", self.base_url),

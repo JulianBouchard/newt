@@ -261,6 +261,68 @@ async fn openai_stream_keeps_reasoning_items_and_reports_cached_tokens() {
 }
 
 #[tokio::test]
+async fn openai_route_without_reasoning_replay_sends_no_reasoning_and_asks_for_none() {
+    let fixture = include_str!("fixtures/openai_tool_use.sse");
+    let tools = tools();
+    let history = history();
+    let scratch = vec![
+        Message::user_text("Remote only, please."),
+        Message {
+            role: Role::Assistant,
+            parts: vec![
+                Part::Reasoning(Reasoning::OpenaiReasoning {
+                    item: json!({ "type": "reasoning", "id": "rs_1", "encrypted_content": "enc-abc", "summary": [] }),
+                }),
+                Part::ToolCall(ToolCall {
+                    id: "call_0".into(),
+                    name: "read_file".into(),
+                    arguments: json!({ "paths": ["profile.md"] }),
+                }),
+            ],
+        },
+    ];
+    let request = ModelRequest {
+        model: "test-model",
+        prompt: Prompt {
+            system: "You are a helpful agent.",
+            tools: &tools,
+            history: &history,
+            scratch: &scratch,
+        },
+        effort: Some(Effort::Low),
+        max_output_tokens: 4096,
+        cache_key: "session-42",
+        lane: Lane::Interactive,
+    };
+    let reasoning_items = |body: &Value| {
+        body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .count()
+    };
+
+    for (replay, expected_items) in [(true, 1), (false, 0)] {
+        let (base, captured) = serve("/responses", StatusCode::OK, Body::from(fixture)).await;
+        let client = ProviderClient::new(Protocol::OpenaiResponses, base, "key").unwrap();
+        let client = if replay {
+            client
+        } else {
+            client.without_reasoning_replay()
+        };
+        client
+            .stream(&request, &CancellationToken::new(), &mut |_| {})
+            .await
+            .unwrap();
+        let body = captured.lock().await.take().unwrap();
+        assert_eq!(reasoning_items(&body), expected_items, "replay {replay}");
+        assert_eq!(body.get("include").is_some(), replay, "replay {replay}");
+        assert_eq!(body["reasoning"]["effort"], "low");
+    }
+}
+
+#[tokio::test]
 async fn openai_chat_stream_assembles_text_and_split_tool_calls_and_reports_cached_tokens() {
     let fixture = include_str!("fixtures/openai_chat_tool_use.sse");
     let (base, captured) = serve("/chat/completions", StatusCode::OK, Body::from(fixture)).await;

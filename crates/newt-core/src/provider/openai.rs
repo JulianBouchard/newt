@@ -6,9 +6,12 @@ use crate::message::{Message, Part, Reasoning, Role, ToolCall};
 use crate::prompt::{Effort, ModelRequest};
 use crate::sse::SseEvent;
 
-pub(super) fn request_body(request: &ModelRequest<'_>) -> Value {
+pub(super) fn request_body(request: &ModelRequest<'_>, replay_reasoning: bool) -> Value {
     let prompt = request.prompt;
-    let input: Vec<Value> = prompt.messages().flat_map(message_items).collect();
+    let input: Vec<Value> = prompt
+        .messages()
+        .flat_map(|message| message_items(message, replay_reasoning))
+        .collect();
     let mut body = Map::new();
     body.insert("model".into(), json!(request.model));
     body.insert("stream".into(), json!(true));
@@ -41,12 +44,14 @@ pub(super) fn request_body(request: &ModelRequest<'_>) -> Value {
             Effort::High => "high",
         };
         body.insert("reasoning".into(), json!({ "effort": effort }));
-        body.insert("include".into(), json!(["reasoning.encrypted_content"]));
+        if replay_reasoning {
+            body.insert("include".into(), json!(["reasoning.encrypted_content"]));
+        }
     }
     Value::Object(body)
 }
 
-fn message_items(message: &Message) -> Vec<Value> {
+fn message_items(message: &Message, replay_reasoning: bool) -> Vec<Value> {
     let mut items = Vec::new();
     let mut user_text = Vec::new();
     for part in &message.parts {
@@ -76,7 +81,9 @@ fn message_items(message: &Message) -> Vec<Value> {
                 "name": call.name,
                 "arguments": call.arguments.to_string(),
             })),
-            (Role::Assistant, Part::Reasoning(Reasoning::OpenaiReasoning { item })) => {
+            (Role::Assistant, Part::Reasoning(Reasoning::OpenaiReasoning { item }))
+                if replay_reasoning =>
+            {
                 items.push(item.clone());
             }
             _ => {}

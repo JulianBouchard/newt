@@ -91,6 +91,7 @@ A route is one way to reach one model.
 | `key_env` | string | required | Name of the environment variable that holds the API key. |
 | `api_key_header` | string | none | Header that carries the key. By default `anthropic-messages` sends `x-api-key` and `openai-responses` sends `Authorization: Bearer`. Set it for gateways that use another header, such as `api-key`. |
 | `max_concurrent` | integer, at least 1 | required | Model calls in flight on this route. Further calls wait. Calls from background-priority turns may use at most `max_concurrent - 1` of the slots (at least 1), which keeps a slot free for interactive turns. |
+| `replay_reasoning` | bool | `true` | `openai-responses` only. Newt asks for encrypted reasoning and sends it back on the next call of the turn. Set `false` for a gateway that can answer two calls from different backends (for example a pool of accounts, or overflow to another provider), which reject each other's encrypted reasoning with `invalid_encrypted_content`. |
 
 Anthropic requests also send `anthropic-version: 2023-06-01`. Connect timeout is 10 s, a stream that goes silent for 300 s fails, and any one model call has a 10 minute deadline. These are constants.
 

@@ -152,6 +152,12 @@ pub struct Route {
     #[serde(default)]
     pub api_key_header: Option<String>,
     pub max_concurrent: u32,
+    #[serde(default = "default_replay_reasoning")]
+    pub replay_reasoning: bool,
+}
+
+const fn default_replay_reasoning() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -230,6 +236,9 @@ impl ServerConfig {
             }
             if route.max_concurrent == 0 {
                 bail!("route `{name}` max_concurrent must be at least 1");
+            }
+            if !route.replay_reasoning && route.protocol != Protocol::OpenaiResponses {
+                bail!("route `{name}` replay_reasoning applies only to openai-responses routes");
             }
         }
         Ok(())
@@ -323,6 +332,23 @@ mod tests {
         "#;
         let error = ServerConfig::parse(raw).unwrap_err().to_string();
         assert!(error.contains("max_concurrent"), "{error}");
+    }
+
+    #[test]
+    fn replay_reasoning_off_is_rejected_outside_openai_responses() {
+        let raw = r#"
+            server = { listen = "127.0.0.1:0" }
+            database = { url_env = "X" }
+            [routes.local]
+            protocol = "anthropic-messages"
+            model = "m"
+            base_url = "http://localhost:3456"
+            key_env = "K"
+            max_concurrent = 1
+            replay_reasoning = false
+        "#;
+        let error = ServerConfig::parse(raw).unwrap_err().to_string();
+        assert!(error.contains("replay_reasoning"), "{error}");
     }
 
     #[test]

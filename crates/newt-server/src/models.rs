@@ -85,6 +85,9 @@ impl Routes {
             if let Some(header) = &route.api_key_header {
                 client = client.with_api_key_header(header);
             }
+            if !route.replay_reasoning {
+                client = client.without_reasoning_replay();
+            }
             routes.insert(
                 name.clone(),
                 Arc::new(Route {
