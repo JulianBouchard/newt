@@ -585,6 +585,10 @@ async fn the_provider_state_carries_to_the_next_turn_and_each_turn_end_is_delive
     assert_eq!(ends[0]["session"], "s1");
     assert_eq!(ends[0]["outcome"], "completed");
     assert_eq!(
+        ends[0]["reply"], "one",
+        "the turn-end carries what the agent said"
+    );
+    assert_eq!(
         ends[0]["events"],
         json!([{ "id": "e1", "meta": { "channel": "email" } }])
     );

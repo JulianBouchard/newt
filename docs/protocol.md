@@ -240,7 +240,8 @@ Called after a turn commits, when the bootstrap sets `turn_end: true`. Use it fo
   "outcome": "completed",
   "events": [{ "id": "evt-41", "meta": { "channel": "whatsapp" } }],
   "state": { "last_seen_task": 13 },
-  "turn_state": { "sent": true }
+  "turn_state": { "sent": true },
+  "reply": "Done: the bank call is on your list for tomorrow at 9."
 }
 ```
 
@@ -250,6 +251,7 @@ Called after a turn commits, when the bootstrap sets `turn_end: true`. Use it fo
 | `events` | Every event the turn consumed, as `{ id, meta }`, oldest first: the ones it started on and any that steered it. For `dead_lettered`, the events given up on. |
 | `state` | The session's provider state after the turn (unchanged for `dead_lettered`). |
 | `turn_state` | The turn state when the turn ended (2.3). After a crash and resume, only what calls made since the resume set. |
+| `reply` | What the agent said when it finished, for a provider that posts it somewhere (a chat, a thread): the text of the message that called `end_turn`, or, when that message had none, the text-only message just before it that made newt remind the agent to end. `null` when there is neither, and always for `failed` and `dead_lettered`. Earlier mid-turn text is never used. |
 
 Newt writes the callback in the same transaction as the turn, so it survives a crash, and delivers it at least once: right after the commit, then retried with backoff (at least 30 seconds, up to 5 minutes apart) until the provider answers 2xx. A delivery holds the callback for 30 seconds, so two runners do not send it at once, but a retry after a lost response is possible: use `turn` to deduplicate. Deliveries across turns can arrive late and out of order. Any 2xx counts; the body is ignored. After 30 failed attempts (about two hours) newt gives up on the callback and logs an error. Deleting the session deletes its undelivered callbacks.
 

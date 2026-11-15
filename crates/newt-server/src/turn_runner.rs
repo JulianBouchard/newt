@@ -55,10 +55,16 @@ struct TurnEndPayload<'a> {
     outcome: Outcome,
     state: Option<Value>,
     turn_state: Value,
+    reply: Option<String>,
 }
 
 impl Ending {
-    fn payload(&self, turn_id: &str, outcome: Outcome) -> Result<Option<Value>, serde_json::Error> {
+    fn payload(
+        &self,
+        turn_id: &str,
+        outcome: Outcome,
+        reply: Option<String>,
+    ) -> Result<Option<Value>, serde_json::Error> {
         if !self.turn_end {
             return Ok(None);
         }
@@ -73,6 +79,7 @@ impl Ending {
             outcome,
             state,
             turn_state: self.turn_state.get(),
+            reply,
         })
         .map(Some)
     }
@@ -83,13 +90,14 @@ impl Ending {
         messages: Vec<Message>,
         consumed: Vec<i64>,
         failed: bool,
+        reply: Option<String>,
     ) -> Result<TurnCommit, serde_json::Error> {
         let outcome = if failed {
             Outcome::Failed
         } else {
             Outcome::Completed
         };
-        let turn_end = self.payload(&turn_id, outcome)?;
+        let turn_end = self.payload(&turn_id, outcome, reply)?;
         Ok(TurnCommit {
             turn_id,
             messages,
@@ -396,13 +404,20 @@ async fn finish_turn<B: Backend, M: Model>(
     result: Result<newt_core::turn::TurnOutcome, newt_core::turn::TurnFailure>,
     ending: Ending,
 ) -> anyhow::Result<bool> {
-    let (committed, steered, effects, failure) = match result {
-        Ok(outcome) => (outcome.committed, outcome.steered, true, None),
+    let (committed, steered, effects, failure, reply) = match result {
+        Ok(outcome) => (
+            outcome.committed,
+            outcome.steered,
+            true,
+            None,
+            outcome.reply,
+        ),
         Err(failure) => (
             failure.committed,
             failure.steered,
             failure.effects,
             Some(failure.error),
+            None,
         ),
     };
     if matches!(failure, Some(TurnError::Provider(ProviderError::Cancelled))) {
@@ -418,6 +433,7 @@ async fn finish_turn<B: Backend, M: Model>(
             committed,
             consumed.clone(),
             failure.is_some(),
+            reply,
         )?;
         let commit = inner
             .store
@@ -457,7 +473,7 @@ async fn finish_turn<B: Backend, M: Model>(
                 lease,
                 consumed,
                 error.to_string(),
-                ending.payload(&turn_id, Outcome::DeadLettered)?,
+                ending.payload(&turn_id, Outcome::DeadLettered, None)?,
             )
             .await?;
         if ending.turn_end {
@@ -492,19 +508,21 @@ mod tests {
     fn a_failed_turn_reports_the_state_it_commits_and_a_dead_letter_the_previous_one() {
         let ending = ending();
         let failed = ending
-            .commit("t1".into(), Vec::new(), Vec::new(), true)
+            .commit("t1".into(), Vec::new(), Vec::new(), true, None)
             .unwrap();
         assert_eq!(
             failed.provider_state,
             Some(serde_json::json!({ "step": 2 }))
         );
         assert_eq!(
-            failed.turn_end.unwrap()["state"],
+            failed.turn_end.as_ref().unwrap()["state"],
             serde_json::json!({ "step": 2 })
         );
 
+        assert_eq!(failed.turn_end.as_ref().unwrap()["reply"], Value::Null);
+
         let dead = ending
-            .payload("t1", Outcome::DeadLettered)
+            .payload("t1", Outcome::DeadLettered, None)
             .unwrap()
             .unwrap();
         assert_eq!(dead["outcome"], "dead_lettered");
@@ -517,6 +535,9 @@ mod tests {
             turn_end: false,
             ..ending()
         };
-        assert_eq!(ending.payload("t1", Outcome::Completed).unwrap(), None);
+        assert_eq!(
+            ending.payload("t1", Outcome::Completed, None).unwrap(),
+            None
+        );
     }
 }

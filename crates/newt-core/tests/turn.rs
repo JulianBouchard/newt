@@ -367,6 +367,51 @@ async fn stopping_without_end_turn_gets_one_reminder_that_is_never_committed() {
 }
 
 #[tokio::test]
+async fn the_reply_is_the_text_of_the_message_that_ends_the_turn() {
+    let end = |id: &str| call(id, "end_turn", json!({ "nothing_new": "answered" }));
+    let read = || call("r1", "save_note", json!({ "text": "noted" }));
+    let cases = vec![
+        (
+            "text beside end_turn",
+            vec![assistant(vec![
+                Part::text(" Ana is in two processes. "),
+                end("e1"),
+            ])],
+            Some("Ana is in two processes."),
+        ),
+        (
+            "narration before the work, then a bare end_turn",
+            vec![
+                assistant(vec![Part::text("Let me check."), read()]),
+                assistant(vec![end("e1")]),
+            ],
+            None,
+        ),
+        (
+            "an answer without end_turn, then the reminded end_turn",
+            vec![
+                assistant(vec![Part::text("All set.")]),
+                assistant(vec![end("e1")]),
+            ],
+            Some("All set."),
+        ),
+        (
+            "an answer without end_turn, more work after the reminder, then end_turn",
+            vec![
+                assistant(vec![Part::text("All set.")]),
+                assistant(vec![read()]),
+                assistant(vec![end("e1")]),
+            ],
+            None,
+        ),
+    ];
+    for (case, script, expected) in cases {
+        let outcome = run(script, 8, &external_tools()).await.outcome.unwrap();
+        assert_eq!(outcome.reply.as_deref(), expected, "{case}");
+    }
+}
+
+#[tokio::test]
 async fn stopping_twice_without_end_turn_is_an_error() {
     let script = vec![
         assistant(vec![Part::text("Sure.")]),
