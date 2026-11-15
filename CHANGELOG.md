@@ -4,6 +4,17 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-14
+
+### Added
+
+- **Stateless context providers.** Newt now keeps the state a provider needs, so a provider can run as many instances as it likes with no session store of its own:
+  - `POST {base}/turn` receives the turn's `events` (each event's `id` and the `meta` the app sent with it) and the session's `state`.
+  - A turn response may return `state`. Newt saves it in the same transaction that commits the turn and sends it back on the next turn, so it never runs ahead of the session's history.
+  - Turn state for tools: each MCP call carries `newt/turn_state` in `_meta`, and a result's `newt/turn_state` replaces it for the rest of the turn, error results included.
+  - `turn_end: true` in the bootstrap makes newt call `POST {base}/turn_end` after each committed turn, and when it dead-letters events, with the outcome, every event consumed (steered ones included), state and turn state. The callback is written in the same transaction and delivered at least once, retried with backoff for about two hours.
+- Migration `0007` adds `sessions.provider_state` and the `turn_ends` table. Both are additive.
+
 ## [1.1.0] - 2026-11-14
 
 ### Added
