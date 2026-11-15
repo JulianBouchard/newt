@@ -4,12 +4,14 @@ use newt_core::message::Message;
 use newt_core::prompt::Lane;
 use newt_core::provider::{Model, ProviderError};
 use newt_core::turn::{TurnDeps, TurnError, TurnInput, TurnSettings, run_turn};
+use serde::Serialize;
+use serde_json::Value;
 
-use crate::backend::{Backend, Prepared};
+use crate::backend::{Backend, Prepared, TurnEvent, TurnRequest, TurnState};
 use crate::journal::TurnJournal;
 use crate::live::{Channel, Watch};
 use crate::runner::{Inner, elapsed_ms};
-use crate::sessions::{CommitError, Lease, PendingEvent};
+use crate::sessions::{CommitError, Lease, PendingEvent, TurnCommit};
 use crate::sinks::{LiveSink, TeeSink};
 use crate::steering::SessionSteering;
 use crate::store::live_topic;
@@ -21,6 +23,93 @@ struct TurnPlan {
     replay: Vec<JournalEntry>,
     next_seq: i32,
     fresh: bool,
+    state: Option<Value>,
+}
+
+/// What a turn's commit needs from its preparation: the provider's new
+/// session state and, when the provider wants one, the turn-end callback.
+struct Ending {
+    agent: String,
+    key: String,
+    previous_state: Option<Value>,
+    state: Option<Value>,
+    turn_end: bool,
+    turn_state: TurnState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Outcome {
+    Completed,
+    Failed,
+    DeadLettered,
+}
+
+/// The turn-end callback body, without `events`: the statement that stores
+/// it adds the events the turn consumed, steered ones included.
+#[derive(Debug, Serialize)]
+struct TurnEndPayload<'a> {
+    agent: &'a str,
+    session: &'a str,
+    turn: &'a str,
+    outcome: Outcome,
+    state: Option<&'a Value>,
+    turn_state: Value,
+}
+
+impl Ending {
+    fn payload(&self, turn_id: &str, outcome: Outcome) -> Result<Option<Value>, serde_json::Error> {
+        if !self.turn_end {
+            return Ok(None);
+        }
+        let state = match outcome {
+            Outcome::DeadLettered => self.previous_state.as_ref(),
+            Outcome::Completed | Outcome::Failed => {
+                self.state.as_ref().or(self.previous_state.as_ref())
+            }
+        };
+        serde_json::to_value(TurnEndPayload {
+            agent: &self.agent,
+            session: &self.key,
+            turn: turn_id,
+            outcome,
+            state,
+            turn_state: self.turn_state.get(),
+        })
+        .map(Some)
+    }
+
+    fn commit(
+        &self,
+        turn_id: String,
+        messages: Vec<Message>,
+        consumed: Vec<i64>,
+        failed: bool,
+    ) -> Result<TurnCommit, serde_json::Error> {
+        let outcome = if failed {
+            Outcome::Failed
+        } else {
+            Outcome::Completed
+        };
+        let turn_end = self.payload(&turn_id, outcome)?;
+        Ok(TurnCommit {
+            turn_id,
+            messages,
+            consumed,
+            provider_state: self.state.clone(),
+            turn_end,
+        })
+    }
+}
+
+fn turn_events(events: &[PendingEvent]) -> Vec<TurnEvent> {
+    events
+        .iter()
+        .map(|event| TurnEvent {
+            id: event.event_id.clone(),
+            meta: event.meta.clone(),
+        })
+        .collect()
 }
 
 pub(crate) async fn run_session<B: Backend, M: Model>(
@@ -71,7 +160,11 @@ async fn session_loop<B: Backend, M: Model>(
                 tracing::warn!(agent, key, "lease moved while the session was idle");
                 return Ok(());
             }
-            NextTurn::Resume { open, events } => {
+            NextTurn::Resume {
+                open,
+                events,
+                state,
+            } => {
                 tracing::info!(agent, key, turn = %open.turn_id, "resuming an interrupted turn");
                 TurnPlan {
                     events,
@@ -79,14 +172,16 @@ async fn session_loop<B: Backend, M: Model>(
                     replay: open.entries,
                     next_seq: open.next_seq,
                     fresh: false,
+                    state,
                 }
             }
-            NextTurn::Fresh(pending) => TurnPlan {
+            NextTurn::Fresh { events, state } => TurnPlan {
                 turn_id: uuid::Uuid::now_v7().to_string(),
-                events: pending,
+                events,
                 replay: Vec::new(),
                 next_seq: 1,
                 fresh: true,
+                state,
             },
         };
         if !run_one_turn(inner, &lease, plan, changes).await? {
@@ -192,7 +287,15 @@ async fn run_one_turn<B: Backend, M: Model>(
     drop(journal);
     journal_writer.await?;
 
-    let committed = finish_turn(inner, lease, plan.turn_id, consumed, result).await?;
+    let ending = Ending {
+        agent: lease.agent.clone(),
+        key: lease.key.clone(),
+        previous_state: plan.state,
+        state: prepared.state.clone(),
+        turn_end: prepared.turn_end,
+        turn_state: prepared.turn_state.clone(),
+    };
+    let committed = finish_turn(inner, lease, plan.turn_id, consumed, result, ending).await?;
     if committed {
         crate::compaction::compact_if_over_budget(inner, lease, &prepared).await?;
     }
@@ -226,7 +329,14 @@ async fn ready_turn<B: Backend, M: Model>(
     let consumed: Vec<i64> = plan.events.iter().map(|event| event.inbox_id).collect();
     let timed_prepare = async {
         let started = std::time::Instant::now();
-        let prepared = inner.backend.prepare(&lease.agent, &lease.key).await;
+        let request = TurnRequest {
+            events: turn_events(&plan.events),
+            state: plan.state.clone(),
+        };
+        let prepared = inner
+            .backend
+            .prepare(&lease.agent, &lease.key, &request)
+            .await;
         (prepared, elapsed_ms(started))
     };
     let ((prepared, prepare_ms), begun) = tokio::join!(
@@ -286,6 +396,7 @@ async fn finish_turn<B: Backend, M: Model>(
     turn_id: String,
     mut consumed: Vec<i64>,
     result: Result<newt_core::turn::TurnOutcome, newt_core::turn::TurnFailure>,
+    ending: Ending,
 ) -> anyhow::Result<bool> {
     let (committed, steered, effects, failure) = match result {
         Ok(outcome) => (outcome.committed, outcome.steered, true, None),
@@ -303,22 +414,28 @@ async fn finish_turn<B: Backend, M: Model>(
     consumed.extend(steered.iter().filter_map(|id| id.parse::<i64>().ok()));
     if failure.is_none() || effects {
         let committing = std::time::Instant::now();
+        let wants_turn_end = ending.turn_end;
+        let turn = ending.commit(
+            turn_id.clone(),
+            committed,
+            consumed.clone(),
+            failure.is_some(),
+        )?;
         let commit = inner
             .store
-            .commit_turn(
-                lease,
-                turn_id.clone(),
-                committed,
-                consumed.clone(),
-                inner.config.lease_ttl,
-            )
+            .commit_turn(lease, turn, inner.config.lease_ttl)
             .await;
         match commit {
-            Ok(()) => inner.emit(EventKind::TurnCommitted {
-                session: format!("{}/{}", lease.agent, lease.key),
-                turn: turn_id,
-                commit_ms: elapsed_ms(committing),
-            }),
+            Ok(()) => {
+                inner.emit(EventKind::TurnCommitted {
+                    session: format!("{}/{}", lease.agent, lease.key),
+                    turn: turn_id.clone(),
+                    commit_ms: elapsed_ms(committing),
+                });
+                if wants_turn_end {
+                    inner.turn_ends.notify_one();
+                }
+            }
             Err(CommitError::Fenced) => {
                 tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before commit, turn discarded");
                 return Ok(false);
@@ -338,8 +455,16 @@ async fn finish_turn<B: Backend, M: Model>(
         tracing::error!(attempts, agent = %lease.agent, key = %lease.key, "giving up on the turn, dead-lettering its events");
         inner
             .store
-            .dead_letter(lease, consumed, error.to_string())
+            .dead_letter(
+                lease,
+                consumed,
+                error.to_string(),
+                ending.payload(&turn_id, Outcome::DeadLettered)?,
+            )
             .await?;
+        if ending.turn_end {
+            inner.turn_ends.notify_one();
+        }
     }
     Ok(false)
 }

@@ -11,7 +11,7 @@ use super::{
     Bootstrap, ContextProviderBackend, Loaded, default_history_budget, default_max_model_calls,
     default_max_output_tokens,
 };
-use crate::backend::Prepared;
+use crate::backend::{Prepared, TurnState};
 use crate::mcp::{McpAuth, McpHost, McpServer, Toolset};
 
 const VERSION: &str = "mcp";
@@ -66,6 +66,7 @@ impl ContextProviderBackend {
             history_budget: default_history_budget(),
             skills: Vec::new(),
             mcp_servers: vec![server],
+            turn_end: false,
         };
         self.check_bootstrap(&bootstrap)?;
         let skills = toolset.skills.clone();
@@ -100,6 +101,7 @@ impl ContextProviderBackend {
             None => Workspace::default(),
         };
         let bootstrap = &loaded.bootstrap;
+        let turn_state = TurnState::default();
         Ok(Prepared {
             system: bootstrap.instructions.clone(),
             tools: loaded.toolset.tools.clone(),
@@ -114,7 +116,10 @@ impl ContextProviderBackend {
             max_turn_tokens: bootstrap.max_turn_tokens,
             recite: bootstrap.recite,
             history_budget: bootstrap.history_budget,
-            host: loaded.toolset.host(key),
+            state: None,
+            turn_end: false,
+            host: loaded.toolset.host(key, turn_state.clone()),
+            turn_state,
         })
     }
 }

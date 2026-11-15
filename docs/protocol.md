@@ -30,6 +30,10 @@ At the start of every turn newt calls `POST {base}/turn`. The response names a `
 
 `POST {base}/pages` is called during the turn, when the agent reads a page that a tool made stale, and once at the start when `turn` returned no `pages`.
 
+`POST {base}/turn_end` is called after a turn commits, when the bootstrap sets `turn_end` (1.8).
+
+Newt keeps the state a provider needs between these calls (1.4 `state`, 2.3 `newt/turn_state`), so a provider can run as many stateless instances as it likes: any instance can answer any call.
+
 ### 1.3 `GET {base}/bootstrap`
 
 Everything that is the same for every session at one version. Changing any field means a new `version`; the first turn after that pays one prompt cache miss, because the instructions, skills index and tool list form the cached prefix.
@@ -50,6 +54,7 @@ Response:
 | `history_budget` | integer | no | 60000 | Tokens of live history before compaction. Must be at least 1000. |
 | `skills` | array of skill | no | `[]` | See 1.7. |
 | `mcp_servers` | array of server | no | `[]` | See 2.1. |
+| `turn_end` | boolean | no | `false` | Call `POST {base}/turn_end` after each committed turn (1.8). |
 
 ```json
 {
@@ -81,10 +86,18 @@ Called at the start of every turn, before the first model call.
 Request:
 
 ```json
-{ "session": "ana" }
+{
+  "session": "ana",
+  "events": [{ "id": "evt-41", "meta": { "channel": "whatsapp" } }],
+  "state": { "last_seen_task": 12 }
+}
 ```
 
-`session` is the session key from the event URL, without the agent name.
+| Field | Type | Meaning |
+|---|---|---|
+| `session` | string | The session key from the event URL, without the agent name. |
+| `events` | array of `{ id, meta }` | The events this turn answers, oldest first: each event's `id` and the `meta` you sent with it (section 5.1), or `null`. A turn resumed after a crash gets the events it started with. Events that arrive during the turn as steering are not listed. |
+| `state` | any JSON, or `null` | The `state` this provider returned on the last committed turn of the session, or `null` before the first. |
 
 Response:
 
@@ -95,6 +108,7 @@ Response:
 | `pinned` | string | no | none | Session-stable text. Trimmed; empty is ignored. |
 | `instructions` | string | no | none | Guidance for this turn only. |
 | `constraints` | array of string | no | `[]` | Rules that hold right now, for this turn only. Entries are trimmed; empty ones are dropped. |
+| `state` | any JSON | no | none | The session's new provider state. Newt saves it in the same transaction that commits the turn, and sends it back as `state` on the next turn. Absent or `null` keeps the previous state; return `{}` to reset it. A turn that does not commit (the lease moved, or it was cancelled) saves nothing, so the state never runs ahead of the session's history. |
 
 ```json
 {
@@ -127,6 +141,8 @@ Where each field goes:
 
   If both are empty, no message is added.
 - `constraints` are text the model reads. They do not block a tool call. Enforce any constraint that must hold in your tool handlers as well.
+
+Typical uses of `state`: what the agent saw last turn, so this turn can say what changed; a cursor into the app's own records; a note that something was already announced.
 
 ### 1.5 Pages and the workspace
 
@@ -197,6 +213,31 @@ and adds a built-in `load_skill` tool whose `name` argument is one of the skill 
 
 MCP servers can serve skills too (section 2.6). Those follow the bootstrap's skills in the index, sorted by name.
 
+### 1.8 `POST {base}/turn_end`
+
+Called after a turn commits, when the bootstrap sets `turn_end: true`. Use it for bookkeeping that should follow the agent's turn: mark what it handled, stop a typing indicator, log the run, bill usage.
+
+```json
+{
+  "agent": "assistant",
+  "session": "ana",
+  "turn": "0198f2a4-6b1e-7c3d-9a10-5e7d2c8b4f01",
+  "outcome": "completed",
+  "events": [{ "id": "evt-41", "meta": { "channel": "whatsapp" } }],
+  "state": { "last_seen_task": 13 },
+  "turn_state": { "sent": true }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `outcome` | `completed`; `failed` for a turn that failed after it had effects (an outward call or a durable tool) and was committed with what it did; `dead_lettered` when newt gave up on the events after `max_attempts` failed turns with no effects. A failed turn with no effects that will be retried does not call `turn_end`. |
+| `events` | Every event the turn consumed, as `{ id, meta }`, oldest first: the ones it started on and any that steered it. For `dead_lettered`, the events given up on. |
+| `state` | The session's provider state after the turn (unchanged for `dead_lettered`). |
+| `turn_state` | The turn state when the turn ended (2.3). After a crash and resume, only what calls made since the resume set. |
+
+Newt writes the callback in the same transaction as the turn, so it survives a crash, and delivers it at least once: right after the commit, then retried with backoff (at least 30 seconds, up to 5 minutes apart) until the provider answers 2xx. A delivery holds the callback for 30 seconds, so two runners do not send it at once, but a retry after a lost response is possible: use `turn` to deduplicate. Deliveries across turns can arrive late and out of order. Any 2xx counts; the body is ignored. After 30 failed attempts (about two hours) newt gives up on the callback and logs an error. Deleting the session deletes its undelivered callbacks.
+
 ## 2. MCP tools
 
 Tools come from the servers in the bootstrap's `mcp_servers`. A server that knows nothing about newt still works; its tools are `durable` and invalidate nothing.
@@ -264,6 +305,7 @@ Newt sends these in `params._meta` of every `tools/call`:
 | `newt/idempotency_key` | string | `{agent}/{session}:{turn}:{call id}`. Opaque to you. Stable across retries and replays of the same call (section 4). For a call made through the `batch` tool the call id is `{batch call id}.{index}`. |
 | `newt/skills_loaded` | array of string | Skills the agent has loaded this turn, sorted. Lets a handler refuse an action until the right skill was read. |
 | `newt/pages_read` | array of `{ path, version }` | Pages the agent has read this turn, sorted by path, with the version newt holds. Lets a handler refuse to act on a page that has since changed. |
+| `newt/turn_state` | any JSON | The turn state: the last `newt/turn_state` a tool result returned this turn. Absent until a result sets one. One turn state is shared by all of an agent's MCP servers, which newt treats as one trust domain (they receive the same agent token). |
 | `traceparent` | string | W3C trace context of the call's `execute_tool` span, as newt's OTLP exporter emits it. Parent your own spans on it to see them under the turn's trace. Sent whether or not OTLP export is on. |
 | `progressToken` | string or number | Standard MCP. Report `notifications/progress` with it to keep a long call alive (section 2.1). |
 
@@ -285,13 +327,14 @@ Newt sends these in `params._meta` of every `tools/call`:
 
 ### 2.4 Result `_meta`
 
-Set on the `tools/call` result. All optional. Newt applies them only to results that are not errors.
+Set on the `tools/call` result. All optional. Newt applies them only to results that are not errors, except `newt/turn_state`.
 
 | Field | Type | Meaning |
 |---|---|---|
 | `newt/summary` | string | What history keeps instead of the full result (section 3). |
 | `newt/invalidate` | array of page key | More key prefixes to mark stale, in addition to the tool's `newt/invalidates`. |
 | `newt/pages` | array of page | Fresh page data. Newt puts these pages in the workspace and clears their stale flag, so the next read needs no refetch. |
+| `newt/turn_state` | any JSON | Replaces the turn state that later calls in this turn receive (2.3). Applied whether or not the result is an error, so a refusal can be counted. Calls that run at the same time (a `batch`) each see the state from before them, and the last result to arrive wins. Starts empty each turn. A turn resumed after a crash replays its journaled tool results without their turn state, so it starts empty there too. |
 
 ```json
 {
@@ -433,7 +476,7 @@ Errors are `{ "error": "<message>" }` with status 400 (bad body or key), 401 (mi
 | `kind` | `"message"` or `"signal"` | no | `"message"` | Stored. Nothing else reads it. |
 | `policy` | `"steer"`, `"queue"` or `"collect"` | no | `"steer"` | `steer`: if a turn is running, the event joins it between model calls, and interrupts a model call that has not started producing output. `queue` and `collect`: the event waits for the next turn. Only `steer` is treated differently in code. |
 | `priority` | `"interactive"` or `"background"` | no | `"interactive"` | A turn that includes any interactive event runs in the interactive lane. Background model calls may use at most `max_concurrent - 1` of a route's slots (at least 1), which keeps a slot free for interactive turns. |
-| `meta` | any JSON | no | none | Stored with the event. Not shown to the model. |
+| `meta` | any JSON | no | none | Stored with the event and sent to the context provider with the turn that answers it (1.4). Not shown to the model. |
 
 Unknown fields are rejected. Response, status 202:
 

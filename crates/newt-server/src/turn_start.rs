@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use newt_core::message::Message;
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::types::Json;
 
 use crate::journal_store::{JournalRow, OpenTurn, open_turn_from};
@@ -18,9 +18,13 @@ pub enum NextTurn {
     Resume {
         open: OpenTurn,
         events: Vec<PendingEvent>,
+        state: Option<Value>,
     },
     /// The events waiting for a new turn, never empty.
-    Fresh(Vec<PendingEvent>),
+    Fresh {
+        events: Vec<PendingEvent>,
+        state: Option<Value>,
+    },
     /// No open turn and no waiting events. `released` is false when the
     /// lease had already moved to another owner.
     Idle { released: bool },
@@ -30,7 +34,14 @@ pub enum NextTurn {
 /// connection.
 pub type Begun = (Vec<Message>, u64);
 
-type InboxRow = (i64, String, i16, String, Option<String>, bool);
+type InboxRow = (i64, String, i16, String, Option<String>, bool, Value);
+
+type NextRow = (
+    bool,
+    Json<Vec<JournalRow>>,
+    Json<Vec<InboxRow>>,
+    Option<Json<Value>>,
+);
 
 const CLAIM: &str = "update sessions set lease_owner = $3, lease_epoch = lease_epoch + 1, \
        lease_expires_at = now() + make_interval(secs => $4) \
@@ -51,12 +62,13 @@ const NEXT_OR_RELEASE: &str = "with released as ( \
            order by j.turn_id, j.seq) \
          from turn_journal j where j.agent = $1 and j.key = $2), '[]'::jsonb), \
        coalesce((select jsonb_agg(jsonb_build_array(i.id, i.event_id, i.priority, i.policy, \
-             i.payload->>'text', i.consumed_at is null) order by i.id) \
+             i.payload->>'text', i.consumed_at is null, i.payload->'meta') order by i.id) \
          from inbox i where i.agent = $1 and i.key = $2 \
            and (i.consumed_at is null or i.id in ( \
              select (jsonb_array_elements_text(s.payload->'inbox_ids'))::bigint \
              from turn_journal s where s.agent = $1 and s.key = $2 and s.kind = 'start'))), \
-         '[]'::jsonb)";
+         '[]'::jsonb), \
+       (select provider_state from sessions where agent = $1 and key = $2)";
 
 const BEGIN_TURN: &str = "with started as ( \
        insert into turn_journal (agent, key, turn_id, seq, kind, payload) \
@@ -72,32 +84,42 @@ const BEGIN_TURN: &str = "with started as ( \
          where h.agent = $1 and h.key = $2 and h.kind = 'message' \
            and h.seq > coalesce((select through_seq from latest), -1)), '[]'::jsonb)";
 
-fn next_turn_from(journal: Vec<JournalRow>, inbox: Vec<InboxRow>) -> Result<NextTurn, sqlx::Error> {
-    let events = inbox
-        .into_iter()
-        .map(|(inbox_id, event_id, priority, policy, text, pending)| {
+fn next_turn_from(
+    journal: Vec<JournalRow>,
+    inbox: Vec<InboxRow>,
+    state: Option<Value>,
+) -> Result<NextTurn, sqlx::Error> {
+    let events = inbox.into_iter().map(
+        |(inbox_id, event_id, priority, policy, text, pending, meta)| {
             let event = PendingEvent {
                 inbox_id,
                 event_id,
                 interactive: priority == 0,
                 steer: policy == "steer",
                 text: text.unwrap_or_default(),
+                meta: Some(meta).filter(|meta| !meta.is_null()),
             };
             (event, pending)
-        });
+        },
+    );
     if let Some(open) = open_turn_from(journal)? {
         let events = events
             .filter(|(event, _)| open.inbox_ids.contains(&event.inbox_id))
             .map(|(event, _)| event)
             .collect();
-        return Ok(NextTurn::Resume { open, events });
+        return Ok(NextTurn::Resume {
+            open,
+            events,
+            state,
+        });
     }
-    Ok(NextTurn::Fresh(
-        events
+    Ok(NextTurn::Fresh {
+        events: events
             .filter(|(_, pending)| *pending)
             .map(|(event, _)| event)
             .collect(),
-    ))
+        state,
+    })
 }
 
 fn seconds(duration: Duration) -> f64 {
@@ -143,22 +165,19 @@ impl Store {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
-            let (released, Json(journal), Json(inbox)): (
-                bool,
-                Json<Vec<JournalRow>>,
-                Json<Vec<InboxRow>>,
-            ) = sqlx::query_as(NEXT_OR_RELEASE)
-                .bind(&lease.agent)
-                .bind(&lease.key)
-                .bind(&lease.owner)
-                .bind(lease.epoch)
-                .fetch_one(&pool)
-                .await?;
+            let (released, Json(journal), Json(inbox), state): NextRow =
+                sqlx::query_as(NEXT_OR_RELEASE)
+                    .bind(&lease.agent)
+                    .bind(&lease.key)
+                    .bind(&lease.owner)
+                    .bind(lease.epoch)
+                    .fetch_one(&pool)
+                    .await?;
             if released {
                 return Ok(NextTurn::Idle { released: true });
             }
-            match next_turn_from(journal, inbox)? {
-                NextTurn::Fresh(pending) if pending.is_empty() => {
+            match next_turn_from(journal, inbox, state.map(|Json(state)| state))? {
+                NextTurn::Fresh { events, .. } if events.is_empty() => {
                     Ok(NextTurn::Idle { released: false })
                 }
                 next => Ok(next),
@@ -232,6 +251,7 @@ mod tests {
             "queue".into(),
             Some(format!("text {id}")),
             pending,
+            json!({ "source": id }),
         )
     }
 
@@ -241,12 +261,23 @@ mod tests {
 
     #[test]
     fn a_session_without_an_open_turn_answers_only_its_unconsumed_events() {
-        let next = next_turn_from(Vec::new(), vec![inbox(3, true), inbox(5, true)]).unwrap();
-        let NextTurn::Fresh(pending) = next else {
+        let next = next_turn_from(
+            Vec::new(),
+            vec![inbox(3, true), inbox(5, true)],
+            Some(json!({ "seen": 2 })),
+        )
+        .unwrap();
+        let NextTurn::Fresh { events, state } = next else {
             panic!("expected a fresh turn, got {next:?}");
         };
-        assert_eq!(ids(&pending), vec![3, 5]);
-        assert!(pending[0].interactive, "priority 0 is interactive");
+        assert_eq!(ids(&events), vec![3, 5]);
+        assert!(events[0].interactive, "priority 0 is interactive");
+        assert_eq!(events[1].meta, Some(json!({ "source": 5 })));
+        assert_eq!(
+            state,
+            Some(json!({ "seen": 2 })),
+            "the provider's state rides along"
+        );
     }
 
     #[test]
@@ -254,9 +285,10 @@ mod tests {
         let next = next_turn_from(
             vec![start(&[3, 4])],
             vec![inbox(3, false), inbox(4, true), inbox(9, true)],
+            None,
         )
         .unwrap();
-        let NextTurn::Resume { open, events } = next else {
+        let NextTurn::Resume { open, events, .. } = next else {
             panic!("expected a resumed turn, got {next:?}");
         };
         assert_eq!(open.turn_id, "t1");

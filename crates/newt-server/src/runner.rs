@@ -21,6 +21,9 @@ use crate::store::Store;
 const SWEEP_LIMIT: i64 = 100;
 const FINAL_WAIT: Duration = Duration::from_secs(5);
 const PRUNE_EVERY: Duration = Duration::from_hours(1);
+const TURN_END_SWEEP: Duration = Duration::from_secs(2);
+const TURN_END_BATCH: i64 = 20;
+const TURN_END_MAX_ATTEMPTS: i32 = 30;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RunnerConfig {
@@ -86,6 +89,7 @@ pub(crate) struct Inner<B, M> {
     tasks: TaskTracker,
     pub(crate) stopping: CancellationToken,
     pub(crate) turns: CancellationToken,
+    pub(crate) turn_ends: tokio::sync::Notify,
 }
 
 pub(crate) fn elapsed_ms(started: std::time::Instant) -> u64 {
@@ -148,6 +152,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 tasks: TaskTracker::new(),
                 stopping: CancellationToken::new(),
                 turns: CancellationToken::new(),
+                turn_ends: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -158,6 +163,10 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
 
     pub fn model(&self) -> &M {
         &self.inner.model
+    }
+
+    pub fn backend(&self) -> &B {
+        &self.inner.backend
     }
 
     pub fn wake(&self, agent: &str, key: &str) {
@@ -205,8 +214,9 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         let sweeps = self.clone().sweep_periodically(nudge);
         let heartbeats = self.clone().heartbeat_periodically();
         let prunes = self.clone().prune_periodically();
+        let turn_ends = self.clone().deliver_turn_ends_periodically();
         tokio::spawn(async move {
-            tokio::join!(wakes, sweeps, heartbeats, prunes);
+            tokio::join!(wakes, sweeps, heartbeats, prunes, turn_ends);
         })
     }
 
@@ -238,6 +248,60 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
             }
             self.sweep().await;
         }
+    }
+
+    async fn deliver_turn_ends_periodically(self) {
+        let mut every = tokio::time::interval(TURN_END_SWEEP);
+        loop {
+            tokio::select! {
+                () = self.inner.stopping.cancelled() => return,
+                _ = every.tick() => {}
+                () = self.inner.turn_ends.notified() => {}
+            }
+            tokio::select! {
+                () = self.inner.stopping.cancelled() => return,
+                _delivered = self.deliver_turn_ends() => {}
+            }
+        }
+    }
+
+    /// Delivers the turn-end callbacks that are due, and returns how many
+    /// were delivered. A failed one is retried later with backoff.
+    pub async fn deliver_turn_ends(&self) -> usize {
+        let due = match self.inner.store.claim_turn_ends(TURN_END_BATCH).await {
+            Ok(due) => due,
+            Err(error) => {
+                tracing::error!(%error, "could not claim turn-end callbacks");
+                return 0;
+            }
+        };
+        let deliveries = due.into_iter().map(|turn_end| async move {
+            if turn_end.attempts > TURN_END_MAX_ATTEMPTS {
+                tracing::error!(id = turn_end.id, agent = %turn_end.agent, attempts = turn_end.attempts, "giving up on a turn-end callback");
+                if let Err(error) = self.inner.store.delete_turn_end(turn_end.id).await {
+                    tracing::error!(%error, id = turn_end.id, "could not delete an abandoned turn end");
+                }
+                return false;
+            }
+            match self.inner.backend.turn_end(&turn_end.agent, &turn_end.payload).await {
+                Ok(()) => match self.inner.store.delete_turn_end(turn_end.id).await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::error!(%error, id = turn_end.id, "delivered a turn end but could not delete it; it will be sent again");
+                        false
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, id = turn_end.id, agent = %turn_end.agent, attempts = turn_end.attempts, "turn-end callback failed, retrying later");
+                    false
+                }
+            }
+        });
+        futures_util::future::join_all(deliveries)
+            .await
+            .into_iter()
+            .filter(|delivered| *delivered)
+            .count()
     }
 
     async fn heartbeat_periodically(self) {

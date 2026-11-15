@@ -12,7 +12,7 @@ use newt_core::provider::{
 };
 use newt_core::tools::NoTools;
 use newt_core::workspace::Workspace;
-use newt_server::backend::{Backend, BackendError, Prepared};
+use newt_server::backend::{Backend, BackendError, Prepared, TurnRequest, TurnState};
 use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::sessions::Lease;
@@ -33,6 +33,7 @@ impl Backend for Budgeted {
         &self,
         _agent: &str,
         _key: &str,
+        _request: &TurnRequest,
     ) -> impl Future<Output = Result<Prepared<NoTools>, BackendError>> + Send {
         std::future::ready(Ok(Prepared {
             system: "You are a helpful agent.".into(),
@@ -48,6 +49,9 @@ impl Backend for Budgeted {
             max_turn_tokens: None,
             recite: false,
             history_budget: BUDGET,
+            state: None,
+            turn_end: false,
+            turn_state: TurnState::default(),
             host: NoTools,
         }))
     }

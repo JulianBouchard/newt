@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use super::{
     META_IDEMPOTENCY_KEY, META_INVALIDATE, META_PAGES, META_PAGES_READ, META_SESSION,
-    META_SKILLS_LOADED, META_SUMMARY, McpHost, Remote, meta_field,
+    META_SKILLS_LOADED, META_SUMMARY, META_TURN_STATE, McpHost, Remote, meta_field,
 };
 
 const META_TRACEPARENT: &str = "traceparent";
@@ -53,6 +53,10 @@ impl McpHost {
             META_PAGES_READ.to_owned(),
             serde_json::json!(context.pages_read),
         );
+        let turn_state = self.turn_state.get();
+        if !turn_state.is_null() {
+            meta.insert(META_TURN_STATE.to_owned(), turn_state);
+        }
         if let Some(traceparent) = &context.traceparent {
             meta.insert(
                 META_TRACEPARENT.to_owned(),
@@ -66,14 +70,14 @@ impl McpHost {
             params.request_state = state;
         }
         match self.send(remote, params, context.progress.as_ref()).await {
-            Ok(ServerResult::CallToolResult(result)) => tool_output(result),
+            Ok(ServerResult::CallToolResult(result)) => self.output(result),
             Ok(ServerResult::InputRequiredResult(result)) => {
                 tracing::info!(server = %remote.server, tool = %call.name, "MCP tool asked for the person's input");
                 super::mrtr::ask(&call.name, &result)
             }
             Ok(ServerResult::CreateTaskResult(created)) => {
                 match super::mrtr::finish_task(&remote.client, created).await {
-                    Ok(result) => tool_output(result),
+                    Ok(result) => self.output(result),
                     Err(why) => {
                         tracing::warn!(server = %remote.server, tool = %call.name, %why, "MCP task did not finish");
                         ToolOutput::error(format!(
@@ -119,6 +123,16 @@ impl McpHost {
                 ))
             }
         }
+    }
+
+    /// The tool output, after taking the turn state the result carries.
+    fn output(&self, result: CallToolResult) -> ToolOutput {
+        match meta_field::<Value>(result.meta.as_deref(), META_TURN_STATE) {
+            Ok(Some(state)) => self.turn_state.set(state),
+            Ok(None) => {}
+            Err(why) => tracing::error!(%why, "MCP result had an unreadable turn state"),
+        }
+        tool_output(result)
     }
 
     async fn send(

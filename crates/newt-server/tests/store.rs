@@ -7,10 +7,10 @@
 use std::time::Duration;
 
 use newt_core::message::Message;
-use newt_server::sessions::Lease;
+use newt_server::sessions::{Lease, TurnCommit};
 use newt_server::store::{InboundEvent, Store};
 use newt_server::turn_start::NextTurn;
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 const TTL: Duration = Duration::from_secs(60);
@@ -148,7 +148,7 @@ async fn a_crashed_turn_resumes_with_exactly_the_events_it_started_on(pool: PgPo
 
     let next = store.next_turn_or_release(&lease).await.unwrap();
 
-    let NextTurn::Resume { open, events } = next else {
+    let NextTurn::Resume { open, events, .. } = next else {
         panic!("expected a resumed turn, got {next:?}");
     };
     assert_eq!(open.turn_id, "t1");
@@ -177,19 +177,40 @@ async fn commits_number_history_contiguously_and_consume_their_events(pool: PgPo
     store
         .commit_turn(
             &lease,
-            "t1".into(),
-            messages.clone(),
-            vec![accepted.inbox_id],
+            TurnCommit {
+                turn_id: "t1".into(),
+                messages: messages.clone(),
+                consumed: vec![accepted.inbox_id],
+                ..TurnCommit::default()
+            },
             TTL,
         )
         .await
         .unwrap();
     store
-        .commit_turn(&lease, "t2".into(), messages, Vec::new(), TTL)
+        .commit_turn(
+            &lease,
+            TurnCommit {
+                turn_id: "t2".into(),
+                messages,
+                consumed: Vec::new(),
+                ..TurnCommit::default()
+            },
+            TTL,
+        )
         .await
         .unwrap();
     store
-        .commit_turn(&lease, "t3".into(), Vec::new(), Vec::new(), TTL)
+        .commit_turn(
+            &lease,
+            TurnCommit {
+                turn_id: "t3".into(),
+                messages: Vec::new(),
+                consumed: Vec::new(),
+                ..TurnCommit::default()
+            },
+            TTL,
+        )
         .await
         .unwrap();
 
@@ -224,4 +245,193 @@ async fn commits_number_history_contiguously_and_consume_their_events(pool: PgPo
         4,
         "history reads back every committed message"
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_commit_saves_the_provider_state_and_queues_its_turn_end(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    let first = store
+        .accept_event("assistant", "s6", &event("e1", "hi"))
+        .await
+        .unwrap();
+    let lease = claimed(&store, "s6", "me").await;
+    store
+        .begin_turn(&lease, "t1", &[first.inbox_id], true)
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .commit_turn(
+            &lease,
+            TurnCommit {
+                turn_id: "t1".into(),
+                consumed: vec![first.inbox_id],
+                provider_state: Some(json!({ "seen": 1 })),
+                turn_end: Some(json!({ "turn": "t1" })),
+                ..TurnCommit::default()
+            },
+            TTL,
+        )
+        .await
+        .unwrap();
+    store
+        .commit_turn(
+            &lease,
+            TurnCommit {
+                turn_id: "t2".into(),
+                ..TurnCommit::default()
+            },
+            TTL,
+        )
+        .await
+        .unwrap();
+    store
+        .accept_event("assistant", "s6", &event("e2", "again"))
+        .await
+        .unwrap();
+
+    let next = store.next_turn_or_release(&lease).await.unwrap();
+
+    let NextTurn::Fresh { state, .. } = next else {
+        panic!("expected a fresh turn, got {next:?}");
+    };
+    assert_eq!(
+        state,
+        Some(json!({ "seen": 1 })),
+        "a commit without state keeps the last one"
+    );
+    let due = store.claim_turn_ends(10).await.unwrap();
+    assert_eq!(
+        due.len(),
+        1,
+        "only the commit that asked for a turn end queued one"
+    );
+    assert_eq!(due[0].payload["turn"], "t1");
+    assert!(
+        store.claim_turn_ends(10).await.unwrap().is_empty(),
+        "a claimed turn end waits for its backoff"
+    );
+    store.delete_turn_end(due[0].id).await.unwrap();
+    let left: i64 = sqlx::query_scalar("select count(*) from turn_ends")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_stale_commit_queues_no_turn_end_and_keeps_the_state(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    store
+        .accept_event("assistant", "s7", &event("e1", "hi"))
+        .await
+        .unwrap();
+    let lease = claimed(&store, "s7", "me").await;
+    steal(&pool, "s7").await;
+
+    let committed = store
+        .commit_turn(
+            &lease,
+            TurnCommit {
+                turn_id: "t1".into(),
+                provider_state: Some(json!({ "seen": 9 })),
+                turn_end: Some(json!({ "turn": "t1" })),
+                ..TurnCommit::default()
+            },
+            TTL,
+        )
+        .await;
+
+    assert!(committed.is_err());
+    let state: Option<Value> =
+        sqlx::query_scalar("select provider_state from sessions where key = 's7'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(state, None);
+    assert_eq!(store.claim_turn_ends(10).await.unwrap(), Vec::new());
+}
+
+fn with_meta(id: &str, channel: &str) -> InboundEvent {
+    serde_json::from_value(json!({ "id": id, "text": "hi", "meta": { "channel": channel } }))
+        .unwrap()
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_turn_end_lists_every_event_the_turn_consumed_with_its_meta(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    let first = store
+        .accept_event("assistant", "s8", &with_meta("e1", "email"))
+        .await
+        .unwrap();
+    let lease = claimed(&store, "s8", "me").await;
+    store
+        .begin_turn(&lease, "t1", &[first.inbox_id], true)
+        .await
+        .unwrap()
+        .unwrap();
+    let steered = store
+        .accept_event("assistant", "s8", &with_meta("e2", "sms"))
+        .await
+        .unwrap();
+    store
+        .commit_turn(
+            &lease,
+            TurnCommit {
+                turn_id: "t1".into(),
+                consumed: vec![first.inbox_id, steered.inbox_id],
+                turn_end: Some(json!({ "turn": "t1", "outcome": "completed" })),
+                ..TurnCommit::default()
+            },
+            TTL,
+        )
+        .await
+        .unwrap();
+
+    let due = store.claim_turn_ends(10).await.unwrap();
+
+    assert_eq!(due[0].attempts, 1);
+    assert_eq!(due[0].payload["outcome"], "completed");
+    assert_eq!(
+        due[0].payload["events"],
+        json!([
+            { "id": "e1", "meta": { "channel": "email" } },
+            { "id": "e2", "meta": { "channel": "sms" } },
+        ]),
+        "a steered event is listed with the ones the turn started on"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn dead_lettered_events_queue_a_turn_end_saying_so(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    let first = store
+        .accept_event("assistant", "s9", &with_meta("e1", "email"))
+        .await
+        .unwrap();
+    let lease = claimed(&store, "s9", "me").await;
+
+    store
+        .dead_letter(
+            &lease,
+            vec![first.inbox_id],
+            "model refused".into(),
+            Some(json!({ "turn": "t1", "outcome": "dead_lettered" })),
+        )
+        .await
+        .unwrap();
+
+    let due = store.claim_turn_ends(10).await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].payload["outcome"], "dead_lettered");
+    assert_eq!(
+        due[0].payload["events"],
+        json!([{ "id": "e1", "meta": { "channel": "email" } }])
+    );
+    let status = store
+        .session_status("assistant", "s9")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.pending_events, 0);
 }
