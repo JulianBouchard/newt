@@ -1,6 +1,6 @@
 ---
 title: Tools over MCP
-description: Serve tools from MCP servers and tag each one with what it leaves in history, which pages it changes, and whether it acts outside your system.
+description: Serve tools from MCP servers, tag each one with what it leaves in history, which pages it changes and whether it acts outside your system, and share state between calls.
 ---
 
 Tools come from the MCP servers your bootstrap lists. Any MCP server works as is. A few `_meta` fields let a tool tell newt what it leaves behind, and that is what keeps long sessions clean.
@@ -69,6 +69,8 @@ Outward calls run after the other calls of a model step, one at a time. If one f
 | `newt/idempotency_key` | Deduplicate effects |
 | `newt/skills_loaded` | Refuse an action until the right [skill](../skills/) was read |
 | `newt/pages_read` | Refuse to act on a page that changed since the agent read it |
+| `newt/state` | Read the [session state](../context-provider/#session-state) as the turn holds it |
+| `newt/turn_state` | Read the [turn state](#turn-state) |
 | `traceparent` | Parent your own spans under the turn's trace |
 
 ## What a result can send back
@@ -78,8 +80,30 @@ Outward calls run after the other calls of a model step, one at a time. If one f
 | `newt/summary` | What history keeps instead of the full result |
 | `newt/invalidate` | More page key prefixes to mark stale |
 | `newt/pages` | Fresh page data, used without a refetch |
+| `newt/state_patch` | A JSON merge patch for the [session state](../context-provider/#session-state), saved when the turn commits |
+| `newt/turn_state` | Replaces the [turn state](#turn-state) for later calls in this turn |
 
-Invalidation only reaches pages newt already has, so a tool that creates a page returns it in `newt/pages`. A result with malformed newt metadata marks every page stale.
+Invalidation only reaches pages newt already has, so a tool that creates a page returns it in `newt/pages`. A result with a malformed `newt/summary`, `newt/invalidate` or `newt/pages` marks every page stale. Error results apply only `newt/state_patch` and `newt/turn_state`.
+
+## Turn state
+
+Turn state is one JSON value that the tools of a single turn share. It starts as the `turn_state` from `/turn`, or empty. Each call receives it as `newt/turn_state`, and a result that returns `newt/turn_state` replaces it for every later call.
+
+```json title="send_message result"
+{
+  "content": [{ "type": "text", "text": "Sent." }],
+  "_meta": { "newt/turn_state": { "channel": "whatsapp", "sent": true } }
+}
+```
+
+The next `send_message` in the same turn sees `"sent": true` and can refuse a second message. An error result can set it too, so a tool can count its own refusals.
+
+- Calls that run at the same time (a `batch`) each see the state from before them, and the last result to arrive wins.
+- All of an agent's MCP servers share one turn state.
+- A turn that resumes after a crash starts again from `/turn`'s value.
+- The final turn state reaches your app in [`/turn_end`](../context-provider/#hear-when-a-turn-ends).
+
+What must outlive the turn belongs in the [session state](../context-provider/#session-state) or your own data.
 
 ## Timeouts and unknown outcomes
 

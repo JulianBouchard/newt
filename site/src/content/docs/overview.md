@@ -62,7 +62,7 @@ It leaves out, on purpose:
 
 ## Status
 
-newt is at **1.0**. Each release ships `newt` binaries for Linux (x86_64, arm64) and macOS (arm64) and a Docker image at `ghcr.io/julianbouchard/newt`. Building from source needs Rust 1.99. newt runs its own Postgres 18 or connects to yours.
+newt is stable from 1.0, and the [changelog](../changelog/) lists what each release added. Each release ships `newt` binaries for Linux (x86_64, arm64) and macOS (arm64) and a Docker image at `ghcr.io/julianbouchard/newt`. Building from source needs Rust 1.99. newt runs its own Postgres 18 or connects to yours.
 
 | Maturity | What |
 |---|---|

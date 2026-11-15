@@ -28,7 +28,8 @@ export const GET: APIRoute<{ entry: CollectionEntry<"docs"> }> = ({ props: { ent
   const base = import.meta.env.BASE_URL.replace(/\/$/, "");
   const pageUrl = new URL(entry.id === "index" ? `${base}/` : `${base}/${entry.id}/`, site);
   const title = entry.data.hero?.title ?? entry.data.title;
-  const body = entry.filePath?.endsWith(".mdx") ? mdxToMarkdown(entry.body ?? "") : (entry.body ?? "");
+  const source = entry.filePath?.endsWith(".mdx") ? mdxToMarkdown(entry.body ?? "") : (entry.body ?? "");
+  const body = source.replace(/^<p class="newt-release-date"><time[^>]*>(.+)<\/time><\/p>$/gm, "Released $1.");
   const header = [`# ${title}`, entry.data.description && `> ${entry.data.description}`, `Source: ${pageUrl.href}`, entry.data.sourceFile && `Synced from \`${entry.data.sourceFile}\` in the newt repository.`]
     .filter(Boolean)
     .join("\n\n");

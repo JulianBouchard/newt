@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
+import { RELEASE_HIGHLIGHTS } from "./release-highlights.mjs";
 
 const SITE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = join(SITE, "..");
@@ -82,17 +83,42 @@ function firstSentence(lines) {
   return sentence.length > 200 ? `${sentence.slice(0, 197)}...` : sentence;
 }
 
+function formatReleaseDate(date) {
+  return new Date(`${date}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+function shapeChangelog(lines) {
+  const out = [];
+  lines.forEach((line, index) => {
+    if (line === "## [Unreleased]") {
+      const next = lines.slice(index + 1).find((candidate) => candidate.trim());
+      if (!next || next.startsWith("## ")) return;
+    }
+    const release = line.match(/^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$/);
+    if (!release) return out.push(line);
+    const [, version, date] = release;
+    out.push(`## ${version}`, "", `<p class="newt-release-date"><time datetime="${date}">${formatReleaseDate(date)}</time></p>`);
+    const highlight = RELEASE_HIGHLIGHTS[version];
+    if (highlight) out.push("", `:::tip[${highlight.title}]`, highlight.body, ":::");
+  });
+  const unknown = Object.keys(RELEASE_HIGHLIGHTS).filter((version) => !out.includes(`## ${version}`));
+  if (unknown.length) throw new Error(`sync-docs: release highlights for versions not in CHANGELOG.md: ${unknown.join(", ")}`);
+  return out;
+}
+
 function syncReferenceFile({ slug, file }) {
   const lines = readRepoFile(file).split("\n");
   const titleLine = lines.findIndex((line) => line.startsWith("# "));
   if (titleLine === -1) throw new Error(`sync-docs: ${file} has no # title`);
-  const body = transformBody(lines.slice(titleLine + 1), file);
+  const transformed = transformBody(lines.slice(titleLine + 1), file);
+  const body = slug === "changelog" ? shapeChangelog(transformed) : transformed;
   const frontmatter = [`title: ${JSON.stringify(TITLE_BY_SLUG[slug])}`, `slug: ${slug}`];
   const description = firstSentence(body);
   if (description) frontmatter.push(`description: ${JSON.stringify(description)}`);
   const updated = lastCommitDate(file);
   if (updated) frontmatter.push(`lastUpdated: ${updated}`);
   frontmatter.push(`sourceFile: ${JSON.stringify(file)}`);
+  if (slug === "changelog") frontmatter.push("tableOfContents:", "  maxHeadingLevel: 2");
   writeFileSync(join(OUT, `${slug}.md`), `---\n${frontmatter.join("\n")}\n---\n\n${body.join("\n").trim()}\n`);
 }
 

@@ -25,12 +25,13 @@ So each turn's prompt is the previous one plus a suffix, and the provider's pref
 
 1. **An event arrives.** Your app posts it to `POST /v1/agents/{agent}/sessions/{key}/events`. newt stores it (deduplicated by its `id`), answers `202`, and wakes the session with a Postgres `NOTIFY`.
 2. **A runner claims the session.** Any newt instance can. It takes a lease, so two instances never run the same session.
-3. **newt asks your app for context.** It calls `POST {base}/turn` for this session's pages and turn guidance, and `GET {base}/bootstrap` when the version changed. See [Context provider](../context-provider/).
+3. **newt asks your app for context.** It calls `POST {base}/turn` with the turn's events and the session's state, and gets back the pages and turn guidance. It calls `GET {base}/bootstrap` when the version changed. See [Context provider](../context-provider/).
 4. **The model loop runs.** The model reads pages with `read_file`, `glob` and `grep`, and calls your [tools](../tools/). An event that arrives meanwhile joins the turn between model calls (steering).
 5. **Tools mark pages stale.** A tool that changes a customer's tasks invalidates the `tasks` page. The next read fetches it fresh.
 6. **Outward calls go through the journal.** Before a tool that sends a message or charges a card runs, newt writes an intent entry to Postgres and waits for it. A crash mid-turn replays without sending twice.
-7. **The turn commits.** Retention classes decide what moves from scratch into history.
-8. **Compaction, if needed.** When live history passes the budget (60,000 tokens by default), the agent writes a checkpoint. See [Memory and compaction](../memory/).
+7. **The turn commits.** Retention classes decide what moves from scratch into history. Your provider's new session state is saved in the same transaction.
+8. **Your app hears about it.** If the bootstrap sets `turn_end`, newt calls `POST {base}/turn_end` with the outcome, the events consumed and the final state.
+9. **Compaction, if needed.** When live history passes the budget (60,000 tokens by default), the agent writes a checkpoint. See [Memory and compaction](../memory/).
 
 ## What survives a turn
 
