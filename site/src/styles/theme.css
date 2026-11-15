@@ -99,8 +99,9 @@ h3,
   max-width: 34rem;
 }
 
-.hero img {
+.hero :is(img, .newt-hero-mark) {
   width: min(16rem, 60vw);
+  height: auto;
   filter: drop-shadow(0 1.5rem 2.5rem color-mix(in srgb, var(--newt-orange) 35%, transparent));
 }
 
@@ -687,7 +688,7 @@ starlight-toc nav > ul:not(:has(a[aria-current="true"])) > li:first-child > a {
 }
 
 @media (max-width: 40rem) {
-  .hero img {
+  .hero :is(img, .newt-hero-mark) {
     width: 8.5rem;
   }
 }
