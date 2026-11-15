@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-16
+
+### Added
+
+- **`live_meta` per agent.** With `live_meta = true` under `[agents.<name>]`, the live feed's `received` frame carries the event's `meta`, so an app that follows the feed can render who sent what as soon as the event is accepted instead of waiting for the turn to commit. Off by default; frames are unchanged without it.
+
 ## [1.6.0] - 2026-11-15
 
 ### Added
