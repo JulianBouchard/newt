@@ -667,7 +667,6 @@ starlight-toc nav > ul:not(:has(a[aria-current="true"])) > li:first-child > a {
   display: block;
   width: 100%;
   height: auto;
-  font-family: "Caveat Variable", cursive;
 }
 
 .newt-sketch .sk-ink {

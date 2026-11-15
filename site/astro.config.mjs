@@ -10,6 +10,7 @@ export default defineConfig({
   site,
   base,
   trailingSlash: "always",
+  build: { inlineStylesheets: "always" },
   vite: process.env.WATCH_POLL ? { server: { watch: { usePolling: true, interval: 250 } } } : {},
   integrations: [
     starlight({
