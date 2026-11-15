@@ -46,6 +46,7 @@ pub const META_INVALIDATE: &str = "newt/invalidate";
 pub const META_PAGES: &str = "newt/pages";
 pub const META_TURN_STATE: &str = "newt/turn_state";
 pub const META_STATE_PATCH: &str = "newt/state_patch";
+pub const META_STATE: &str = "newt/state";
 
 const CALL_QUIET_LIMIT: Duration = Duration::from_secs(90);
 const CALL_LIMIT: Duration = Duration::from_mins(10);

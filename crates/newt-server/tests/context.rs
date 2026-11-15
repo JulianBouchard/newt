@@ -27,6 +27,7 @@ struct Provider {
     turn_ends: Mutex<Vec<Value>>,
     turn_end_status: Mutex<Option<StatusCode>>,
     pages_state_patch: Mutex<Option<Value>>,
+    pages_states: Mutex<Vec<Value>>,
 }
 
 impl Provider {
@@ -102,6 +103,11 @@ async fn pages(
     provider.page_fetches.fetch_add(1, Ordering::SeqCst);
     assert_eq!(body["session"], "customer-7");
     assert_eq!(body["keys"], json!([["customer", "profile"]]));
+    provider
+        .pages_states
+        .lock()
+        .unwrap()
+        .push(body["state"].clone());
     let mut response = json!({ "pages": [provider.page()] });
     if let Some(patch) = provider.pages_state_patch.lock().unwrap().clone() {
         response["state_patch"] = patch;
@@ -219,6 +225,11 @@ async fn an_invalidated_page_is_refetched_from_the_provider() {
         Some("Remote or Berlin")
     );
     assert_eq!(provider.page_fetches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        provider.pages_states.lock().unwrap().clone(),
+        vec![Value::Null],
+        "a session with no state sends null"
+    );
 }
 
 async fn prepare_error(provider: &Arc<Provider>, token: &str) -> String {
@@ -430,5 +441,10 @@ async fn a_page_fetch_can_patch_the_session_state() {
     assert_eq!(
         prepared.state.changed(),
         Some(json!({ "rendered": "r2", "kept": 1 }))
+    );
+    assert_eq!(
+        provider.pages_states.lock().unwrap().clone(),
+        vec![json!({ "rendered": "r1", "old": true, "kept": 1 })],
+        "the page fetch sees the session state"
     );
 }

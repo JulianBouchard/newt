@@ -377,6 +377,10 @@ async fn the_turn_state_travels_with_each_call_and_a_result_replaces_it() {
         seen[0].1.get("newt/turn_state").is_none(),
         "an empty turn state is not sent"
     );
+    assert!(
+        seen[0].1.get("newt/state").is_none(),
+        "a session with no state sends none"
+    );
     assert_eq!(seen[1].1["newt/turn_state"], json!({ "count": 1 }));
     assert_eq!(turn_state.get(), json!({ "count": 2 }));
 
@@ -400,8 +404,17 @@ async fn a_tool_result_can_patch_the_session_state() {
 
     host.call(&call("c1", "note_sent", json!({})), &key("k1"))
         .await;
+    host.call(&call("c2", "plain_tool", json!({})), &key("k2"))
+        .await;
 
     assert_eq!(state.changed(), Some(json!({ "seen": 1, "sent": true })));
+    let seen = calls.seen.lock().unwrap().clone();
+    assert_eq!(seen[0].1["newt/state"], json!({ "seen": 1 }));
+    assert_eq!(
+        seen[1].1["newt/state"],
+        json!({ "seen": 1, "sent": true }),
+        "a later call sees the patched state"
+    );
 }
 
 #[tokio::test]

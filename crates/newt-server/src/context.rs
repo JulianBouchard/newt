@@ -138,6 +138,7 @@ struct PagesResponse {
 struct PagesRequest<'a> {
     session: &'a str,
     keys: &'a [PageKey],
+    state: Option<&'a serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -225,9 +226,11 @@ struct ProviderPages {
 impl PageSource for ProviderPages {
     fn fetch(&self, keys: Vec<PageKey>) -> PageFuture<'_> {
         Box::pin(async move {
+            let state = self.state.get();
             let body = serde_json::to_value(PagesRequest {
                 session: &self.session,
                 keys: &keys,
+                state: state.as_ref(),
             })
             .map_err(|error| error.to_string())?;
             let response: PagesResponse = self.client.call("pages", Some(body)).await?;

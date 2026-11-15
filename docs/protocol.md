@@ -32,7 +32,7 @@ At the start of every turn newt calls `POST {base}/turn`. The response names a `
 
 `POST {base}/turn_end` is called after a turn commits, when the bootstrap sets `turn_end` (1.8).
 
-Newt keeps the state a provider needs between these calls (1.4 `state`, 2.3 `newt/turn_state`), so a provider can run as many stateless instances as it likes: any instance can answer any call.
+Newt keeps the state a provider needs between these calls (1.4 `state`, 2.3 `newt/turn_state`) and sends it on every call (`/turn`, `/pages`, each tool call), so a provider can run as many stateless instances as it likes: any instance can answer any call. Pages served as MCP resources (2.7) do not receive the state.
 
 ### 1.3 `GET {base}/bootstrap`
 
@@ -153,6 +153,8 @@ Later in the turn, a page fetch (1.6 `state_patch`) and a tool result (2.4 `newt
 
 So keep in the state what you can afford to recompute, and keep the record of anything that must not happen twice in your own data.
 
+The whole state travels with every `/pages` request and every tool call, to every MCP server of the agent. Keep it small (a few kilobytes; newt does not cap it), and keep out of it anything one of the agent's tool servers should not read.
+
 ### 1.5 Pages and the workspace
 
 A **page** is one file in the agent's workspace. The agent reads them with the built-in `read_file`, `glob` and `grep` tools.
@@ -183,8 +185,10 @@ A response with an empty `key`, an empty `path` or a repeated `path` is rejected
 Request:
 
 ```json
-{ "session": "ana", "keys": [["tasks"], ["customer", "profile"]] }
+{ "session": "ana", "keys": [["tasks"], ["customer", "profile"]], "state": { "last_seen_task": 12 } }
 ```
+
+`state` is the session's provider state as the turn holds it now: what `/turn` returned or kept, with any patches applied so far (1.4), or `null`.
 
 `keys` is a list of page keys. For a refetch newt sends the exact key of each stale page. The empty key `[]` means every page. Return the pages whose key starts with any listed key; `[]` matches all of them.
 
@@ -316,6 +320,7 @@ Newt sends these in `params._meta` of every `tools/call`:
 | `newt/idempotency_key` | string | `{agent}/{session}:{turn}:{call id}`. Opaque to you. Stable across retries and replays of the same call (section 4). For a call made through the `batch` tool the call id is `{batch call id}.{index}`. |
 | `newt/skills_loaded` | array of string | Skills the agent has loaded this turn, sorted. Lets a handler refuse an action until the right skill was read. |
 | `newt/pages_read` | array of `{ path, version }` | Pages the agent has read this turn, sorted by path, with the version newt holds. Lets a handler refuse to act on a page that has since changed. |
+| `newt/state` | any JSON | The session's provider state as the turn holds it now (1.4), with any patches applied so far. Absent when there is none. Sent to all of the agent's MCP servers, like `newt/turn_state`. |
 | `newt/turn_state` | any JSON | The turn state: the `turn_state` from `/turn` (1.4), or the last `newt/turn_state` a tool result returned this turn. Absent until one of them sets it. One turn state is shared by all of an agent's MCP servers, which newt treats as one trust domain (they receive the same agent token). |
 | `traceparent` | string | W3C trace context of the call's `execute_tool` span, as newt's OTLP exporter emits it. Parent your own spans on it to see them under the turn's trace. Sent whether or not OTLP export is on. |
 | `progressToken` | string or number | Standard MCP. Report `notifications/progress` with it to keep a long call alive (section 2.1). |

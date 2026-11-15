@@ -20,8 +20,8 @@ use serde_json::Value;
 
 use super::{
     META_IDEMPOTENCY_KEY, META_INVALIDATE, META_PAGES, META_PAGES_READ, META_SESSION,
-    META_SKILLS_LOADED, META_STATE_PATCH, META_SUMMARY, META_TURN_STATE, McpHost, Remote,
-    meta_field,
+    META_SKILLS_LOADED, META_STATE, META_STATE_PATCH, META_SUMMARY, META_TURN_STATE, McpHost,
+    Remote, meta_field,
 };
 
 const META_TRACEPARENT: &str = "traceparent";
@@ -58,6 +58,9 @@ impl McpHost {
         let turn_state = self.turn_state.get();
         if !turn_state.is_null() {
             meta.insert(META_TURN_STATE.to_owned(), turn_state);
+        }
+        if let Some(state) = self.session_state.get() {
+            meta.insert(META_STATE.to_owned(), state);
         }
         if let Some(traceparent) = &context.traceparent {
             meta.insert(
