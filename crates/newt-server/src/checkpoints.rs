@@ -27,27 +27,22 @@ impl CompactionState {
     }
 }
 
-struct Latest {
-    through_seq: i64,
-    summary: String,
-    checkpoint: Checkpoint,
-}
+type CompactionRow = (
+    Option<String>,
+    Option<Json<Checkpoint>>,
+    Json<Vec<(i64, String, i32)>>,
+    Option<bool>,
+);
 
-async fn latest(pool: &mut PgConnection, lease: &Lease) -> Result<Option<Latest>, sqlx::Error> {
-    let row: Option<(i64, String, Json<Checkpoint>)> = sqlx::query_as(
-        "select through_seq, summary, snapshot from checkpoints \
-         where agent = $1 and key = $2 order by through_seq desc limit 1",
-    )
-    .bind(&lease.agent)
-    .bind(&lease.key)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|(through_seq, summary, Json(checkpoint))| Latest {
-        through_seq,
-        summary,
-        checkpoint,
-    }))
-}
+const COMPACTION_STATE: &str = "with latest as ( \
+       select through_seq, summary, snapshot from checkpoints \
+       where agent = $1 and key = $2 order by through_seq desc limit 1) \
+     select (select summary from latest), (select snapshot from latest), \
+       coalesce((select jsonb_agg(jsonb_build_array(h.seq, h.turn_id, h.tokens) order by h.seq) \
+         from history h where h.agent = $1 and h.key = $2 and h.kind = 'message' \
+           and h.seq > coalesce((select through_seq from latest), -1)), '[]'::jsonb), \
+       (select compaction_retry_after is null or compaction_retry_after <= now() \
+         from sessions where agent = $1 and key = $2)";
 
 impl Store {
     pub fn history(&self, lease: &Lease) -> Owned<Vec<Message>> {
@@ -63,26 +58,13 @@ impl Store {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
-            let mut connection = pool.acquire().await?;
-            let latest = latest(&mut connection, &lease).await?;
-            let through = latest.as_ref().map_or(-1, |latest| latest.through_seq);
-            let rows: Vec<(i64, String, i32)> = sqlx::query_as(
-                "select seq, turn_id, tokens from history \
-                 where agent = $1 and key = $2 and seq > $3 and kind = 'message' order by seq",
-            )
-            .bind(&lease.agent)
-            .bind(&lease.key)
-            .bind(through)
-            .fetch_all(&mut *connection)
-            .await?;
-            let due: bool = sqlx::query_scalar(
-                "select compaction_retry_after is null or compaction_retry_after <= now() \
-                 from sessions where agent = $1 and key = $2",
-            )
-            .bind(&lease.agent)
-            .bind(&lease.key)
-            .fetch_one(&mut *connection)
-            .await?;
+            let (summary, snapshot, Json(rows), due): CompactionRow =
+                sqlx::query_as(COMPACTION_STATE)
+                    .bind(&lease.agent)
+                    .bind(&lease.key)
+                    .fetch_one(&pool)
+                    .await?;
+            let due = due.ok_or(sqlx::Error::RowNotFound)?;
             Ok(CompactionState {
                 due,
                 rows: rows
@@ -93,11 +75,11 @@ impl Store {
                         tokens: i64::from(tokens),
                     })
                     .collect(),
-                checkpoint_tokens: latest.as_ref().map_or(0, |latest| {
-                    i64::try_from(latest.summary.len() / 4).unwrap_or(i64::MAX)
+                checkpoint_tokens: summary.as_ref().map_or(0, |summary| {
+                    i64::try_from(summary.len() / 4).unwrap_or(i64::MAX)
                 }),
-                open_commitments: latest
-                    .map(|latest| latest.checkpoint.commitments)
+                open_commitments: snapshot
+                    .map(|Json(checkpoint)| checkpoint.commitments)
                     .unwrap_or_default(),
             })
         })
@@ -189,26 +171,28 @@ pub fn tail_cut(rows: &[LiveRow], tail_budget: i64) -> Option<i64> {
         .map(|row| row.seq)
 }
 
+const HISTORY: &str = "with latest as ( \
+       select through_seq, summary from checkpoints \
+       where agent = $1 and key = $2 order by through_seq desc limit 1) \
+     select (select summary from latest), \
+       coalesce((select jsonb_agg(h.entry order by h.seq) from history h \
+         where h.agent = $1 and h.key = $2 and h.kind = 'message' \
+           and h.seq > coalesce((select through_seq from latest), -1)), '[]'::jsonb)";
+
 pub(crate) async fn history_on(
     connection: &mut PgConnection,
     lease: &Lease,
 ) -> Result<Vec<Message>, sqlx::Error> {
-    let latest = latest(connection, lease).await?;
-    let through = latest.as_ref().map_or(-1, |latest| latest.through_seq);
-    let rows: Vec<Json<Message>> = sqlx::query_scalar(
-        "select entry from history \
-         where agent = $1 and key = $2 and seq > $3 and kind = 'message' order by seq",
-    )
-    .bind(&lease.agent)
-    .bind(&lease.key)
-    .bind(through)
-    .fetch_all(&mut *connection)
-    .await?;
-    let mut history = Vec::with_capacity(rows.len() + 1);
-    if let Some(latest) = latest {
-        history.push(Message::user_text(latest.summary));
+    let (summary, Json(messages)): (Option<String>, Json<Vec<Message>>) = sqlx::query_as(HISTORY)
+        .bind(&lease.agent)
+        .bind(&lease.key)
+        .fetch_one(&mut *connection)
+        .await?;
+    let mut history = Vec::with_capacity(messages.len() + 1);
+    if let Some(summary) = summary {
+        history.push(Message::user_text(summary));
     }
-    history.extend(rows.into_iter().map(|Json(message)| message));
+    history.extend(messages);
     Ok(history)
 }
 

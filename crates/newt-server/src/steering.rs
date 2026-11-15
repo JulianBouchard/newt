@@ -14,6 +14,15 @@ struct State {
     lease: Lease,
     seen: Mutex<HashSet<i64>>,
     inbox: tokio::sync::Mutex<Watch>,
+    changes: Mutex<InboxChanges>,
+}
+
+/// Whether the inbox may hold something steering has not read: a
+/// notification arrived, or the last read failed.
+#[derive(Debug)]
+struct InboxChanges {
+    watch: Watch,
+    retry: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +36,7 @@ impl SessionSteering {
         lease: Lease,
         already_in_turn: impl IntoIterator<Item = i64>,
         inbox: Watch,
+        changes: Watch,
     ) -> Self {
         Self {
             state: Arc::new(State {
@@ -34,12 +44,30 @@ impl SessionSteering {
                 lease,
                 seen: Mutex::new(already_in_turn.into_iter().collect()),
                 inbox: tokio::sync::Mutex::new(inbox),
+                changes: Mutex::new(InboxChanges {
+                    watch: changes,
+                    retry: false,
+                }),
             }),
         }
     }
 }
 
 impl State {
+    fn changes(&self) -> std::sync::MutexGuard<'_, InboxChanges> {
+        match self.changes.lock() {
+            Ok(changes) => changes,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn inbox_changed(&self) -> bool {
+        let mut changes = self.changes();
+        let notified = changes.watch.take_change();
+        let retry = std::mem::take(&mut changes.retry);
+        notified || retry
+    }
+
     fn unseen_steers(&self, pending: Vec<PendingEvent>) -> Vec<PendingEvent> {
         let seen = match self.seen.lock() {
             Ok(seen) => seen,
@@ -66,10 +94,14 @@ impl Steering for SessionSteering {
     fn take_new(&self) -> impl Future<Output = Vec<Steered>> + Send {
         let state = Arc::clone(&self.state);
         async move {
+            if !state.inbox_changed() {
+                return Vec::new();
+            }
             let pending = match state.store.pending_events(&state.lease).await {
                 Ok(pending) => pending,
                 Err(error) => {
                     tracing::error!(%error, "steering could not read the inbox");
+                    state.changes().retry = true;
                     return Vec::new();
                 }
             };

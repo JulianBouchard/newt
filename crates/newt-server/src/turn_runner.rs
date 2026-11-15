@@ -7,7 +7,7 @@ use newt_core::turn::{TurnDeps, TurnError, TurnInput, TurnSettings, run_turn};
 
 use crate::backend::{Backend, Prepared};
 use crate::journal::TurnJournal;
-use crate::live::Channel;
+use crate::live::{Channel, Watch};
 use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{CommitError, Lease, PendingEvent};
 use crate::sinks::{LiveSink, TeeSink};
@@ -30,6 +30,7 @@ pub(crate) async fn run_session<B: Backend, M: Model>(
 ) -> anyhow::Result<()> {
     let ttl = inner.config.lease_ttl;
     let started = std::time::Instant::now();
+    let changes = inbox_watch(inner, agent, key);
     let (claimed, pool_wait_ms) = inner.store.claim(agent, key, &inner.owner, ttl).await?;
     inner.emit(EventKind::SessionClaimed {
         session: format!("{agent}/{key}"),
@@ -40,7 +41,7 @@ pub(crate) async fn run_session<B: Backend, M: Model>(
     let Some(lease) = claimed else {
         return Ok(());
     };
-    let result = session_loop(inner, &lease).await;
+    let result = session_loop(inner, &lease, changes).await;
     if let Err(error) = &result {
         tracing::error!(%error, agent, key, "session failed, releasing its lease");
         inner
@@ -54,15 +55,22 @@ pub(crate) async fn run_session<B: Backend, M: Model>(
 async fn session_loop<B: Backend, M: Model>(
     inner: &Inner<B, M>,
     lease: &Lease,
+    first_changes: Watch,
 ) -> anyhow::Result<()> {
     let (agent, key) = (lease.agent.as_str(), lease.key.as_str());
     let lease = lease.clone();
+    let mut changes = first_changes;
     loop {
         if inner.stopping.is_cancelled() {
             inner.store.release(&lease).await?;
             return Ok(());
         }
-        let plan = match inner.store.next_turn(&lease).await? {
+        let plan = match inner.store.next_turn_or_release(&lease).await? {
+            NextTurn::Idle { released: true } => return Ok(()),
+            NextTurn::Idle { released: false } => {
+                tracing::warn!(agent, key, "lease moved while the session was idle");
+                return Ok(());
+            }
             NextTurn::Resume { open, events } => {
                 tracing::info!(agent, key, turn = %open.turn_id, "resuming an interrupted turn");
                 TurnPlan {
@@ -73,12 +81,6 @@ async fn session_loop<B: Backend, M: Model>(
                     fresh: false,
                 }
             }
-            NextTurn::Fresh(pending) if pending.is_empty() => {
-                if inner.store.release_if_idle(&lease).await? {
-                    return Ok(());
-                }
-                continue;
-            }
             NextTurn::Fresh(pending) => TurnPlan {
                 turn_id: uuid::Uuid::now_v7().to_string(),
                 events: pending,
@@ -87,16 +89,26 @@ async fn session_loop<B: Backend, M: Model>(
                 fresh: true,
             },
         };
-        if !run_one_turn(inner, &lease, plan).await? {
+        if !run_one_turn(inner, &lease, plan, changes).await? {
             return Ok(());
         }
+        changes = inbox_watch(inner, agent, key);
     }
+}
+
+/// A watch on the session's inbox notifications, made before the read that
+/// plans a turn so steering hears every event that read did not see.
+fn inbox_watch<B: Backend, M: Model>(inner: &Inner<B, M>, agent: &str, key: &str) -> Watch {
+    inner
+        .notifications
+        .watch(Channel::Inbox, live_topic(agent, key))
 }
 
 async fn run_one_turn<B: Backend, M: Model>(
     inner: &Inner<B, M>,
     lease: &Lease,
     plan: TurnPlan,
+    changes: Watch,
 ) -> anyhow::Result<bool> {
     let Some(Ready {
         prepared,
@@ -115,9 +127,8 @@ async fn run_one_turn<B: Backend, M: Model>(
         inner.store.clone(),
         lease.clone(),
         consumed.iter().copied().chain(steered_before),
-        inner
-            .notifications
-            .watch(Channel::Inbox, live_topic(&lease.agent, &lease.key)),
+        inbox_watch(inner, &lease.agent, &lease.key),
+        changes,
     );
     let turn_cancel = inner.turns.child_token();
     let (journal, journal_writer) = TurnJournal::spawn(

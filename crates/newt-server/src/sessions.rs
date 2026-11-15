@@ -5,7 +5,7 @@ use std::time::Duration;
 use newt_core::message::Message;
 use sqlx::{PgConnection, PgPool};
 
-use crate::store::{Store, timed_connection};
+use crate::store::Store;
 
 const MAX_BACKOFF_SECONDS: f64 = 300.0;
 
@@ -41,41 +41,6 @@ fn seconds(duration: Duration) -> f64 {
 }
 
 impl Store {
-    pub fn claim(
-        &self,
-        agent: &str,
-        key: &str,
-        owner: &str,
-        ttl: Duration,
-    ) -> Owned<(Option<Lease>, u64)> {
-        let pool = self.pool().clone();
-        let (agent, key, owner) = (agent.to_owned(), key.to_owned(), owner.to_owned());
-        Box::pin(async move {
-            let (mut connection, waited) = timed_connection(&pool).await?;
-            let epoch: Option<i64> = sqlx::query_scalar(
-                "update sessions set lease_owner = $3, lease_epoch = lease_epoch + 1, \
-                   lease_expires_at = now() + make_interval(secs => $4) \
-                 where agent = $1 and key = $2 \
-                   and (lease_owner is null or lease_expires_at < now()) \
-                   and (retry_after is null or retry_after <= now()) \
-                 returning lease_epoch",
-            )
-            .bind(&agent)
-            .bind(&key)
-            .bind(&owner)
-            .bind(seconds(ttl))
-            .fetch_optional(&mut *connection)
-            .await?;
-            let lease = epoch.map(|epoch| Lease {
-                agent,
-                key,
-                owner,
-                epoch,
-            });
-            Ok((lease, waited))
-        })
-    }
-
     pub fn pending_events(&self, lease: &Lease) -> Owned<Vec<PendingEvent>> {
         let pool = self.pool().clone();
         let lease = lease.clone();
@@ -96,27 +61,6 @@ impl Store {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move { commit(&pool, &lease, &turn_id, &messages, &consumed, ttl).await })
-    }
-
-    pub fn release_if_idle(&self, lease: &Lease) -> Owned<bool> {
-        let pool = self.pool().clone();
-        let lease = lease.clone();
-        Box::pin(async move {
-            let released: Option<i32> = sqlx::query_scalar(
-                "update sessions s set lease_owner = null, lease_expires_at = null \
-                 where agent = $1 and key = $2 and lease_owner = $3 and lease_epoch = $4 \
-                   and not exists (select 1 from inbox i \
-                     where i.agent = s.agent and i.key = s.key and i.consumed_at is null) \
-                 returning 1",
-            )
-            .bind(&lease.agent)
-            .bind(&lease.key)
-            .bind(&lease.owner)
-            .bind(lease.epoch)
-            .fetch_optional(&pool)
-            .await?;
-            Ok(released.is_some())
-        })
     }
 
     pub fn release(&self, lease: &Lease) -> Owned<()> {
@@ -257,35 +201,74 @@ pub(crate) async fn fence(tx: &mut sqlx::PgConnection, lease: &Lease) -> Result<
     Ok(next_seq)
 }
 
+struct EncodedMessages {
+    entries: Vec<String>,
+    tokens: Vec<i32>,
+}
+
+fn encode_messages(messages: &[Message]) -> Result<EncodedMessages, sqlx::Error> {
+    let mut encoded = EncodedMessages {
+        entries: Vec::with_capacity(messages.len()),
+        tokens: Vec::with_capacity(messages.len()),
+    };
+    for message in messages {
+        let entry =
+            serde_json::to_string(message).map_err(|error| sqlx::Error::Encode(Box::new(error)))?;
+        encoded
+            .tokens
+            .push(i32::try_from(entry.len() / 4).unwrap_or(i32::MAX));
+        encoded.entries.push(entry);
+    }
+    Ok(encoded)
+}
+
 pub(crate) async fn insert_history(
     tx: &mut sqlx::PgConnection,
     lease: &Lease,
     turn_id: &str,
     kind: &str,
-    mut seq: i64,
+    seq: i64,
     messages: &[Message],
 ) -> Result<i64, sqlx::Error> {
-    for message in messages {
-        let encoded =
-            serde_json::to_string(message).map_err(|error| sqlx::Error::Encode(Box::new(error)))?;
-        let tokens = i32::try_from(encoded.len() / 4).unwrap_or(i32::MAX);
-        sqlx::query(
-            "insert into history (agent, key, seq, turn_id, kind, entry, tokens) \
-             values ($1, $2, $3, $4, $5, $6::jsonb, $7)",
-        )
-        .bind(&lease.agent)
-        .bind(&lease.key)
-        .bind(seq)
-        .bind(turn_id)
-        .bind(kind)
-        .bind(encoded)
-        .bind(tokens)
-        .execute(&mut *tx)
-        .await?;
-        seq += 1;
-    }
-    Ok(seq)
+    let encoded = encode_messages(messages)?;
+    sqlx::query(
+        "insert into history (agent, key, seq, turn_id, kind, entry, tokens) \
+         select $1, $2, $3 + message.ordinality - 1, $4, $5, message.entry::jsonb, message.tokens \
+         from unnest($6::text[], $7::int4[]) with ordinality as message(entry, tokens, ordinality)",
+    )
+    .bind(&lease.agent)
+    .bind(&lease.key)
+    .bind(seq)
+    .bind(turn_id)
+    .bind(kind)
+    .bind(&encoded.entries)
+    .bind(&encoded.tokens)
+    .execute(&mut *tx)
+    .await?;
+    Ok(seq + i64::try_from(messages.len()).unwrap_or(i64::MAX))
 }
+
+const COMMIT_TURN: &str = "with bumped as ( \
+       update sessions set next_history_seq = next_history_seq + $8, failed_attempts = 0, \
+         retry_after = null, lease_expires_at = now() + make_interval(secs => $10) \
+       where agent = $1 and key = $2 and lease_owner = $3 and lease_epoch = $4 \
+       returning next_history_seq - $8 as first_seq), \
+     added as ( \
+       insert into history (agent, key, seq, turn_id, kind, entry, tokens) \
+       select $1, $2, bumped.first_seq + message.ordinality - 1, $5, 'message', \
+         message.entry::jsonb, message.tokens \
+       from bumped, unnest($6::text[], $7::int4[]) with ordinality as message(entry, tokens, ordinality) \
+       returning 1), \
+     consumed as ( \
+       update inbox set consumed_at = now() \
+       where agent = $1 and key = $2 and id = any($9) and exists (select 1 from bumped) \
+       returning 1), \
+     cleared as ( \
+       delete from turn_journal \
+       where agent = $1 and key = $2 and turn_id = $5 and exists (select 1 from bumped) \
+       returning 1) \
+     select exists (select 1 from bumped), (select count(*) from added), \
+       (select count(*) from consumed), (select count(*) from cleared)";
 
 async fn commit(
     pool: &PgPool,
@@ -295,35 +278,25 @@ async fn commit(
     consumed: &[i64],
     ttl: Duration,
 ) -> Result<(), CommitError> {
-    let mut tx = pool.begin().await?;
-    let next_seq = fence(&mut tx, lease).await?;
-    let seq = insert_history(&mut tx, lease, turn_id, "message", next_seq, messages).await?;
-    sqlx::query(
-        "update inbox set consumed_at = now() where agent = $1 and key = $2 and id = any($3)",
-    )
-    .bind(&lease.agent)
-    .bind(&lease.key)
-    .bind(consumed)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("delete from turn_journal where agent = $1 and key = $2 and turn_id = $3")
-        .bind(&lease.agent)
-        .bind(&lease.key)
-        .bind(turn_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "update sessions set next_history_seq = $3, failed_attempts = 0, retry_after = null, \
-           lease_expires_at = now() + make_interval(secs => $4) \
-         where agent = $1 and key = $2",
-    )
-    .bind(&lease.agent)
-    .bind(&lease.key)
-    .bind(seq)
-    .bind(seconds(ttl))
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
+    let encoded = encode_messages(messages)?;
+    let count = i64::try_from(messages.len()).unwrap_or(i64::MAX);
+    let (committed, _added, _consumed, _cleared): (bool, i64, i64, i64) =
+        sqlx::query_as(COMMIT_TURN)
+            .bind(&lease.agent)
+            .bind(&lease.key)
+            .bind(&lease.owner)
+            .bind(lease.epoch)
+            .bind(turn_id)
+            .bind(&encoded.entries)
+            .bind(&encoded.tokens)
+            .bind(count)
+            .bind(consumed)
+            .bind(seconds(ttl))
+            .fetch_one(pool)
+            .await?;
+    if !committed {
+        return Err(CommitError::Fenced);
+    }
     Ok(())
 }
 

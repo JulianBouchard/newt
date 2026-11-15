@@ -1,9 +1,7 @@
 use newt_core::journal::JournalEntry;
-use serde_json::json;
-use sqlx::PgConnection;
 use sqlx::types::Json;
 
-use crate::sessions::{Lease, Owned, PendingEvent};
+use crate::sessions::{Lease, Owned};
 use crate::store::Store;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,11 +11,6 @@ pub struct OpenTurn {
     pub entries: Vec<JournalEntry>,
     pub next_seq: i32,
 }
-
-const FENCED_INSERT: &str = "insert into turn_journal (agent, key, turn_id, seq, kind, payload) \
-     select $1, $2, $3, $4, $5, $6 where exists (select 1 from sessions \
-       where agent = $1 and key = $2 and lease_owner = $7 and lease_epoch = $8 for share) \
-     returning 1";
 
 const FENCED_BATCH_RELAXED: &str = "with relaxed as (select set_config('synchronous_commit', 'off', true)), \
      written as ( \
@@ -82,18 +75,11 @@ impl Store {
     }
 }
 
-pub(crate) async fn open_turn_on(
-    connection: &mut PgConnection,
-    lease: &Lease,
-) -> Result<Option<OpenTurn>, sqlx::Error> {
-    let rows: Vec<(String, i32, String, Json<serde_json::Value>)> = sqlx::query_as(
-        "select turn_id, seq, kind, payload from turn_journal \
-         where agent = $1 and key = $2 order by turn_id, seq",
-    )
-    .bind(&lease.agent)
-    .bind(&lease.key)
-    .fetch_all(&mut *connection)
-    .await?;
+pub(crate) type JournalRow = (String, i32, String, serde_json::Value);
+
+/// The open turn in a session's journal rows (ordered by turn and seq), if
+/// there is one.
+pub(crate) fn open_turn_from(rows: Vec<JournalRow>) -> Result<Option<OpenTurn>, sqlx::Error> {
     let Some(turn_id) = rows.first().map(|row| row.0.clone()) else {
         return Ok(None);
     };
@@ -103,7 +89,7 @@ pub(crate) async fn open_turn_on(
         entries: Vec::new(),
         next_seq: 0,
     };
-    for (row_turn, seq, kind, Json(payload)) in rows {
+    for (row_turn, seq, kind, payload) in rows {
         if row_turn != turn_id {
             tracing::error!(%row_turn, %turn_id, "two open turns in one session; resuming the oldest");
             continue;
@@ -120,52 +106,4 @@ pub(crate) async fn open_turn_on(
         }
     }
     Ok(Some(open))
-}
-
-pub(crate) async fn events_by_ids_on(
-    connection: &mut PgConnection,
-    lease: &Lease,
-    ids: &[i64],
-) -> Result<Vec<PendingEvent>, sqlx::Error> {
-    let rows: Vec<(i64, String, i16, String, Option<String>)> = sqlx::query_as(
-        "select id, event_id, priority, policy, payload->>'text' from inbox \
-         where agent = $1 and key = $2 and id = any($3) order by id",
-    )
-    .bind(&lease.agent)
-    .bind(&lease.key)
-    .bind(ids)
-    .fetch_all(&mut *connection)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(inbox_id, event_id, priority, policy, text)| PendingEvent {
-                inbox_id,
-                event_id,
-                interactive: priority == 0,
-                steer: policy == "steer",
-                text: text.unwrap_or_default(),
-            },
-        )
-        .collect())
-}
-
-pub(crate) async fn start_turn_on(
-    connection: &mut PgConnection,
-    lease: &Lease,
-    turn_id: &str,
-    inbox_ids: &[i64],
-) -> Result<bool, sqlx::Error> {
-    let written: Option<i32> = sqlx::query_scalar(FENCED_INSERT)
-        .bind(&lease.agent)
-        .bind(&lease.key)
-        .bind(turn_id)
-        .bind(0_i32)
-        .bind("start")
-        .bind(Json(json!({ "inbox_ids": inbox_ids })))
-        .bind(&lease.owner)
-        .bind(lease.epoch)
-        .fetch_optional(&mut *connection)
-        .await?;
-    Ok(written.is_some())
 }
