@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-14
+
+### Added
+
+- **`reply` in the turn-end callback.** What the agent said when it finished (the text of the message that called `end_turn`, or of the text-only message that just preceded it), so a provider can post it to a chat or a thread. `TurnOutcome` in `newt-core` carries it as `reply`.
+
 ## [1.4.0] - 2026-11-14
 
 ### Added
