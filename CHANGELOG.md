@@ -4,6 +4,18 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-14
+
+### Added
+
+- **`replay_reasoning` route option.** `openai-responses` routes send earlier reasoning back by default. Set `replay_reasoning = false` for a gateway that may answer two calls of one turn from different backends (a pool of accounts, or overflow to another provider), which reject each other's encrypted reasoning with `invalid_encrypted_content`. Rejected on other protocols.
+
+### Changed
+
+- **Fewer round trips to Postgres.** A turn now reaches its first model call in four statements (accept, claim, read the session's work, start the turn with its history) and commits in one fenced statement that writes all of the turn's history at once. Releasing an idle session, the compaction check and the history read are one statement each. About two thirds fewer runner statements per turn, which matters most when the database is not next to newt.
+- **No ping before every connection.** Only a pooled connection that sat idle for a minute or more is pinged before use, and one that fails is dropped.
+- **Steering reads the inbox only when a notification arrived** since the last read, instead of before every model call. A failed read retries on the next call, and the listener wakes every watch after it reconnects, so a lost notification delays a steer by at most one turn and never drops it.
+
 ## [1.0.0] - 2026-11-13
 
 The first release.
