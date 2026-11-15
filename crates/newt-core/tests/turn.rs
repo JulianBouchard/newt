@@ -237,6 +237,7 @@ async fn run_with(
             max_turn_tokens,
             recite,
             lane: Lane::Interactive,
+            reset: false,
             compaction: compaction.map(|open_commitments| Compaction {
                 open_commitments,
                 max_checkpoint_chars: 10_000,
@@ -597,6 +598,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             max_turn_tokens: None,
             recite: true,
             lane: Lane::Interactive,
+            reset: false,
             compaction: None,
         },
     )

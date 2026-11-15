@@ -8,6 +8,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
+use newt_core::journal::TurnChoice;
+use newt_core::prompt::Effort;
 use newt_server::backend::{Backend, TurnEvent, TurnRequest};
 use newt_server::context::{ContextProviderBackend, ProviderEndpoint};
 use serde_json::{Value, json};
@@ -149,7 +151,7 @@ async fn serve(provider: &Arc<Provider>, token: &str) -> ContextProviderBackend 
                 token: token.to_owned(),
             },
         )]),
-        ["default".to_owned()],
+        ["default".to_owned(), "strong".to_owned()],
     )
     .unwrap()
 }
@@ -446,5 +448,54 @@ async fn a_page_fetch_can_patch_the_session_state() {
         provider.pages_states.lock().unwrap().clone(),
         vec![json!({ "rendered": "r1", "old": true, "kept": 1 })],
         "the page fetch sees the session state"
+    );
+}
+
+#[tokio::test]
+async fn a_turn_response_can_pick_the_model_and_efforts_for_that_turn() {
+    let provider = Provider::new();
+    let backend = serve(&provider, TOKEN).await;
+    let plain = backend
+        .prepare("assistant", "customer-7", &TurnRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(plain.model, "default");
+    assert_eq!(plain.first_call_effort, Some(Effort::Low));
+    assert_eq!(plain.effort, None);
+    assert_eq!(plain.choice, None, "nothing chosen, nothing to journal");
+
+    *provider.turn_extras.lock().unwrap() =
+        json!({ "model": "strong", "effort": "high", "reset": true });
+    let chosen = backend
+        .prepare("assistant", "customer-7", &TurnRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(chosen.model, "default", "settings stay the bootstrap's");
+    assert_eq!(chosen.effort, None);
+    assert_eq!(
+        chosen.choice,
+        Some(TurnChoice {
+            model: "strong".into(),
+            first_call_effort: Some(Effort::Low),
+            effort: Some(Effort::High),
+            reset: true,
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_turn_response_naming_an_unknown_model_fails_the_turn() {
+    let provider = Provider::new();
+    let backend = serve(&provider, TOKEN).await;
+    *provider.turn_extras.lock().unwrap() = json!({ "model": "stronger" });
+    let error = backend
+        .prepare("assistant", "customer-7", &TurnRequest::default())
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("the turn response names model `stronger`"),
+        "{error}"
     );
 }

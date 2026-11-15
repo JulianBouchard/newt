@@ -177,6 +177,7 @@ async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) 
             max_turn_tokens: None,
             recite: true,
             lane: Lane::Interactive,
+            reset: false,
             compaction: None,
         },
     )

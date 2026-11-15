@@ -97,7 +97,7 @@ Anthropic requests also send `anthropic-version: 2023-06-01`. Connect timeout is
 
 ## `[models.<alias>]`
 
-A model alias is the name a bootstrap uses in its `model` field.
+A model alias is the name a bootstrap uses in its `model` field, and a `/turn` response in its `model` field to pick another model for one turn.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

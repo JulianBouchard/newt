@@ -126,7 +126,8 @@ pub async fn fork(pool: &PgPool, fork: Fork<'_>) -> Result<i64, ForkError> {
     sqlx::query(
         "insert into checkpoints (agent, key, through_seq, snapshot, summary, created_at) \
          select $3, $4, through_seq, snapshot, summary, created_at from checkpoints \
-         where agent = $1 and key = $2 and through_seq <= $5",
+         where agent = $1 and key = $2 and through_seq <= $5 \
+           and (summary <> '' or through_seq < $5)",
     )
     .bind(fork.agent)
     .bind(fork.key)

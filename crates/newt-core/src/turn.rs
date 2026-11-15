@@ -72,6 +72,7 @@ pub struct TurnSettings<'a> {
     /// Internal while its effect is measured; the server always sets it.
     pub recite: bool,
     pub lane: Lane,
+    pub reset: bool,
     pub compaction: Option<Compaction<'a>>,
 }
 

@@ -50,6 +50,7 @@ impl Backend for Budgeted {
             recite: false,
             history_budget: BUDGET,
             state: SessionState::default(),
+            choice: None,
             turn_end: false,
             turn_state: TurnState::default(),
             host: NoTools,

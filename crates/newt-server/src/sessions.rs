@@ -38,6 +38,10 @@ pub struct TurnCommit {
     pub consumed: Vec<i64>,
     pub provider_state: Option<Value>,
     pub turn_end: Option<Value>,
+    /// The turn ran on a reset history: when the commit adds history rows, it
+    /// marks everything before the first of them as no longer part of the
+    /// session's conversation. A commit with no rows resets nothing.
+    pub reset: bool,
 }
 
 /// A turn-end callback claimed for delivery. `attempts` counts this one.
@@ -335,6 +339,11 @@ const COMMIT_TURN: &str = "with bumped as ( \
          message.entry::jsonb, message.tokens \
        from bumped, unnest($6::text[], $7::int4[]) with ordinality as message(entry, tokens, ordinality) \
        returning 1), \
+     marked as ( \
+       insert into checkpoints (agent, key, through_seq, snapshot, summary) \
+       select $1, $2, bumped.first_seq - 1, '{}'::jsonb, '' from bumped where $13 and $8 > 0 \
+       on conflict (agent, key, through_seq) do update set snapshot = '{}'::jsonb, summary = '' \
+       returning 1), \
      consumed as ( \
        update inbox set consumed_at = now() \
        where agent = $1 and key = $2 and id = any($9) and exists (select 1 from bumped) \
@@ -394,6 +403,7 @@ async fn commit(
         .bind(seconds(ttl))
         .bind(turn.provider_state.as_ref().map(Json))
         .bind(turn.turn_end.as_ref().map(Json))
+        .bind(turn.reset)
         .fetch_one(pool)
         .await?;
     if !committed {

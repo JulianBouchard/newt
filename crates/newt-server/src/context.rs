@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use newt_core::journal::TurnChoice;
 use newt_core::prompt::Effort;
 use newt_core::skills::Skill;
 use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
@@ -81,6 +82,14 @@ struct TurnContext {
     state: Option<serde_json::Value>,
     #[serde(default)]
     turn_state: Option<serde_json::Value>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    effort: Option<Effort>,
+    #[serde(default)]
+    first_call_effort: Option<Effort>,
+    #[serde(default)]
+    reset: bool,
 }
 
 #[derive(Serialize)]
@@ -91,6 +100,22 @@ struct TurnCall<'a> {
 }
 
 impl TurnContext {
+    fn choice(&self, bootstrap: &Bootstrap) -> Option<TurnChoice> {
+        let chose = self.model.is_some()
+            || self.effort.is_some()
+            || self.first_call_effort.is_some()
+            || self.reset;
+        chose.then(|| TurnChoice {
+            model: self
+                .model
+                .clone()
+                .unwrap_or_else(|| bootstrap.model.clone()),
+            first_call_effort: self.first_call_effort.or(bootstrap.first_call_effort),
+            effort: self.effort.or(bootstrap.effort),
+            reset: self.reset,
+        })
+    }
+
     fn render(&self) -> Option<String> {
         let instructions = self
             .instructions
@@ -334,12 +359,7 @@ impl ContextProviderBackend {
         if bootstrap.instructions.trim().is_empty() {
             return Err("bootstrap instructions are empty".to_owned());
         }
-        if !self.models.contains(&bootstrap.model) {
-            return Err(format!(
-                "bootstrap names model `{}`, which server.toml does not define",
-                bootstrap.model
-            ));
-        }
+        self.check_model(&bootstrap.model, "bootstrap")?;
         if bootstrap.history_budget < 1_000 {
             return Err("bootstrap history_budget must be at least 1000 tokens".to_owned());
         }
@@ -349,6 +369,15 @@ impl ContextProviderBackend {
             );
         }
         Ok(())
+    }
+
+    fn check_model(&self, model: &str, source: &str) -> Result<(), String> {
+        if self.models.contains(model) {
+            return Ok(());
+        }
+        Err(format!(
+            "{source} names model `{model}`, which server.toml does not define"
+        ))
     }
 
     /// Agents defined by an MCP server alone (`[agents.x] mcp = ...`).
@@ -393,8 +422,12 @@ impl ContextProviderBackend {
         if let Some(pages) = &turn.pages {
             check_pages(pages)?;
         }
+        if let Some(model) = &turn.model {
+            self.check_model(model, "the turn response")?;
+        }
         let loaded = self.load(agent, &client, &turn.version).await?;
         let bootstrap = &loaded.bootstrap;
+        let choice = turn.choice(bootstrap);
         let turn_state = TurnState::default();
         if let Some(initial) = turn.turn_state.clone() {
             turn_state.set(initial);
@@ -425,6 +458,7 @@ impl ContextProviderBackend {
             max_turn_tokens: bootstrap.max_turn_tokens,
             recite: bootstrap.recite,
             history_budget: bootstrap.history_budget,
+            choice,
             turn_end: bootstrap.turn_end,
             host: loaded.toolset.host(key, turn_state.clone(), state.clone()),
             state,

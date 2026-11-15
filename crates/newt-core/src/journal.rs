@@ -4,6 +4,7 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 
 use crate::message::Message;
+use crate::prompt::Effort;
 use crate::provider::{StopReason, Usage};
 use crate::steering::Steered;
 use crate::tools::ToolOutput;
@@ -28,6 +29,19 @@ pub enum JournalEntry {
         call_id: String,
         output: ToolOutput,
     },
+    Choice(TurnChoice),
+}
+
+/// What the context provider chose for a turn, journaled when it differs
+/// from the bootstrap. Once a model call is journaled, a resumed turn keeps
+/// it, or the bootstrap's settings when none was journaled, whatever the
+/// provider answers the second time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnChoice {
+    pub model: String,
+    pub first_call_effort: Option<Effort>,
+    pub effort: Option<Effort>,
+    pub reset: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,7 +84,7 @@ impl Replay {
                 JournalEntry::ToolOutput { call_id, output } => {
                     replay.outputs.insert(call_id, output);
                 }
-                JournalEntry::OutwardIntent { .. } => {}
+                JournalEntry::OutwardIntent { .. } | JournalEntry::Choice(_) => {}
                 ordered @ (JournalEntry::Steered { .. } | JournalEntry::ModelResponse { .. }) => {
                     replay.sequence.push_back(ordered);
                 }
