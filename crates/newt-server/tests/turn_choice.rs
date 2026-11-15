@@ -220,7 +220,10 @@ async fn is_idle(store: &Store) -> bool {
 
 async fn send(store: &Store, id: &str, text: &str) {
     let event: InboundEvent = serde_json::from_value(json!({ "id": id, "text": text })).unwrap();
-    store.accept_event("assistant", "k", &event).await.unwrap();
+    store
+        .accept_event("assistant", "k", &event, false)
+        .await
+        .unwrap();
 }
 
 async fn say(

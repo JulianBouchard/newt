@@ -107,7 +107,7 @@ async fn say(
 ) {
     let event: InboundEvent = serde_json::from_value(json!({ "id": id, "text": text })).unwrap();
     store
-        .accept_event("assistant", "ana", &event)
+        .accept_event("assistant", "ana", &event, false)
         .await
         .unwrap();
     runner.wake("assistant", "ana");

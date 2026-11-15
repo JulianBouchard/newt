@@ -205,7 +205,10 @@ async fn crash_then_recover(pool: PgPool, crash: Crash) {
     let store = Store::new(pool.clone());
     let event: InboundEvent =
         serde_json::from_value(json!({ "id": "e1", "text": "Tell them yes." })).unwrap();
-    store.accept_event("assistant", "k", &event).await.unwrap();
+    store
+        .accept_event("assistant", "k", &event, false)
+        .await
+        .unwrap();
     let world = Arc::new(World::default());
     *world.crash.lock().unwrap() = Some(crash);
     let calls_a = Arc::new(AtomicUsize::new(0));

@@ -23,7 +23,7 @@ async fn pruning_deletes_only_old_consumed_events_and_old_live_rows(pool: PgPool
     let store = Store::new(pool.clone());
     for id in ["old", "recent", "pending"] {
         store
-            .accept_event("assistant", "k", &event(id))
+            .accept_event("assistant", "k", &event(id), false)
             .await
             .unwrap();
     }
@@ -64,7 +64,7 @@ async fn pruning_deletes_only_old_consumed_events_and_old_live_rows(pool: PgPool
 async fn retention_set_to_forever_deletes_nothing(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "k", &event("old"))
+        .accept_event("assistant", "k", &event("old"), false)
         .await
         .unwrap();
     sqlx::query("update inbox set consumed_at = now() - interval '400 days'")
@@ -98,6 +98,7 @@ async fn start(pool: PgPool) -> String {
         live,
         shutdown: tokio_util::sync::CancellationToken::new(),
         instrumentation: None,
+        live_meta: Arc::default(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -120,11 +121,11 @@ async fn delete(base: &str, key: &str) -> u16 {
 async fn deleting_a_session_removes_everything_stored_for_it(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "gone", &event("e1"))
+        .accept_event("assistant", "gone", &event("e1"), false)
         .await
         .unwrap();
     store
-        .accept_event("assistant", "kept", &event("e1"))
+        .accept_event("assistant", "kept", &event("e1"), false)
         .await
         .unwrap();
     let base = start(pool.clone()).await;
@@ -150,7 +151,7 @@ async fn deleting_a_session_removes_everything_stored_for_it(pool: PgPool) {
 async fn a_session_running_a_turn_is_not_deleted(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "busy", &event("e1"))
+        .accept_event("assistant", "busy", &event("e1"), false)
         .await
         .unwrap();
     sqlx::query(

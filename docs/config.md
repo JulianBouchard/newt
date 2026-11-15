@@ -115,6 +115,7 @@ An agent is the name in the event API path (`/v1/agents/{name}/...`).
 | `mcp` | string | one of `context_provider` and `mcp` | Streamable HTTP URL of the one MCP server the agent is made of: its instructions, tools, skills and resources (`docs/protocol.md` 2.7). Must start with `http://` or `https://`. |
 | `model` | string | required with `mcp`, not allowed with `context_provider` | A `[models]` alias. A context provider names its model in the bootstrap instead. |
 | `token_env` | string | required | Name of the environment variable that holds the agent's token. It must be set and non-empty. The same token authenticates callers of the event API, and newt sends it to the context provider, to MCP servers that ask for `auth: "agent_token"`, and to an `mcp` agent's server. |
+| `live_meta` | bool | `false` | Put each event's `meta` on its `received` frame in the live feed (protocol 5.3), so an app following the feed can show who sent what before the turn commits. Off by default because the live feed then carries whatever your app put in `meta`. |
 
 ## `[tracing]`
 

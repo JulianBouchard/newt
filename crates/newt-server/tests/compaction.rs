@@ -253,7 +253,10 @@ async fn converse(store: &Store, runner: &Runner<Budgeted, Chatty>, turns: usize
             "text": format!("Message {turn}: {}", "tell me more about remote roles. ".repeat(10)),
         }))
         .unwrap();
-        store.accept_event("assistant", "k", &event).await.unwrap();
+        store
+            .accept_event("assistant", "k", &event, false)
+            .await
+            .unwrap();
         runner.wake("assistant", "k");
         until_idle(store).await;
     }

@@ -108,6 +108,7 @@ async fn two_instances_answer_every_event_once_between_them(pool: PgPool) {
                     "assistant",
                     &format!("s{session:02}"),
                     &event(&format!("e{round}"), &marker(session, round)),
+                    false,
                 )
                 .await
                 .unwrap();

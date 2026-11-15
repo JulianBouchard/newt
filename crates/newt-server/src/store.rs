@@ -123,6 +123,7 @@ impl Store {
         agent: &str,
         key: &str,
         event: &InboundEvent,
+        live_meta: bool,
     ) -> Result<Accepted, sqlx::Error> {
         let (mut connection, pool_wait_ms) = self.connection().await?;
         let (inbox_id, fresh, _received, _notified): (i64, bool, i64, i64) = sqlx::query_as(ACCEPT)
@@ -136,6 +137,7 @@ impl Store {
             .bind(INBOX_CHANNEL)
             .bind(LIVE_CHANNEL)
             .bind(live_topic(agent, key))
+            .bind(live_meta)
             .fetch_one(&mut *connection)
             .await?;
         Ok(Accepted {
@@ -248,6 +250,8 @@ const ACCEPT: &str = "with added as ( \
        insert into live_events (agent, key, seq, event) \
        select $1, $2, session.next_live_seq, \
          jsonb_build_object('type', 'received', 'event_id', $3::text, 'inbox_id', added.id) \
+           || case when $11 and jsonb_typeof($7::jsonb -> 'meta') not in ('null') \
+                then jsonb_build_object('meta', $7::jsonb -> 'meta') else '{}'::jsonb end \
        from session, added returning 1), \
      notified as (select pg_notify($8, $10), pg_notify($9, $10) from added) \
      select coalesce((select id from added), (select id from existing)), \
