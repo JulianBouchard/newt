@@ -77,11 +77,18 @@ h3,
   padding-block: 4rem 3rem;
 }
 
+html,
+body {
+  overflow-x: clip;
+}
+
 .hero::before {
   content: "";
   position: absolute;
-  inset: -20% -10% auto auto;
-  width: min(36rem, 90vw);
+  top: 0;
+  left: 50%;
+  translate: -50% -22%;
+  width: min(30rem, 110vw);
   aspect-ratio: 1;
   background: radial-gradient(circle, color-mix(in srgb, var(--newt-orange) 22%, transparent), transparent 65%);
   pointer-events: none;
@@ -133,13 +140,34 @@ h3,
 .hero::after {
   content: "";
   position: absolute;
-  inset: -10% -5% -10% 40%;
+  top: -3rem;
+  left: 50%;
+  translate: -50% 0;
+  width: min(34rem, 100vw);
+  height: 26rem;
   background-image: radial-gradient(circle, color-mix(in srgb, var(--newt-orange) 55%, transparent) 1.2px, transparent 1.8px);
   background-size: 22px 22px;
-  mask-image: radial-gradient(ellipse at 70% 40%, black, transparent 65%);
+  mask-image: radial-gradient(closest-side, black, transparent);
   opacity: 0.35;
   pointer-events: none;
   z-index: -1;
+}
+
+@media (min-width: 50rem) {
+  .hero::before {
+    top: 50%;
+    left: 82%;
+    translate: -50% -50%;
+    width: min(36rem, 55vw);
+  }
+
+  .hero::after {
+    top: 50%;
+    left: 82%;
+    translate: -50% -50%;
+    width: min(40rem, 60vw);
+    height: 34rem;
+  }
 }
 
 starlight-toc nav > ul {
