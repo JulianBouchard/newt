@@ -1,5 +1,5 @@
 use newt_core::event::EventKind;
-use newt_core::journal::JournalEntry;
+use newt_core::journal::{Journal, JournalEntry, TurnChoice};
 use newt_core::message::Message;
 use newt_core::prompt::Lane;
 use newt_core::provider::{Model, ProviderError};
@@ -35,6 +35,7 @@ struct Ending {
     state: SessionState,
     turn_end: bool,
     turn_state: TurnState,
+    reset: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -55,10 +56,33 @@ struct TurnEndPayload<'a> {
     outcome: Outcome,
     state: Option<Value>,
     turn_state: Value,
+    reply: Option<String>,
 }
 
 impl Ending {
-    fn payload(&self, turn_id: &str, outcome: Outcome) -> Result<Option<Value>, serde_json::Error> {
+    fn of<H>(
+        lease: &Lease,
+        previous_state: Option<Value>,
+        prepared: &Prepared<H>,
+        reset: bool,
+    ) -> Self {
+        Self {
+            agent: lease.agent.clone(),
+            key: lease.key.clone(),
+            previous_state,
+            state: prepared.state.clone(),
+            turn_end: prepared.turn_end,
+            turn_state: prepared.turn_state.clone(),
+            reset,
+        }
+    }
+
+    fn payload(
+        &self,
+        turn_id: &str,
+        outcome: Outcome,
+        reply: Option<String>,
+    ) -> Result<Option<Value>, serde_json::Error> {
         if !self.turn_end {
             return Ok(None);
         }
@@ -73,6 +97,7 @@ impl Ending {
             outcome,
             state,
             turn_state: self.turn_state.get(),
+            reply,
         })
         .map(Some)
     }
@@ -83,19 +108,21 @@ impl Ending {
         messages: Vec<Message>,
         consumed: Vec<i64>,
         failed: bool,
+        reply: Option<String>,
     ) -> Result<TurnCommit, serde_json::Error> {
         let outcome = if failed {
             Outcome::Failed
         } else {
             Outcome::Completed
         };
-        let turn_end = self.payload(&turn_id, outcome)?;
+        let turn_end = self.payload(&turn_id, outcome, reply)?;
         Ok(TurnCommit {
             turn_id,
             messages,
             consumed,
             provider_state: self.state.changed(),
             turn_end,
+            reset: self.reset,
         })
     }
 }
@@ -204,13 +231,14 @@ async fn run_one_turn<B: Backend, M: Model>(
     changes: Watch,
 ) -> anyhow::Result<bool> {
     let Some(Ready {
-        prepared,
-        history,
+        mut prepared,
+        mut history,
         consumed,
     }) = ready_turn(inner, lease, &plan).await?
     else {
         return Ok(false);
     };
+    let (reset, new_choice) = apply_choice(&plan.replay, &mut prepared, &mut history);
     let (events, lane) = event_messages(&plan.events);
     let steered_before = plan.replay.iter().filter_map(|entry| match entry {
         JournalEntry::Steered { id, .. } => id.parse::<i64>().ok(),
@@ -231,6 +259,9 @@ async fn run_one_turn<B: Backend, M: Model>(
         plan.next_seq,
         turn_cancel.clone(),
     );
+    if let Some(choice) = new_choice {
+        journal.append(JournalEntry::Choice(choice));
+    }
     let (live, live_writer) = LiveSink::spawn(
         inner.store.clone(),
         inner.notifications.clone(),
@@ -276,6 +307,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             max_turn_tokens: prepared.max_turn_tokens,
             recite: prepared.recite,
             lane,
+            reset,
             compaction: None,
         },
     )
@@ -285,19 +317,56 @@ async fn run_one_turn<B: Backend, M: Model>(
     drop(journal);
     journal_writer.await?;
 
-    let ending = Ending {
-        agent: lease.agent.clone(),
-        key: lease.key.clone(),
-        previous_state: plan.state,
-        state: prepared.state.clone(),
-        turn_end: prepared.turn_end,
-        turn_state: prepared.turn_state.clone(),
-    };
+    let ending = Ending::of(lease, plan.state, &prepared, reset);
     let committed = finish_turn(inner, lease, plan.turn_id, consumed, result, ending).await?;
     if committed {
         crate::compaction::compact_if_over_budget(inner, lease, &prepared).await?;
     }
     Ok(committed)
+}
+
+/// Applies what the provider chose for the turn to its settings and history.
+/// Once a model call of the turn is journaled the turn is fixed: a resume
+/// keeps the journaled choice, or the bootstrap's settings with no reset when
+/// none was journaled, whatever `/turn` answers now. Before that, an attempt
+/// is a fresh start and the provider's answer counts. Returns whether the
+/// history was reset, and the choice to journal.
+fn apply_choice<H>(
+    replay: &[JournalEntry],
+    prepared: &mut Prepared<H>,
+    history: &mut Vec<Message>,
+) -> (bool, Option<TurnChoice>) {
+    let journaled = replay.iter().rev().find_map(|entry| match entry {
+        JournalEntry::Choice(choice) => Some(choice.clone()),
+        _ => None,
+    });
+    let answered = replay
+        .iter()
+        .any(|entry| matches!(entry, JournalEntry::ModelResponse { .. }));
+    let (choice, to_journal) = match (journaled, answered) {
+        (Some(choice), true) => (Some(choice), None),
+        (None, true) => (None, None),
+        (Some(_), false) => {
+            let choice = prepared.choice.clone().unwrap_or_else(|| TurnChoice {
+                model: prepared.model.clone(),
+                first_call_effort: prepared.first_call_effort,
+                effort: prepared.effort,
+                reset: false,
+            });
+            (Some(choice.clone()), Some(choice))
+        }
+        (None, false) => (prepared.choice.clone(), prepared.choice.clone()),
+    };
+    let Some(choice) = choice else {
+        return (false, None);
+    };
+    prepared.model.clone_from(&choice.model);
+    prepared.first_call_effort = choice.first_call_effort;
+    prepared.effort = choice.effort;
+    if choice.reset {
+        history.clear();
+    }
+    (choice.reset, to_journal)
 }
 
 fn event_messages(events: &[PendingEvent]) -> (Vec<Message>, Lane) {
@@ -396,13 +465,20 @@ async fn finish_turn<B: Backend, M: Model>(
     result: Result<newt_core::turn::TurnOutcome, newt_core::turn::TurnFailure>,
     ending: Ending,
 ) -> anyhow::Result<bool> {
-    let (committed, steered, effects, failure) = match result {
-        Ok(outcome) => (outcome.committed, outcome.steered, true, None),
+    let (committed, steered, effects, failure, reply) = match result {
+        Ok(outcome) => (
+            outcome.committed,
+            outcome.steered,
+            true,
+            None,
+            outcome.reply,
+        ),
         Err(failure) => (
             failure.committed,
             failure.steered,
             failure.effects,
             Some(failure.error),
+            None,
         ),
     };
     if matches!(failure, Some(TurnError::Provider(ProviderError::Cancelled))) {
@@ -418,6 +494,7 @@ async fn finish_turn<B: Backend, M: Model>(
             committed,
             consumed.clone(),
             failure.is_some(),
+            reply,
         )?;
         let commit = inner
             .store
@@ -457,7 +534,7 @@ async fn finish_turn<B: Backend, M: Model>(
                 lease,
                 consumed,
                 error.to_string(),
-                ending.payload(&turn_id, Outcome::DeadLettered)?,
+                ending.payload(&turn_id, Outcome::DeadLettered, None)?,
             )
             .await?;
         if ending.turn_end {
@@ -485,6 +562,7 @@ mod tests {
             state,
             turn_end: true,
             turn_state: TurnState::default(),
+            reset: false,
         }
     }
 
@@ -492,19 +570,21 @@ mod tests {
     fn a_failed_turn_reports_the_state_it_commits_and_a_dead_letter_the_previous_one() {
         let ending = ending();
         let failed = ending
-            .commit("t1".into(), Vec::new(), Vec::new(), true)
+            .commit("t1".into(), Vec::new(), Vec::new(), true, None)
             .unwrap();
         assert_eq!(
             failed.provider_state,
             Some(serde_json::json!({ "step": 2 }))
         );
         assert_eq!(
-            failed.turn_end.unwrap()["state"],
+            failed.turn_end.as_ref().unwrap()["state"],
             serde_json::json!({ "step": 2 })
         );
 
+        assert_eq!(failed.turn_end.as_ref().unwrap()["reply"], Value::Null);
+
         let dead = ending
-            .payload("t1", Outcome::DeadLettered)
+            .payload("t1", Outcome::DeadLettered, None)
             .unwrap()
             .unwrap();
         assert_eq!(dead["outcome"], "dead_lettered");
@@ -517,6 +597,9 @@ mod tests {
             turn_end: false,
             ..ending()
         };
-        assert_eq!(ending.payload("t1", Outcome::Completed).unwrap(), None);
+        assert_eq!(
+            ending.payload("t1", Outcome::Completed, None).unwrap(),
+            None
+        );
     }
 }

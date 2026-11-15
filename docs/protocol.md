@@ -109,6 +109,10 @@ Response:
 | `instructions` | string | no | none | Guidance for this turn only. |
 | `constraints` | array of string | no | `[]` | Rules that hold right now, for this turn only. Entries are trimmed; empty ones are dropped. |
 | `turn_state` | any JSON | no | none | The turn state the turn's tool calls start with (2.3), for facts the tools need that only this call knows, such as the channel to reply on. |
+| `model` | string | no | the bootstrap's | A `[models]` alias for this turn's model calls. Resolved through the `server.toml` routes like the bootstrap's `model`. An alias `server.toml` does not define fails the turn like any other bad response: nothing is sent to the model, and the turn is retried with backoff. |
+| `effort` | `"low"`, `"medium"` or `"high"` | no | the bootstrap's | `effort` for this turn's later model calls. |
+| `first_call_effort` | `"low"`, `"medium"` or `"high"` | no | the bootstrap's | `first_call_effort` for this turn's first model call. |
+| `reset` | boolean | no | `false` | `true` runs the turn as if the session had no history (1.4.1). |
 | `state` | any JSON | no | none | The session's new provider state. Newt saves it in the same transaction that commits the turn, and sends it back as `state` on the next turn. Absent or `null` keeps the previous state; return `{}` to reset it. A turn that does not commit (the lease moved, or it was cancelled) saves nothing, so the state never runs ahead of the session's history. |
 
 ```json
@@ -143,6 +147,9 @@ Where each field goes:
   If both are empty, no message is added.
 - `constraints` are text the model reads. They do not block a tool call. Enforce any constraint that must hold in your tool handlers as well.
 
+- `model`, `effort` and `first_call_effort` replace the bootstrap's values for every model call of this turn, and for the compaction that runs right after it, and for nothing else: the next turn starts from the bootstrap again unless its `/turn` response says otherwise. A different model is a prompt cache miss for that turn and for the next one on the usual model, so use it for turns that are worth it.
+- `reset` is described in 1.4.1.
+
 Typical uses of `state`: what the agent saw last turn, so this turn can say what changed; a cursor into the app's own records; a note that something was already announced.
 
 Later in the turn, a page fetch (1.6 `state_patch`) and a tool result (2.4 `newt/state_patch`) can change the state with a JSON merge patch. Patches touch only the keys they name, so a page load and a tool call running at the same time do not overwrite each other. The state the turn ends with is saved at commit, and only if `/turn`'s `state` or a patch changed it. A patch is lost when:
@@ -154,6 +161,19 @@ Later in the turn, a page fetch (1.6 `state_patch`) and a tool result (2.4 `newt
 So keep in the state what you can afford to recompute, and keep the record of anything that must not happen twice in your own data.
 
 The whole state travels with every `/pages` request and every tool call, to every MCP server of the agent. Keep it small (a few kilobytes; newt does not cap it), and keep out of it anything one of the agent's tool servers should not read.
+
+#### 1.4.1 Starting a session over
+
+`"reset": true` rolls the session to a fresh conversation while it keeps its key, inbox, provider state and live feed. Use it when the conversation has gone cold, or when the agent's prompt moved on and the old history no longer fits it.
+
+- The turn's model calls see no earlier history entries and no earlier checkpoint summary. The events the turn answers are delivered as usual, and the turn's own messages become the start of the new conversation. The history layer of the prompt changes, so the turn is a prompt cache miss.
+- Nothing is deleted. `GET .../history` (5.4) still returns every entry and `fork` (5.5) still copies them; the entries are only never loaded into the model's prompt again. Compaction after a reset considers only what came after it.
+- The reset is saved in the statement that commits the turn, so it takes effect only if the turn commits. A turn that does not commit (its lease moved, it was cancelled, or it failed with no effects and is retried) resets nothing, and its retry calls `/turn` again.
+- A turn resumed after a crash (or retried) keeps the `model`, `effort`, `first_call_effort` and `reset` it had once any of its model calls is journaled, whatever `/turn` answers the second time. If it chose any of them, newt journals the choice before the first call. If it chose none, the resumed turn runs on the bootstrap's settings with no reset, even when `/turn` now asks for one. Before the first model call is journaled, a retry starts afresh and takes the new response.
+- A reset needs history to start over from: a commit that adds no history rows resets nothing.
+- `state` works as without a reset: return the new state, or `{}` to clear it.
+
+Both are in the live feed: `turn_started` carries `model` (the alias the turn uses) and `reset` (5.3).
 
 ### 1.5 Pages and the workspace
 
@@ -240,7 +260,8 @@ Called after a turn commits, when the bootstrap sets `turn_end: true`. Use it fo
   "outcome": "completed",
   "events": [{ "id": "evt-41", "meta": { "channel": "whatsapp" } }],
   "state": { "last_seen_task": 13 },
-  "turn_state": { "sent": true }
+  "turn_state": { "sent": true },
+  "reply": "Done: the bank call is on your list for tomorrow at 9."
 }
 ```
 
@@ -250,6 +271,7 @@ Called after a turn commits, when the bootstrap sets `turn_end: true`. Use it fo
 | `events` | Every event the turn consumed, as `{ id, meta }`, oldest first: the ones it started on and any that steered it. For `dead_lettered`, the events given up on. |
 | `state` | The session's provider state after the turn (unchanged for `dead_lettered`). |
 | `turn_state` | The turn state when the turn ended (2.3). After a crash and resume, only what calls made since the resume set. |
+| `reply` | What the agent said when it finished, for a provider that posts it somewhere (a chat, a thread): the text of the message that called `end_turn`, or, when that message had none, the text-only message just before it that made newt remind the agent to end. `null` when there is neither, and always for `failed` and `dead_lettered`. Earlier mid-turn text is never used. |
 
 Newt writes the callback in the same transaction as the turn, so it survives a crash, and delivers it at least once: right after the commit, then retried with backoff (at least 30 seconds, up to 5 minutes apart) until the provider answers 2xx. A delivery holds the callback for 30 seconds, so two runners do not send it at once, but a retry after a lost response is possible: use `turn` to deduplicate. Deliveries across turns can arrive late and out of order. Any 2xx counts; the body is ignored. After 30 failed attempts (about two hours) newt gives up on the callback and logs an error. Deleting the session deletes its undelivered callbacks.
 
@@ -511,14 +533,14 @@ Unknown fields are rejected. Response, status 202:
 
 ### 5.3 `GET .../live`
 
-A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. Frames older than `[retention] live_days` (7 days by default) are deleted, so a resume from further back starts at the oldest frame kept. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
+A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. Frames older than `[retention] live_days` (7 days by default) are deleted, so a resume from further back starts at the oldest frame kept. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. `turn_started` also carries `model` (the alias the turn's model calls use) and `reset` (whether the turn runs on a reset history, 1.4.1), and its `history_messages` counts the messages the model sees. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
 
 ```
 id: 1
 data: {"type":"received","event_id":"m1","inbox_id":41}
 
 id: 2
-data: {"at":"2026-11-12T17:30:00.120Z","type":"turn_started","session":"assistant/ana","turn":"0198f2a4-...","history_messages":0,"events":1,"compaction":false}
+data: {"at":"2026-11-12T17:30:00.120Z","type":"turn_started","session":"assistant/ana","turn":"0198f2a4-...","model":"default","reset":false,"history_messages":0,"events":1,"compaction":false}
 ```
 
 ### 5.4 `GET .../history`
@@ -529,7 +551,7 @@ The session's history entries in order. 404 if there is no such session.
 { "entries": [ { "seq": 0, "turn": "0198f2a4-...", "kind": "message", "entry": { "role": "user", "parts": [ { "type": "text", "text": "Add milk." } ] } } ] }
 ```
 
-`entry` is a message as newt stores it: `role` is `user` or `assistant`, and each part has a `type` of `text`, `tool_call` (`id`, `name`, `arguments`) or `tool_result` (`call_id`, `content`, `is_error`). Only what the retention rules kept is there (section 3).
+`entry` is a message as newt stores it: `role` is `user` or `assistant`, and each part has a `type` of `text`, `tool_call` (`id`, `name`, `arguments`) or `tool_result` (`call_id`, `content`, `is_error`). Only what the retention rules kept is there (section 3). A history reset (1.4.1) leaves no entry: the history before it is returned like the rest.
 
 ### 5.5 `POST .../fork`
 

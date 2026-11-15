@@ -4,6 +4,21 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-15
+
+### Added
+
+- **A model and efforts per turn.** A `/turn` response may carry `model` (a `[models]` alias, resolved through the routes like the bootstrap's), `effort` and `first_call_effort`. They replace the bootstrap's values for every model call of that turn, and for the compaction right after it, and nothing else. An alias `server.toml` does not define fails the turn like any other bad response. A different model is a prompt cache miss, so it suits turns that are worth it.
+- **Starting a session over from `/turn`.** `"reset": true` runs the turn as if the session had no history: the model sees no earlier entries and no earlier checkpoint summary, while the session keeps its key, inbox, provider state and live feed. Nothing is deleted: `GET .../history` and `fork` still see every entry. The reset is saved by the statement that commits the turn, so a turn that does not commit resets nothing, and compaction afterwards only considers what came after it. It needs no migration and no extra statement: the reset is a checkpoint row with an empty summary, written by the commit.
+- A turn resumed after a crash keeps the model, efforts and reset it had chosen once a model call was journaled, whatever `/turn` answers the second time.
+- **`model` and `reset` on the live feed's `turn_started` frame.**
+
+## [1.5.0] - 2026-11-14
+
+### Added
+
+- **`reply` in the turn-end callback.** What the agent said when it finished (the text of the message that called `end_turn`, or of the text-only message that just preceded it), so a provider can post it to a chat or a thread. `TurnOutcome` in `newt-core` carries it as `reply`.
+
 ## [1.4.0] - 2026-11-14
 
 ### Added

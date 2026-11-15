@@ -35,6 +35,7 @@ fn entry_kind(entry: &JournalEntry) -> &'static str {
         JournalEntry::ModelResponse { .. } => "model_response",
         JournalEntry::OutwardIntent { .. } => "outward_intent",
         JournalEntry::ToolOutput { .. } => "tool_output",
+        JournalEntry::Choice(_) => "choice",
     }
 }
 

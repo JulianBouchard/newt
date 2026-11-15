@@ -118,6 +118,7 @@ impl Backend for WorldBackend {
             recite: false,
             history_budget: 60_000,
             state: SessionState::default(),
+            choice: None,
             turn_end: false,
             turn_state: TurnState::default(),
             host: Host(Arc::clone(&self.0)),

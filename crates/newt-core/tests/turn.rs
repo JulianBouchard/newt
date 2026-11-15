@@ -237,6 +237,7 @@ async fn run_with(
             max_turn_tokens,
             recite,
             lane: Lane::Interactive,
+            reset: false,
             compaction: compaction.map(|open_commitments| Compaction {
                 open_commitments,
                 max_checkpoint_chars: 10_000,
@@ -364,6 +365,51 @@ async fn stopping_without_end_turn_gets_one_reminder_that_is_never_committed() {
         ]
     );
     assert_eq!(run.model.seen.lock().unwrap()[1].scratch.len(), 3);
+}
+
+#[tokio::test]
+async fn the_reply_is_the_text_of_the_message_that_ends_the_turn() {
+    let end = |id: &str| call(id, "end_turn", json!({ "nothing_new": "answered" }));
+    let read = || call("r1", "save_note", json!({ "text": "noted" }));
+    let cases = vec![
+        (
+            "text beside end_turn",
+            vec![assistant(vec![
+                Part::text(" Ana is in two processes. "),
+                end("e1"),
+            ])],
+            Some("Ana is in two processes."),
+        ),
+        (
+            "narration before the work, then a bare end_turn",
+            vec![
+                assistant(vec![Part::text("Let me check."), read()]),
+                assistant(vec![end("e1")]),
+            ],
+            None,
+        ),
+        (
+            "an answer without end_turn, then the reminded end_turn",
+            vec![
+                assistant(vec![Part::text("All set.")]),
+                assistant(vec![end("e1")]),
+            ],
+            Some("All set."),
+        ),
+        (
+            "an answer without end_turn, more work after the reminder, then end_turn",
+            vec![
+                assistant(vec![Part::text("All set.")]),
+                assistant(vec![read()]),
+                assistant(vec![end("e1")]),
+            ],
+            None,
+        ),
+    ];
+    for (case, script, expected) in cases {
+        let outcome = run(script, 8, &external_tools()).await.outcome.unwrap();
+        assert_eq!(outcome.reply.as_deref(), expected, "{case}");
+    }
 }
 
 #[tokio::test]
@@ -552,6 +598,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             max_turn_tokens: None,
             recite: true,
             lane: Lane::Interactive,
+            reset: false,
             compaction: None,
         },
     )

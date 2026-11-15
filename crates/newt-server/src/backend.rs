@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use newt_core::journal::TurnChoice;
 use newt_core::prompt::Effort;
 use newt_core::skills::Skill;
 use newt_core::tools::{NoTools, ToolDef, ToolHost};
@@ -143,6 +144,11 @@ pub struct Prepared<H> {
     pub recite: bool,
     pub history_budget: u32,
     pub state: SessionState,
+    /// What `/turn` chose for this turn, resolved against the bootstrap.
+    /// `model` and the efforts above stay the bootstrap's, so a resumed turn
+    /// whose first attempt chose nothing can fall back to them. `None` when
+    /// the provider chose nothing.
+    pub choice: Option<TurnChoice>,
     /// Whether the provider wants a turn-end callback.
     pub turn_end: bool,
     pub turn_state: TurnState,
@@ -205,6 +211,7 @@ impl Backend for StaticBackend {
             recite: false,
             history_budget: 60_000,
             state: SessionState::starting_from(request.state.clone()),
+            choice: None,
             turn_end: false,
             turn_state: TurnState::default(),
             host: NoTools,

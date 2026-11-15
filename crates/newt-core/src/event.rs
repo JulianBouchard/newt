@@ -51,6 +51,10 @@ pub enum EventKind {
     TurnStarted {
         session: String,
         turn: String,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        reset: bool,
         history_messages: usize,
         events: usize,
         #[serde(default)]

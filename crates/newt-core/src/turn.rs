@@ -72,6 +72,7 @@ pub struct TurnSettings<'a> {
     /// Internal while its effect is measured; the server always sets it.
     pub recite: bool,
     pub lane: Lane,
+    pub reset: bool,
     pub compaction: Option<Compaction<'a>>,
 }
 
@@ -86,6 +87,10 @@ pub struct CallReport {
 pub struct TurnOutcome {
     pub committed: Vec<Message>,
     pub end: EndTurn,
+    /// What the agent said when it finished: the text of the message that
+    /// called `end_turn`, or of the text-only message just before it that
+    /// made newt remind it to end.
+    pub reply: Option<String>,
     pub checkpoint: Option<Checkpoint>,
     pub calls: Vec<CallReport>,
     pub steered: Vec<String>,
@@ -338,7 +343,11 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     );
     let ids = &context.ids;
     match result {
-        Ok(Finish { end, checkpoint }) => {
+        Ok(Finish {
+            end,
+            reply,
+            checkpoint,
+        }) => {
             sink.emit(Event::now(EventKind::TurnCompleted {
                 session: ids.session.to_owned(),
                 turn: ids.turn.to_owned(),
@@ -348,6 +357,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
             Ok(TurnOutcome {
                 committed,
                 end,
+                reply,
                 checkpoint,
                 calls: state.calls,
                 steered: state.steered,
@@ -373,7 +383,33 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
 
 struct Finish {
     end: EndTurn,
+    reply: Option<String>,
     checkpoint: Option<Checkpoint>,
+}
+
+fn remind_to_end(state: &mut TurnState, context: &TurnContext<'_>) {
+    state.harness_notes.insert(state.scratch.len());
+    state
+        .scratch
+        .push(Message::user_text(if context.compaction.is_some() {
+            CHECKPOINT_REMINDER
+        } else {
+            END_TURN_REMINDER
+        }));
+}
+
+fn text_of(message: &Message) -> Option<String> {
+    let text = message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::Text { text } => Some(text.trim()),
+            _ => None,
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
 }
 
 async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
@@ -383,6 +419,7 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
     state: &mut TurnState,
 ) -> Result<Finish, TurnError> {
     let mut reminded = false;
+    let mut unended_text: Option<String> = None;
     for call in 0..settings.max_model_calls {
         state.before_call(settings, call)?;
         let arrived = take_arrivals(deps, state).await;
@@ -434,6 +471,7 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
         });
 
         let tool_calls: Vec<ToolCall> = response.message.tool_calls().cloned().collect();
+        let text = text_of(&response.message);
         if !response.message.parts.is_empty() {
             state.scratch.push(response.message);
         }
@@ -442,14 +480,8 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
                 return Err(TurnError::NoEndTurn);
             }
             reminded = true;
-            state.harness_notes.insert(state.scratch.len());
-            state
-                .scratch
-                .push(Message::user_text(if context.compaction.is_some() {
-                    CHECKPOINT_REMINDER
-                } else {
-                    END_TURN_REMINDER
-                }));
+            unended_text = text;
+            remind_to_end(state, context);
             continue;
         }
 
@@ -467,15 +499,18 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
                     recorded: Vec::new(),
                     nothing_new: Some("checkpoint written".to_owned()),
                 },
+                reply: None,
                 checkpoint: Some(checkpoint),
             });
         }
         if let Some(end) = batch.end {
             return Ok(Finish {
                 end,
+                reply: text.or(unended_text),
                 checkpoint: None,
             });
         }
+        unended_text = None;
     }
     Err(TurnError::TooManyModelCalls(settings.max_model_calls))
 }

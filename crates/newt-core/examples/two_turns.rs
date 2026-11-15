@@ -101,6 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_turn_tokens: None,
         recite: true,
         lane: Lane::Interactive,
+        reset: false,
         compaction: None,
     };
     let mut history: Vec<Message> = Vec::new();

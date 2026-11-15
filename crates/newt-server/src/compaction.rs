@@ -68,6 +68,7 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
             max_turn_tokens: None,
             recite: false,
             lane: Lane::Background,
+            reset: false,
             compaction: Some(Compaction {
                 open_commitments: &state.open_commitments,
                 max_checkpoint_chars: usize::try_from(budget).unwrap_or(usize::MAX),

@@ -118,6 +118,7 @@ impl ContextProviderBackend {
             max_turn_tokens: bootstrap.max_turn_tokens,
             recite: bootstrap.recite,
             history_budget: bootstrap.history_budget,
+            choice: None,
             turn_end: false,
             host: loaded.toolset.host(key, turn_state.clone(), state.clone()),
             state,

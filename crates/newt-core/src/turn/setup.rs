@@ -7,6 +7,8 @@ pub(super) fn turn_started(input: &TurnInput<'_>, settings: &TurnSettings<'_>) -
     Event::now(EventKind::TurnStarted {
         session: input.session.to_owned(),
         turn: input.turn.to_owned(),
+        model: settings.model.to_owned(),
+        reset: settings.reset,
         history_messages: input.history.len(),
         events: input.events.len(),
         compaction: settings.compaction.is_some(),

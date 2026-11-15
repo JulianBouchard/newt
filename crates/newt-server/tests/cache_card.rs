@@ -61,6 +61,8 @@ impl Log {
         self.emit(EventKind::TurnStarted {
             session: "ana".into(),
             turn: turn.clone(),
+            model: String::new(),
+            reset: false,
             history_messages: history.len(),
             events: 1,
             compaction,

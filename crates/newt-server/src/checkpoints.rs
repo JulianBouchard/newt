@@ -172,7 +172,7 @@ pub fn tail_cut(rows: &[LiveRow], tail_budget: i64) -> Option<i64> {
 }
 
 const HISTORY: &str = "with latest as ( \
-       select through_seq, summary from checkpoints \
+       select through_seq, nullif(summary, '') as summary from checkpoints \
        where agent = $1 and key = $2 order by through_seq desc limit 1) \
      select (select summary from latest), \
        coalesce((select jsonb_agg(h.entry order by h.seq) from history h \

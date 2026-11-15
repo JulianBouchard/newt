@@ -100,6 +100,8 @@ fn turn_events(turn: &str, secret: &str) -> Vec<Event> {
         EventKind::TurnStarted {
             session: session.clone(),
             turn: turn.clone(),
+            model: String::new(),
+            reset: false,
             history_messages: 0,
             events: 1,
             compaction: false,
