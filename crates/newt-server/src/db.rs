@@ -1,8 +1,12 @@
+use std::time::Duration;
+
 use anyhow::{Context, bail};
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{Connection, PgPool};
 
 use crate::config::Database;
+
+const PING_AFTER_IDLE: Duration = Duration::from_secs(60);
 
 #[cfg(feature = "embedded-postgres")]
 type Server = crate::embedded::Embedded;
@@ -33,6 +37,21 @@ pub async fn connect_and_migrate(config: &Database) -> anyhow::Result<Connected>
     let pool = PgPoolOptions::new()
         .max_connections(config.max_connections)
         .min_connections(config.max_connections)
+        .test_before_acquire(false)
+        .before_acquire(|connection, meta| {
+            Box::pin(async move {
+                if meta.idle_for < PING_AFTER_IDLE {
+                    return Ok(true);
+                }
+                match connection.ping().await {
+                    Ok(()) => Ok(true),
+                    Err(error) => {
+                        tracing::warn!(%error, "dropping a pooled connection that failed its ping");
+                        Ok(false)
+                    }
+                }
+            })
+        })
         .connect(&url)
         .await
         .context("connecting to postgres")?;

@@ -32,6 +32,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::backend::{SessionState, TurnState};
+
 pub const META_RETENTION: &str = "newt/retention";
 pub const META_INVALIDATES: &str = "newt/invalidates";
 pub const META_IDEMPOTENT: &str = "newt/idempotent";
@@ -42,6 +44,9 @@ pub const META_PAGES_READ: &str = "newt/pages_read";
 pub const META_SUMMARY: &str = "newt/summary";
 pub const META_INVALIDATE: &str = "newt/invalidate";
 pub const META_PAGES: &str = "newt/pages";
+pub const META_TURN_STATE: &str = "newt/turn_state";
+pub const META_STATE_PATCH: &str = "newt/state_patch";
+pub const META_STATE: &str = "newt/state";
 
 const CALL_QUIET_LIMIT: Duration = Duration::from_secs(90);
 const CALL_LIMIT: Duration = Duration::from_mins(10);
@@ -146,6 +151,8 @@ pub struct McpHost {
     stale: Arc<AtomicBool>,
     limits: CallLimits,
     session: String,
+    turn_state: TurnState,
+    session_state: SessionState,
 }
 
 impl std::fmt::Debug for McpHost {
@@ -284,7 +291,12 @@ impl Toolset {
         })
     }
 
-    pub fn host(&self, session: &str) -> McpHost {
+    pub fn host(
+        &self,
+        session: &str,
+        turn_state: TurnState,
+        session_state: SessionState,
+    ) -> McpHost {
         McpHost {
             tools: Arc::clone(&self.remotes),
             skills: Arc::clone(&self.served),
@@ -292,6 +304,8 @@ impl Toolset {
             stale: Arc::clone(&self.stale),
             limits: self.limits,
             session: session.to_owned(),
+            turn_state,
+            session_state,
         }
     }
 }

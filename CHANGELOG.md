@@ -4,6 +4,42 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-14
+
+### Added
+
+- **The session state on every provider call.** A `/pages` request to an HTTP context provider carries `state`, and each MCP tool call carries `_meta["newt/state"]`: the session's provider state as the turn holds it, with patches applied so far. A page render or a tool can now read what the last turn saw without a store of its own.
+
+## [1.3.0] - 2026-11-14
+
+### Added
+
+- **Session state patches during a turn.** A `/pages` response (`state_patch`) and an MCP tool result (`_meta["newt/state_patch"]`) can change the session's provider state with a JSON merge patch (RFC 7396). Patches touch only the keys they name, so a lazy page load and a tool call in the same turn do not overwrite each other. The state is saved at commit only if `/turn` or a patch changed it.
+- **Initial turn state.** A `/turn` response may carry `turn_state`, the value the turn's tool calls start with, for facts only `/turn` knows (the channel to reply on, why the agent woke).
+
+## [1.2.0] - 2026-11-14
+
+### Added
+
+- **Stateless context providers.** Newt now keeps the state a provider needs, so a provider can run as many instances as it likes with no session store of its own:
+  - `POST {base}/turn` receives the turn's `events` (each event's `id` and the `meta` the app sent with it) and the session's `state`.
+  - A turn response may return `state`. Newt saves it in the same transaction that commits the turn and sends it back on the next turn, so it never runs ahead of the session's history.
+  - Turn state for tools: each MCP call carries `newt/turn_state` in `_meta`, and a result's `newt/turn_state` replaces it for the rest of the turn, error results included.
+  - `turn_end: true` in the bootstrap makes newt call `POST {base}/turn_end` after each committed turn, and when it dead-letters events, with the outcome, every event consumed (steered ones included), state and turn state. The callback is written in the same transaction and delivered at least once, retried with backoff for about two hours.
+- Migration `0007` adds `sessions.provider_state` and the `turn_ends` table. Both are additive.
+
+## [1.1.0] - 2026-11-14
+
+### Added
+
+- **`replay_reasoning` route option.** `openai-responses` routes send earlier reasoning back by default. Set `replay_reasoning = false` for a gateway that may answer two calls of one turn from different backends (a pool of accounts, or overflow to another provider), which reject each other's encrypted reasoning with `invalid_encrypted_content`. Rejected on other protocols.
+
+### Changed
+
+- **Fewer round trips to Postgres.** A turn now reaches its first model call in four statements (accept, claim, read the session's work, start the turn with its history) and commits in one fenced statement that writes all of the turn's history at once. Releasing an idle session, the compaction check and the history read are one statement each. About two thirds fewer runner statements per turn, which matters most when the database is not next to newt.
+- **No ping before every connection.** Only a pooled connection that sat idle for a minute or more is pinged before use, and one that fails is dropped.
+- **Steering reads the inbox only when a notification arrived** since the last read, instead of before every model call. A failed read retries on the next call, and the listener wakes every watch after it reconnects, so a lost notification delays a steer by at most one turn and never drops it.
+
 ## [1.0.0] - 2026-11-13
 
 The first release.

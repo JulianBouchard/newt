@@ -16,7 +16,7 @@ use newt_core::provider::{
 };
 use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::workspace::Workspace;
-use newt_server::backend::{Backend, BackendError, Prepared};
+use newt_server::backend::{Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState};
 use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
@@ -93,6 +93,7 @@ impl Backend for WorldBackend {
         &self,
         _agent: &str,
         _key: &str,
+        _request: &TurnRequest,
     ) -> impl Future<Output = Result<Prepared<Host>, BackendError>> + Send {
         std::future::ready(Ok(Prepared {
             system: "You are a helpful agent.".into(),
@@ -116,6 +117,9 @@ impl Backend for WorldBackend {
             max_turn_tokens: None,
             recite: false,
             history_budget: 60_000,
+            state: SessionState::default(),
+            turn_end: false,
+            turn_state: TurnState::default(),
             host: Host(Arc::clone(&self.0)),
         }))
     }

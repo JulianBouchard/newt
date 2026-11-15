@@ -8,7 +8,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
-use newt_server::backend::Backend;
+use newt_server::backend::{Backend, TurnEvent, TurnRequest};
 use newt_server::context::{ContextProviderBackend, ProviderEndpoint};
 use serde_json::{Value, json};
 
@@ -23,6 +23,11 @@ struct Provider {
     bootstraps: AtomicUsize,
     page_fetches: AtomicUsize,
     sessions: Mutex<Vec<String>>,
+    turn_bodies: Mutex<Vec<Value>>,
+    turn_ends: Mutex<Vec<Value>>,
+    turn_end_status: Mutex<Option<StatusCode>>,
+    pages_state_patch: Mutex<Option<Value>>,
+    pages_states: Mutex<Vec<Value>>,
 }
 
 impl Provider {
@@ -78,6 +83,7 @@ async fn turn(
         .lock()
         .unwrap()
         .push(body["session"].as_str().unwrap().to_owned());
+    provider.turn_bodies.lock().unwrap().push(body.clone());
     let version = provider.version.lock().unwrap().clone();
     let mut response = json!({ "version": version, "pages": [provider.page()] });
     if let Value::Object(extras) = provider.turn_extras.lock().unwrap().clone() {
@@ -97,7 +103,32 @@ async fn pages(
     provider.page_fetches.fetch_add(1, Ordering::SeqCst);
     assert_eq!(body["session"], "customer-7");
     assert_eq!(body["keys"], json!([["customer", "profile"]]));
-    Ok(Json(json!({ "pages": [provider.page()] })))
+    provider
+        .pages_states
+        .lock()
+        .unwrap()
+        .push(body["state"].clone());
+    let mut response = json!({ "pages": [provider.page()] });
+    if let Some(patch) = provider.pages_state_patch.lock().unwrap().clone() {
+        response["state_patch"] = patch;
+    }
+    Ok(Json(response))
+}
+
+async fn turn_end(
+    State(provider): State<Arc<Provider>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> StatusCode {
+    if authorized(&headers).is_err() {
+        return StatusCode::UNAUTHORIZED;
+    }
+    provider.turn_ends.lock().unwrap().push(body);
+    provider
+        .turn_end_status
+        .lock()
+        .unwrap()
+        .unwrap_or(StatusCode::NO_CONTENT)
 }
 
 async fn serve(provider: &Arc<Provider>, token: &str) -> ContextProviderBackend {
@@ -105,6 +136,7 @@ async fn serve(provider: &Arc<Provider>, token: &str) -> ContextProviderBackend 
         .route("/agent/bootstrap", get(bootstrap))
         .route("/agent/turn", post(turn))
         .route("/agent/pages", post(pages))
+        .route("/agent/turn_end", post(turn_end))
         .with_state(Arc::clone(provider));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -126,7 +158,10 @@ async fn serve(provider: &Arc<Provider>, token: &str) -> ContextProviderBackend 
 async fn a_turn_gets_instructions_settings_and_pages_from_the_provider() {
     let provider = Provider::new();
     let backend = serve(&provider, TOKEN).await;
-    let prepared = backend.prepare("assistant", "customer-7").await.unwrap();
+    let prepared = backend
+        .prepare("assistant", "customer-7", &TurnRequest::default())
+        .await
+        .unwrap();
     assert_eq!(prepared.system, "You help one customer find a job.");
     assert_eq!(prepared.model, "default");
     assert_eq!(prepared.max_model_calls, 6);
@@ -147,14 +182,23 @@ async fn a_turn_gets_instructions_settings_and_pages_from_the_provider() {
 async fn the_bootstrap_is_fetched_once_per_version() {
     let provider = Provider::new();
     let backend = serve(&provider, TOKEN).await;
-    backend.prepare("assistant", "customer-7").await.unwrap();
-    backend.prepare("assistant", "customer-8").await.unwrap();
+    backend
+        .prepare("assistant", "customer-7", &TurnRequest::default())
+        .await
+        .unwrap();
+    backend
+        .prepare("assistant", "customer-8", &TurnRequest::default())
+        .await
+        .unwrap();
     assert_eq!(provider.bootstraps.load(Ordering::SeqCst), 1);
 
     *provider.version.lock().unwrap() = "v2".into();
     provider.bootstrap.lock().unwrap()["version"] = json!("v2");
     provider.bootstrap.lock().unwrap()["instructions"] = json!("New instructions.");
-    let prepared = backend.prepare("assistant", "customer-7").await.unwrap();
+    let prepared = backend
+        .prepare("assistant", "customer-7", &TurnRequest::default())
+        .await
+        .unwrap();
     assert_eq!(provider.bootstraps.load(Ordering::SeqCst), 2);
     assert_eq!(prepared.system, "New instructions.");
 }
@@ -163,7 +207,10 @@ async fn the_bootstrap_is_fetched_once_per_version() {
 async fn an_invalidated_page_is_refetched_from_the_provider() {
     let provider = Provider::new();
     let backend = serve(&provider, TOKEN).await;
-    let prepared = backend.prepare("assistant", "customer-7").await.unwrap();
+    let prepared = backend
+        .prepare("assistant", "customer-7", &TurnRequest::default())
+        .await
+        .unwrap();
     *provider.profile.lock().unwrap() = "Remote or Berlin".into();
     prepared
         .workspace
@@ -178,12 +225,17 @@ async fn an_invalidated_page_is_refetched_from_the_provider() {
         Some("Remote or Berlin")
     );
     assert_eq!(provider.page_fetches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        provider.pages_states.lock().unwrap().clone(),
+        vec![Value::Null],
+        "a session with no state sends null"
+    );
 }
 
 async fn prepare_error(provider: &Arc<Provider>, token: &str) -> String {
     let backend = serve(provider, token).await;
     backend
-        .prepare("assistant", "customer-7")
+        .prepare("assistant", "customer-7", &TurnRequest::default())
         .await
         .unwrap_err()
         .to_string()
@@ -229,7 +281,7 @@ async fn an_unknown_agent_fails_loudly() {
     let provider = Provider::new();
     let backend = serve(&provider, TOKEN).await;
     let error = backend
-        .prepare("nobody", "customer-7")
+        .prepare("nobody", "customer-7", &TurnRequest::default())
         .await
         .unwrap_err()
         .to_string();
@@ -260,7 +312,7 @@ async fn per_turn_instructions_and_constraints_become_turn_context() {
     let backend = serve(&provider, TOKEN).await;
     assert_eq!(
         backend
-            .prepare("assistant", "customer-7")
+            .prepare("assistant", "customer-7", &TurnRequest::default())
             .await
             .unwrap()
             .context,
@@ -272,7 +324,7 @@ async fn per_turn_instructions_and_constraints_become_turn_context() {
         "constraints": ["Travelling until Dec 2: hold intros", " "],
     });
     let context = backend
-        .prepare("assistant", "customer-7")
+        .prepare("assistant", "customer-7", &TurnRequest::default())
         .await
         .unwrap()
         .context
@@ -291,7 +343,10 @@ async fn pinned_context_joins_the_cached_prefix_not_the_turn() {
         "instructions": "Reply on WhatsApp.",
     });
     let backend = serve(&provider, TOKEN).await;
-    let prepared = backend.prepare("assistant", "customer-7").await.unwrap();
+    let prepared = backend
+        .prepare("assistant", "customer-7", &TurnRequest::default())
+        .await
+        .unwrap();
     assert_eq!(
         prepared.system,
         "You help one customer find a job.\n\n<pinned>\nWrite like a peer. Short sentences.\n</pinned>"
@@ -299,4 +354,97 @@ async fn pinned_context_joins_the_cached_prefix_not_the_turn() {
     let context = prepared.context.unwrap();
     assert!(context.contains("Reply on WhatsApp."));
     assert!(!context.contains("Write like a peer"));
+}
+
+#[tokio::test]
+async fn the_turn_call_carries_events_and_state_and_takes_the_new_state() {
+    let provider = Provider::new();
+    *provider.turn_extras.lock().unwrap() =
+        json!({ "state": { "seen": 2 }, "turn_state": { "reply_channel": "email" } });
+    provider.bootstrap.lock().unwrap()["turn_end"] = json!(true);
+    let backend = serve(&provider, TOKEN).await;
+
+    let prepared = backend
+        .prepare(
+            "assistant",
+            "customer-7",
+            &TurnRequest {
+                events: vec![TurnEvent {
+                    id: "e1".into(),
+                    meta: Some(json!({ "channel": "email" })),
+                }],
+                state: Some(json!({ "seen": 1 })),
+            },
+        )
+        .await
+        .unwrap();
+
+    let body = provider.turn_bodies.lock().unwrap()[0].clone();
+    assert_eq!(
+        body["events"],
+        json!([{ "id": "e1", "meta": { "channel": "email" } }])
+    );
+    assert_eq!(body["state"], json!({ "seen": 1 }));
+    assert_eq!(prepared.state.changed(), Some(json!({ "seen": 2 })));
+    assert_eq!(
+        prepared.turn_state.get(),
+        json!({ "reply_channel": "email" }),
+        "the turn starts with the turn state /turn gave"
+    );
+    assert!(prepared.turn_end);
+}
+
+#[tokio::test]
+async fn a_turn_end_reaches_the_provider_and_a_refusal_is_an_error() {
+    let provider = Provider::new();
+    let backend = serve(&provider, TOKEN).await;
+    let payload = json!({ "session": "customer-7", "turn": "t1", "outcome": "completed" });
+
+    backend.turn_end("assistant", &payload).await.unwrap();
+    assert_eq!(
+        provider.turn_ends.lock().unwrap().clone(),
+        vec![payload.clone()]
+    );
+
+    *provider.turn_end_status.lock().unwrap() = Some(StatusCode::SERVICE_UNAVAILABLE);
+    let error = backend
+        .turn_end("assistant", &payload)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("503"), "{error}");
+}
+
+#[tokio::test]
+async fn a_page_fetch_can_patch_the_session_state() {
+    let provider = Provider::new();
+    *provider.pages_state_patch.lock().unwrap() = Some(json!({ "rendered": "r2", "old": null }));
+    let backend = serve(&provider, TOKEN).await;
+    let prepared = backend
+        .prepare(
+            "assistant",
+            "customer-7",
+            &TurnRequest {
+                events: Vec::new(),
+                state: Some(json!({ "rendered": "r1", "old": true, "kept": 1 })),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.state.changed(), None, "nothing changed it yet");
+
+    prepared
+        .workspace
+        .invalidate(&[vec!["customer".to_owned()]]);
+    prepared.workspace.read("profile.md").await.unwrap();
+
+    assert_eq!(
+        prepared.state.changed(),
+        Some(json!({ "rendered": "r2", "kept": 1 }))
+    );
+    assert_eq!(
+        provider.pages_states.lock().unwrap().clone(),
+        vec![json!({ "rendered": "r1", "old": true, "kept": 1 })],
+        "the page fetch sees the session state"
+    );
 }

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use newt_server::backend::Backend;
+use newt_server::backend::{Backend, TurnRequest};
 use newt_server::context::{ContextProviderBackend, McpAgent};
 use rmcp::model::{
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
@@ -178,7 +178,10 @@ async fn backend(app: App) -> ContextProviderBackend {
 #[tokio::test]
 async fn an_mcp_server_alone_is_an_agent_with_its_instructions_and_the_sessions_resources() {
     let backend = backend(App::new()).await;
-    let ana = backend.prepare("assistant", "ana").await.unwrap();
+    let ana = backend
+        .prepare("assistant", "ana", &TurnRequest::default())
+        .await
+        .unwrap();
     assert_eq!(ana.system, INSTRUCTIONS);
     assert_eq!(ana.model, "default");
     assert_eq!(
@@ -186,7 +189,10 @@ async fn an_mcp_server_alone_is_an_agent_with_its_instructions_and_the_sessions_
         Some("- [ ] Call the bank\n")
     );
     assert_eq!(ana.workspace.paths(), ["notes.md", "tasks.md"]);
-    let ben = backend.prepare("assistant", "ben").await.unwrap();
+    let ben = backend
+        .prepare("assistant", "ben", &TurnRequest::default())
+        .await
+        .unwrap();
     assert_eq!(
         ben.workspace.read("tasks.md").await.unwrap().as_deref(),
         Some("- [ ] Book flights\n")
@@ -198,7 +204,10 @@ async fn an_mcp_server_alone_is_an_agent_with_its_instructions_and_the_sessions_
 async fn a_resource_update_from_the_server_makes_the_next_read_fetch_it_again() {
     let app = App::new();
     let backend = backend(app.clone()).await;
-    let ana = backend.prepare("assistant", "ana").await.unwrap();
+    let ana = backend
+        .prepare("assistant", "ana", &TurnRequest::default())
+        .await
+        .unwrap();
     assert_eq!(
         ana.workspace.read("tasks.md").await.unwrap().as_deref(),
         Some("- [ ] Call the bank\n")
@@ -231,7 +240,10 @@ async fn a_resource_update_from_the_server_makes_the_next_read_fetch_it_again() 
 async fn the_subscription_ends_with_the_turns_workspace() {
     let app = App::new();
     let backend = backend(app.clone()).await;
-    let ana = backend.prepare("assistant", "ana").await.unwrap();
+    let ana = backend
+        .prepare("assistant", "ana", &TurnRequest::default())
+        .await
+        .unwrap();
     ana.workspace.read("tasks.md").await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while app.listeners.lock().unwrap().len() < 2 {

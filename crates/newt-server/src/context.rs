@@ -7,9 +7,8 @@ use newt_core::skills::Skill;
 use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
-use crate::backend::{Backend, BackendError, Prepared};
+use crate::backend::{Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState};
 use crate::mcp::{McpHost, McpServer, Toolset};
 
 mod mcp_agent;
@@ -43,6 +42,8 @@ pub struct Bootstrap {
     pub skills: Vec<Skill>,
     #[serde(default)]
     pub mcp_servers: Vec<McpServer>,
+    #[serde(default)]
+    pub turn_end: bool,
 }
 
 const fn default_history_budget() -> u32 {
@@ -76,6 +77,17 @@ struct TurnContext {
     instructions: Option<String>,
     #[serde(default)]
     constraints: Vec<String>,
+    #[serde(default)]
+    state: Option<serde_json::Value>,
+    #[serde(default)]
+    turn_state: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct TurnCall<'a> {
+    session: &'a str,
+    events: &'a [crate::backend::TurnEvent],
+    state: Option<&'a serde_json::Value>,
 }
 
 impl TurnContext {
@@ -118,12 +130,15 @@ impl TurnContext {
 #[serde(deny_unknown_fields)]
 struct PagesResponse {
     pages: Vec<Page>,
+    #[serde(default)]
+    state_patch: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Serialize)]
 struct PagesRequest<'a> {
     session: &'a str,
     keys: &'a [PageKey],
+    state: Option<&'a serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -178,23 +193,51 @@ impl Client {
         }
         serde_json::from_str(&text).map_err(|error| format!("{path}: invalid response: {error}"))
     }
+
+    /// A POST whose response body newt does not need, only its status.
+    async fn notify(&self, path: &str, body: &serde_json::Value) -> Result<(), String> {
+        let response = self
+            .http
+            .post(self.url(path))
+            .json(body)
+            .bearer_auth(&self.endpoint.token)
+            .send()
+            .await
+            .map_err(|error| format!("{path}: {}", error.without_url()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|error| format!("<body unreadable: {}>", error.without_url()));
+        let snippet: String = text.chars().take(ERROR_BODY_LIMIT).collect();
+        Err(format!("{path}: HTTP {status}: {snippet}"))
+    }
 }
 
 struct ProviderPages {
     client: Client,
     session: String,
+    state: SessionState,
 }
 
 impl PageSource for ProviderPages {
     fn fetch(&self, keys: Vec<PageKey>) -> PageFuture<'_> {
         Box::pin(async move {
+            let state = self.state.get();
             let body = serde_json::to_value(PagesRequest {
                 session: &self.session,
                 keys: &keys,
+                state: state.as_ref(),
             })
             .map_err(|error| error.to_string())?;
             let response: PagesResponse = self.client.call("pages", Some(body)).await?;
             check_pages(&response.pages)?;
+            if let Some(patch) = &response.state_patch {
+                self.state.patch(patch);
+            }
             Ok(response.pages)
         })
     }
@@ -319,27 +362,51 @@ impl ContextProviderBackend {
         self
     }
 
-    async fn prepare_turn(&self, agent: &str, key: &str) -> Result<Prepared<McpHost>, String> {
-        if let Some(mcp) = self.mcp_agents.get(agent) {
-            return self.prepare_mcp_turn(agent, key, mcp).await;
-        }
+    fn client(&self, agent: &str) -> Result<Client, String> {
         let endpoint = self
             .agents
             .get(agent)
             .ok_or_else(|| format!("agent `{agent}` is not in server.toml"))?;
-        let client = Client {
+        Ok(Client {
             http: self.http.clone(),
             endpoint: Arc::clone(endpoint),
-        };
-        let turn: TurnContext = client.call("turn", Some(json!({ "session": key }))).await?;
+        })
+    }
+
+    async fn prepare_turn(
+        &self,
+        agent: &str,
+        key: &str,
+        request: &TurnRequest,
+    ) -> Result<Prepared<McpHost>, String> {
+        if let Some(mcp) = self.mcp_agents.get(agent) {
+            return self.prepare_mcp_turn(agent, key, mcp, request).await;
+        }
+        let client = self.client(agent)?;
+        let body = serde_json::to_value(TurnCall {
+            session: key,
+            events: &request.events,
+            state: request.state.as_ref(),
+        })
+        .map_err(|error| error.to_string())?;
+        let turn: TurnContext = client.call("turn", Some(body)).await?;
         if let Some(pages) = &turn.pages {
             check_pages(pages)?;
         }
         let loaded = self.load(agent, &client, &turn.version).await?;
         let bootstrap = &loaded.bootstrap;
+        let turn_state = TurnState::default();
+        if let Some(initial) = turn.turn_state.clone() {
+            turn_state.set(initial);
+        }
+        let state = SessionState::starting_from(request.state.clone());
+        if let Some(replaced) = turn.state.clone() {
+            state.replace(replaced);
+        }
         let source = ProviderPages {
             client,
             session: key.to_owned(),
+            state: state.clone(),
         };
         Ok(Prepared {
             system: with_pinned(&bootstrap.instructions, turn.pinned.as_deref()),
@@ -358,7 +425,10 @@ impl ContextProviderBackend {
             max_turn_tokens: bootstrap.max_turn_tokens,
             recite: bootstrap.recite,
             history_budget: bootstrap.history_budget,
-            host: loaded.toolset.host(key),
+            turn_end: bootstrap.turn_end,
+            host: loaded.toolset.host(key, turn_state.clone(), state.clone()),
+            state,
+            turn_state,
         })
     }
 }
@@ -366,10 +436,25 @@ impl ContextProviderBackend {
 impl Backend for ContextProviderBackend {
     type Host = McpHost;
 
-    async fn prepare(&self, agent: &str, key: &str) -> Result<Prepared<McpHost>, BackendError> {
-        self.prepare_turn(agent, key)
+    async fn prepare(
+        &self,
+        agent: &str,
+        key: &str,
+        request: &TurnRequest,
+    ) -> Result<Prepared<McpHost>, BackendError> {
+        self.prepare_turn(agent, key, request)
             .await
             .map_err(|error| BackendError(format!("context provider for `{agent}`: {error}")))
+    }
+
+    async fn turn_end(&self, agent: &str, payload: &serde_json::Value) -> Result<(), BackendError> {
+        let client = self
+            .client(agent)
+            .map_err(|error| BackendError(format!("turn end for `{agent}`: {error}")))?;
+        client
+            .notify("turn_end", payload)
+            .await
+            .map_err(|error| BackendError(format!("turn end for `{agent}`: {error}")))
     }
 }
 

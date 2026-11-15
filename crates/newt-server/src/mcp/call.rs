@@ -20,11 +20,13 @@ use serde_json::Value;
 
 use super::{
     META_IDEMPOTENCY_KEY, META_INVALIDATE, META_PAGES, META_PAGES_READ, META_SESSION,
-    META_SKILLS_LOADED, META_SUMMARY, McpHost, Remote, meta_field,
+    META_SKILLS_LOADED, META_STATE, META_STATE_PATCH, META_SUMMARY, META_TURN_STATE, McpHost,
+    Remote, meta_field,
 };
 
 const META_TRACEPARENT: &str = "traceparent";
 const OUTCOME_UNKNOWN: &str = "it may or may not have taken effect. Do not repeat it: check the workspace first, and tell the person if you cannot confirm it.";
+const BAD_STATE_PATCH: &str = "(newt ignored this tool's state patch: it must be a JSON object)";
 const BAD_META: &str = "(newt could not read this tool's workspace metadata, so every page will be refetched before its next read)";
 
 impl McpHost {
@@ -53,6 +55,13 @@ impl McpHost {
             META_PAGES_READ.to_owned(),
             serde_json::json!(context.pages_read),
         );
+        let turn_state = self.turn_state.get();
+        if !turn_state.is_null() {
+            meta.insert(META_TURN_STATE.to_owned(), turn_state);
+        }
+        if let Some(state) = self.session_state.get() {
+            meta.insert(META_STATE.to_owned(), state);
+        }
         if let Some(traceparent) = &context.traceparent {
             meta.insert(
                 META_TRACEPARENT.to_owned(),
@@ -66,14 +75,14 @@ impl McpHost {
             params.request_state = state;
         }
         match self.send(remote, params, context.progress.as_ref()).await {
-            Ok(ServerResult::CallToolResult(result)) => tool_output(result),
+            Ok(ServerResult::CallToolResult(result)) => self.output(result),
             Ok(ServerResult::InputRequiredResult(result)) => {
                 tracing::info!(server = %remote.server, tool = %call.name, "MCP tool asked for the person's input");
                 super::mrtr::ask(&call.name, &result)
             }
             Ok(ServerResult::CreateTaskResult(created)) => {
                 match super::mrtr::finish_task(&remote.client, created).await {
-                    Ok(result) => tool_output(result),
+                    Ok(result) => self.output(result),
                     Err(why) => {
                         tracing::warn!(server = %remote.server, tool = %call.name, %why, "MCP task did not finish");
                         ToolOutput::error(format!(
@@ -119,6 +128,26 @@ impl McpHost {
                 ))
             }
         }
+    }
+
+    /// The tool output, after taking the turn state and the session state
+    /// patch the result carries.
+    fn output(&self, result: CallToolResult) -> ToolOutput {
+        let meta = result.meta.as_deref();
+        if let Ok(Some(state)) = meta_field::<Value>(meta, META_TURN_STATE) {
+            self.turn_state.set(state);
+        }
+        let patch = meta_field::<serde_json::Map<String, Value>>(meta, META_STATE_PATCH);
+        if let Ok(Some(patch)) = &patch {
+            self.session_state.patch(patch);
+        }
+        let mut output = tool_output(result);
+        if let Err(why) = patch {
+            tracing::error!(%why, "MCP result had a state patch that is not an object");
+            output.content.push('\n');
+            output.content.push_str(BAD_STATE_PATCH);
+        }
+        output
     }
 
     async fn send(

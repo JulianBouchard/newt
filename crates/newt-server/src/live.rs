@@ -84,6 +84,13 @@ impl Topics {
         }
     }
 
+    /// Wakes every watch, for when notifications may have been lost.
+    pub fn wake_all(&self) {
+        for sender in self.hub.watched().values() {
+            sender.send_replace(());
+        }
+    }
+
     /// Every inbox topic notified from now on, for the runner's wake loop.
     pub fn inbox(&self) -> broadcast::Receiver<String> {
         self.hub.inbox.subscribe()
@@ -116,6 +123,18 @@ pub struct Watch {
 }
 
 impl Watch {
+    /// Whether a notification arrived since the watch was made or last
+    /// asked, marking it seen.
+    pub fn take_change(&mut self) -> bool {
+        match self.receiver.has_changed() {
+            Ok(changed) => {
+                self.receiver.mark_unchanged();
+                changed
+            }
+            Err(_closed) => true,
+        }
+    }
+
     pub async fn changed(&mut self) {
         if self.receiver.changed().await.is_err() {
             std::future::pending::<()>().await;
@@ -145,7 +164,10 @@ pub async fn spawn_listener(pool: PgPool) -> Result<(Topics, JoinHandle<()>), sq
                 tracing::error!(%error, "live listener lost its connection, reconnecting");
                 tokio::time::sleep(RECONNECT_DELAY).await;
                 match subscribe(&pool).await {
-                    Ok(fresh) => listener = fresh,
+                    Ok(fresh) => {
+                        listener = fresh;
+                        publisher.wake_all();
+                    }
                     Err(error) => tracing::error!(%error, "live listener could not reconnect"),
                 }
             }
@@ -197,6 +219,27 @@ mod tests {
         notify(&topics, Channel::Live, "a/ana");
         ana.changed().await;
         assert!(matches!(ana.receiver.has_changed(), Ok(false)));
+    }
+
+    #[tokio::test]
+    async fn a_change_is_taken_once_and_wake_all_reaches_every_watch() {
+        let topics = Topics::default();
+        let mut ana = topics.watch(Channel::Inbox, "a/ana".into());
+        let mut bo = topics.watch(Channel::Inbox, "a/bo".into());
+        assert!(
+            !ana.take_change(),
+            "nothing arrived since the watch was made"
+        );
+        notify(&topics, Channel::Inbox, "a/ana");
+        notify(&topics, Channel::Inbox, "a/ana");
+        assert!(ana.take_change());
+        assert!(
+            !ana.take_change(),
+            "two notifications collapse into one change"
+        );
+        topics.wake_all();
+        assert!(ana.take_change());
+        assert!(bo.take_change());
     }
 
     #[tokio::test]

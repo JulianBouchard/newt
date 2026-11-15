@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use newt_core::skills::Skill;
 use newt_core::tools::ToolHost;
+use newt_server::backend::{SessionState, TurnState};
 use newt_server::mcp::{McpAuth, McpServer, Toolset};
 use rmcp::model::{
     ListSkillsResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
@@ -203,7 +204,7 @@ async fn loading_a_skill_fetches_and_verifies_it_once_and_lists_its_files() {
     let server = Server::new();
     let reads = Arc::clone(&server.reads);
     let toolset = connect(server).await;
-    let host = toolset.host("customer-7");
+    let host = toolset.host("customer-7", TurnState::default(), SessionState::default());
     let writing = skill(&toolset, "app/writing");
 
     let output = host.load_skill(writing, None).await;
@@ -228,7 +229,7 @@ async fn only_files_the_skill_lists_can_be_read() {
     let server = Server::new();
     let reads = Arc::clone(&server.reads);
     let toolset = connect(server).await;
-    let host = toolset.host("customer-7");
+    let host = toolset.host("customer-7", TurnState::default(), SessionState::default());
     let writing = skill(&toolset, "app/writing");
     for file in [
         "references/other.md",
@@ -248,7 +249,7 @@ async fn a_file_that_no_longer_matches_its_digest_is_refused_and_the_skills_reli
     let toolset = connect(server).await;
     tamper.store(true, Ordering::SeqCst);
     let output = toolset
-        .host("customer-7")
+        .host("customer-7", TurnState::default(), SessionState::default())
         .load_skill(skill(&toolset, "app/writing"), None)
         .await;
     assert!(output.is_error);
@@ -269,7 +270,7 @@ async fn a_skill_whose_frontmatter_differs_from_its_listing_is_refused() {
     })
     .await;
     let output = toolset
-        .host("customer-7")
+        .host("customer-7", TurnState::default(), SessionState::default())
         .load_skill(skill(&toolset, "app/writing"), None)
         .await;
     assert!(output.is_error, "{}", output.content);

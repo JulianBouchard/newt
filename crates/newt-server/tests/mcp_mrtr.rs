@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use newt_core::message::ToolCall;
 use newt_core::tools::{CallContext, ToolHost};
+use newt_server::backend::{SessionState, TurnState};
 use newt_server::mcp::{McpAuth, McpServer, Toolset};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, CreateTaskResult,
@@ -170,7 +171,9 @@ fn call(name: &str, arguments: Value) -> ToolCall {
 async fn a_tool_that_asks_for_approval_waits_for_the_persons_answer() {
     let bank = Bank::default();
     let paid = Arc::clone(&bank.paid);
-    let host = connect(bank).await.host("ana");
+    let host = connect(bank)
+        .await
+        .host("ana", TurnState::default(), SessionState::default());
 
     let asked = host
         .call(
@@ -235,7 +238,9 @@ async fn a_tool_that_asks_for_approval_waits_for_the_persons_answer() {
 async fn a_tool_that_runs_as_a_task_is_polled_until_it_finishes() {
     let bank = Bank::default();
     let polls = Arc::clone(&bank.polls);
-    let host = connect(bank).await.host("ana");
+    let host = connect(bank)
+        .await
+        .host("ana", TurnState::default(), SessionState::default());
     let output = host
         .call(&call("report", json!({})), &CallContext::default())
         .await;
