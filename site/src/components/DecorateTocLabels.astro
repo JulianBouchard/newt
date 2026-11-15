@@ -1,5 +1,8 @@
 ---
+import markSvg from "../assets/generated/mark.svg?raw";
+
 const html = await Astro.slots.render("default");
+const endMark = `<li class="newt-toc-end" aria-hidden="true">${markSvg.replace(/\sid="([^"]+)"/g, ' id="toc-$1"').replace(/url\(#([^)]+)\)/g, "url(#toc-$1)")}</li>`;
 
 function decorateLabel(text: string) {
   const table = text.match(/^\[(.+)\]$/);
@@ -10,7 +13,7 @@ function decorateLabel(text: string) {
   return text;
 }
 
-const decorated = html.replace(/(<a href="#[^"]*"[^>]*>\s*<span[^>]*>)(.*?)(<\/span>)/g, (_, open, text, close) => `${open}${decorateLabel(text)}${close}`);
+const decorated = html.replace(/<\/ul>(\s*<\/nav>)/, `${endMark}</ul>$1`).replace(/(<a href="#[^"]*"[^>]*>\s*<span[^>]*>)(.*?)(<\/span>)/g, (_, open, text, close) => `${open}${decorateLabel(text)}${close}`);
 ---
 
 <Fragment set:html={decorated} />

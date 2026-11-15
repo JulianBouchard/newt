@@ -21,14 +21,25 @@ Three optional fields on the tool, in `tools/list`:
 | `newt/invalidates` | Page key prefixes that every successful call makes stale. |
 | `newt/idempotent` | Must be `true` on an `outward` tool, or newt refuses to load the tool set. |
 
-```json
+## Invalidation works like React Query
+
+If you have used React Query, you know the model: a mutation invalidates the keys it touched, and the next read fetches fresh data. A newt tool does the same with workspace pages.
+
+```ts title="React Query"
+useMutation({
+  mutationFn: completeTask,
+  onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+});
+```
+
+```json title="A newt tool"
 {
   "name": "complete_task",
-  "description": "Mark a task done by its number.",
-  "inputSchema": { "type": "object", "properties": { "id": { "type": "integer" } }, "required": ["id"] },
   "_meta": { "newt/retention": "durable", "newt/invalidates": [["tasks"]] }
 }
 ```
+
+After `complete_task` succeeds, every page whose key starts with `["tasks"]` is stale. The agent's next read of `tasks.md` asks your context provider for it again.
 
 ## Pick a retention class
 

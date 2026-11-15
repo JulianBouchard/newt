@@ -39,7 +39,7 @@ You can skip the context provider: an agent can be [nothing but an MCP server](.
                         pages)            newt _meta)              journal, leases)
 ```
 
-## Why it holds up over months
+## Why the context stays clean
 
 Most runtimes let the prompt grow and hope. That has two costs: stale tool results sit in the prompt and the model acts on them, and any edit to earlier text throws away the provider's prompt cache. newt treats the prompt like a database treats a log:
 

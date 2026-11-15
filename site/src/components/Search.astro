@@ -1,7 +1,9 @@
 ---
 import Default from "@astrojs/starlight/components/Search.astro";
+import { Icon } from "@astrojs/starlight/components";
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const isQuickstart = Astro.locals.starlightRoute.entry.id === "quickstart";
 const page = (path: string) => `${base}/${path}`;
 
 const groups = [
@@ -35,6 +37,9 @@ const groups = [
 ---
 
 <Default {...Astro.props} />
+<a href={page("quickstart/")} class="newt-header-cta" aria-current={isQuickstart ? "page" : undefined}>
+  Quickstart <Icon name="right-arrow" size="0.9em" />
+</a>
 
 <template id="newt-search-suggestions">
   <nav class="newt-suggest" aria-label="Suggested pages">
@@ -67,6 +72,7 @@ const groups = [
     if (markdownLink) {
       const path = location.pathname.replace(/\/$/, "");
       const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const isQuickstart = Astro.locals.starlightRoute.entry.id === "quickstart";
       markdownLink.href = path === base ? `${base}/index.md` : `${path}.md`;
     }
   }

@@ -1,5 +1,6 @@
 import type { APIRoute, GetStaticPaths } from "astro";
 import { type CollectionEntry, getCollection } from "astro:content";
+import { ARCHITECTURE_DESCRIPTION, NEWT_PLUS_MCP_DESCRIPTION } from "../components/sketch-descriptions";
 
 export const getStaticPaths = (async () => {
   const docs = await getCollection("docs", (entry) => entry.id !== "404");
@@ -9,12 +10,13 @@ export const getStaticPaths = (async () => {
 function mdxToMarkdown(body: string) {
   return body
     .replace(/^import .+$/gm, "")
-    .replace(/<\/?CardGrid>/g, "")
-    .replace(/<\/?Steps>/g, "")
+    .replace("<ArchitectureSketch />", ARCHITECTURE_DESCRIPTION)
+    .replace("<NewtPlusMcp />", NEWT_PLUS_MCP_DESCRIPTION)
+    .replace(/<\/?CardGrid>/g, "\n")
+    .replace(/^<\/?div[^>]*>$/gm, "")
     .replace(/<Card title="([^"]+)"[^>]*>/g, "### $1\n")
     .replace(/<\/Card>/g, "")
-    .replace(/<LinkCard title="([^"]+)" description="([^"]+)" href="([^"]+)" \/>/g, "- [$1]($3): $2")
-    .replace(/^[ \t]+/gm, "")
+    .replace(/^[ \t]*<LinkCard title="([^"]+)" description="([^"]+)" href="([^"]+)" \/>/gm, "- [$1]($3): $2")
     .replace(/\n{3,}/g, "\n\n");
 }
 

@@ -10,16 +10,12 @@ export default defineConfig({
   site,
   base,
   trailingSlash: "always",
+  vite: process.env.WATCH_POLL ? { server: { watch: { usePolling: true, interval: 250 } } } : {},
   integrations: [
     starlight({
       title: "newt",
       description: "An agent runtime for products: a long-lived agent per customer, your backend as its world.",
       favicon: "/favicon.svg",
-      logo: {
-        light: "./src/assets/generated/lockup-light.svg",
-        dark: "./src/assets/generated/lockup-dark.svg",
-        replacesTitle: true,
-      },
       social: [{ icon: "github", label: "GitHub", href: "https://github.com/JulianBouchard/newt" }],
       lastUpdated: true,
       head: [
@@ -37,6 +33,8 @@ export default defineConfig({
         "./src/styles/theme.css",
       ],
       components: {
+        Head: "./src/components/Head.astro",
+        SiteTitle: "./src/components/SiteTitle.astro",
         TableOfContents: "./src/components/TableOfContents.astro",
         Search: "./src/components/Search.astro",
         PageTitle: "./src/components/PageTitle.astro",

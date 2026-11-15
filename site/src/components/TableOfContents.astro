@@ -6,19 +6,41 @@ import DecorateTocLabels from "./DecorateTocLabels.astro";
 <DecorateTocLabels><Default /></DecorateTocLabels>
 
 <script>
+  function isScrolledToBottom() {
+    return window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
+  }
+
   function trackReadProgress(toc: HTMLElement) {
     const list = toc.querySelector<HTMLElement>("nav > ul");
     if (!list) return;
+    const end = list.querySelector<HTMLElement>(":scope > .newt-toc-end");
     const links = [...list.querySelectorAll<HTMLAnchorElement>("a")];
+    let frame = 0;
+
+    const centerOf = (element: HTMLElement) => element.offsetTop + element.offsetHeight / 2;
+
     const update = () => {
-      const current = links.findIndex((link) => link.getAttribute("aria-current") === "true");
+      frame = 0;
+      const last = links.at(-1);
+      if (last) list.style.setProperty("--newt-toc-last", `${centerOf(last)}px`);
+      const complete = isScrolledToBottom();
+      const current = complete ? links.length : links.findIndex((link) => link.getAttribute("aria-current") === "true");
       links.forEach((link, index) => link.toggleAttribute("data-read", index < current));
+      list.toggleAttribute("data-complete", complete);
       const active = links[current];
-      const progress = active ? active.offsetTop + active.offsetHeight / 2 : 0;
+      const progress = complete && end ? end.offsetTop + 2 : active ? centerOf(active) : 0;
       list.style.setProperty("--newt-toc-progress", `${progress}px`);
     };
-    new MutationObserver(update).observe(list, { subtree: true, attributeFilter: ["aria-current"] });
+    const scheduleUpdate = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+
+    new MutationObserver(scheduleUpdate).observe(list, { subtree: true, attributeFilter: ["aria-current"] });
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate, { passive: true });
     update();
+    requestAnimationFrame(() => requestAnimationFrame(() => list.toggleAttribute("data-ready", true)));
   }
+
   document.querySelectorAll<HTMLElement>("starlight-toc").forEach(trackReadProgress);
 </script>

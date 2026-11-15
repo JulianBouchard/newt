@@ -1,14 +1,14 @@
 ---
-title: Agents that regrow their context
-description: An agent runtime for products. One long-lived agent per customer, your backend as its world, and a database's discipline about context.
+title: An agent runtime for products
+description: "newt runs one long-lived agent per customer: ephemeral reads, reactive context, event-driven turns and append-only history. One Rust binary and Postgres."
 template: splash
 lastUpdated: false
 hero:
-  title: Agents that regrow their context.
-  tagline: One long-lived agent per customer, with your backend as its world. One Rust binary plus Postgres.
+  title: An agent runtime for products.
+  tagline: Event-driven agents with ephemeral, reactive context.
   image:
     file: ../../assets/generated/mark.svg
-    alt: The newt mark
+    alt: The newt logo
   actions:
     - text: Quickstart
       link: quickstart/
@@ -22,48 +22,91 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid, LinkCard, Steps } from "@astrojs/starlight/components";
+import { LinkCard, CardGrid } from "@astrojs/starlight/components";
+import ArchitectureSketch from "../../components/ArchitectureSketch.astro";
+import NewtPlusMcp from "../../components/NewtPlusMcp.astro";
 
-Newts regrow what they lose. So does this: every turn strips the context back and grows it again from your app's state and the history, so stale reads never pile up and the prompt cache stays warm.
+<ArchitectureSketch />
 
-## How it works
+## Also included
 
-<Steps>
+<div class="newt-cases">
 
-1. **Your app posts an event.** "The person wrote", "the order shipped". newt answers in milliseconds and runs a turn.
+<div>
 
-2. **newt builds the prompt from your state.** Your app serves the agent's instructions and the customer's state as text pages. When a tool changes something, the page goes stale and the next read fetches it fresh.
+### [Steering](events/)
 
-3. **Tools act, history keeps what was done.** Reads are dropped at the end of the turn. Writes keep a summary. Messages and payments go through a journal, so a crash never sends twice.
+A message that arrives during a turn joins it between model calls.
 
-</Steps>
+</div>
 
-## Why it holds up over months
+<div>
 
-<CardGrid>
-  <Card title="Append, never rewrite" icon="seti:db">
-    Each turn's prompt is the previous one plus a suffix, so the provider's prefix cache covers everything before it.
-  </Card>
-  <Card title="Retention classes" icon="list-format">
-    Every tool says what survives the turn: `ephemeral` reads are dropped, `durable` writes keep a summary, `outward` effects are journaled.
-  </Card>
-  <Card title="A reactive workspace" icon="document">
-    Tools mark pages stale by key, and the next read fetches them again. The agent never acts on a copy it knows is out of date.
-  </Card>
-  <Card title="Exactly-once outward calls" icon="approve-check">
-    An intent entry reaches Postgres before every outward call, and the call carries a stable idempotency key.
-  </Card>
-  <Card title="Compaction that keeps promises" icon="pencil">
-    The agent writes its own checkpoint. newt refuses one that drops an open commitment. Raw history is never deleted.
-  </Card>
-  <Card title="One binary plus Postgres" icon="rocket">
-    Leases, `LISTEN` wakeups and sweeps let any instance run any session. Bring your Postgres, or let newt run its own.
-  </Card>
-</CardGrid>
+### [Exactly-once outward calls](tools/#make-outward-calls-exactly-once)
 
-## Try it without an API key
+Outward calls are recorded in Postgres before they run and retried with the same idempotency key after a crash.
 
-A fake model answers, so all you need is Docker.
+</div>
+
+<div>
+
+### [Compaction](memory/)
+
+Past a token budget, the agent writes a checkpoint of its history. A checkpoint that drops an open commitment is rejected. Raw history is kept.
+
+</div>
+
+<div>
+
+### [Cache report card](tracing/)
+
+`newt-report` lists every prompt cache miss and its cause: a changed tool, compaction, an idle gap or routing.
+
+</div>
+
+<div>
+
+### [Replay and fork](replay/)
+
+Copy a real conversation into a new session and run it against another prompt or model, turn by turn.
+
+</div>
+
+<div>
+
+### [MCP-only agents](mcp-agents/)
+
+An agent can be a single MCP server. Its instructions, tools and resources are the agent.
+
+</div>
+
+<div>
+
+### [Model fallback](configuration/#modelsalias)
+
+Each model is a chain of routes: Anthropic, OpenAI or any Chat Completions host. A failed call retries, then moves to the next route.
+
+</div>
+
+<div>
+
+### [Several instances](design/#the-postgres-runner)
+
+One binary and Postgres. Any instance can run any session.
+
+</div>
+
+</div>
+
+## Already have an MCP server?
+
+<NewtPlusMcp />
+
+Point newt at it with `mcp = "https://…"` in `server.toml`. The server's instructions, tools and resources become the agent. [MCP-only agents](mcp-agents/) has the details.
+
+## Try it with Docker
+
+A fake model answers, so you don't need an API key.
 
 ```sh
 docker compose -f deploy/compose.yaml up --build -d
@@ -73,11 +116,7 @@ curl -X POST localhost:7878/v1/agents/assistant-mcp/sessions/ana/events \
 curl -N localhost:7878/v1/agents/assistant-mcp/sessions/ana/live -H "Authorization: Bearer demo-token"
 ```
 
-## Read next
-
 <CardGrid>
-  <LinkCard title="Quickstart" description="Run the demo assistant and watch a turn live." href="quickstart/" />
-  <LinkCard title="How a turn works" description="From event to commit, and what survives." href="how-a-turn-works/" />
+  <LinkCard title="Quickstart" description="Run the demo and watch a turn live." href="quickstart/" />
   <LinkCard title="Context provider" description="The three endpoints your app serves." href="context-provider/" />
-  <LinkCard title="Tools over MCP" description="Tag a tool with what it leaves behind." href="tools/" />
 </CardGrid>

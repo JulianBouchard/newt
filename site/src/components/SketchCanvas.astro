@@ -1,0 +1,52 @@
+---
+import "@fontsource-variable/caveat";
+import type { SketchLabel, SketchStroke } from "./rough-sketch";
+
+interface Props {
+  viewBox: string;
+  strokes: SketchStroke[];
+  labels: SketchLabel[];
+  description: string;
+  captionId: string;
+  minWidth?: string;
+  class?: string;
+}
+
+const { viewBox, strokes, labels, description, captionId, minWidth = "46rem", class: className } = Astro.props;
+---
+
+<figure class:list={["newt-sketch", "not-content", className]}>
+  <div class="newt-sketch-scroll">
+    <svg viewBox={viewBox} role="img" aria-labelledby={captionId} style={`min-width:${minWidth}`}>
+      <slot />
+      {
+        strokes.map((stroke) => (
+          <path
+            d={stroke.d}
+            style={`stroke:${stroke.stroke};stroke-width:${stroke.width};fill:${stroke.fill}`}
+            stroke-linecap="round"
+            stroke-dasharray={stroke.dashed ? "7 7" : undefined}
+          />
+        ))
+      }
+      {
+        labels.map((label) => (
+          <text
+            x={label.x}
+            y={label.y}
+            text-anchor={label.anchor ?? "start"}
+            class={`sk-${label.tone ?? "ink"}`}
+            style={`font-size:${label.size ?? 20}px;font-weight:${label.weight ?? 500}`}
+          >
+            {(Array.isArray(label.text) ? label.text : [label.text]).map((line, index) => (
+              <tspan x={label.x} dy={index === 0 ? 0 : (label.size ?? 20) * 1.05}>
+                {line}
+              </tspan>
+            ))}
+          </text>
+        ))
+      }
+    </svg>
+  </div>
+  <figcaption id={captionId} class="sr-only">{description}</figcaption>
+</figure>
