@@ -4,6 +4,13 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-14
+
+### Added
+
+- **Session state patches during a turn.** A `/pages` response (`state_patch`) and an MCP tool result (`_meta["newt/state_patch"]`) can change the session's provider state with a JSON merge patch (RFC 7396). Patches touch only the keys they name, so a lazy page load and a tool call in the same turn do not overwrite each other. The state is saved at commit only if `/turn` or a patch changed it.
+- **Initial turn state.** A `/turn` response may carry `turn_state`, the value the turn's tool calls start with, for facts only `/turn` knows (the channel to reply on, why the agent woke).
+
 ## [1.2.0] - 2026-11-14
 
 ### Added
