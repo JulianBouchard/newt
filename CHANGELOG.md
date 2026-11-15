@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-14
+
+### Added
+
+- **The session state on every provider call.** A `/pages` request to an HTTP context provider carries `state`, and each MCP tool call carries `_meta["newt/state"]`: the session's provider state as the turn holds it, with patches applied so far. A page render or a tool can now read what the last turn saw without a store of its own.
+
 ## [1.3.0] - 2026-11-14
 
 ### Added
