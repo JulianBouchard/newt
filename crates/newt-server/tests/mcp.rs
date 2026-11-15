@@ -21,7 +21,7 @@ use newt_core::steering::NoSteering;
 use newt_core::tools::{CallContext, PageRead, Retention, ToolHost};
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
-use newt_server::backend::TurnState;
+use newt_server::backend::{SessionState, TurnState};
 use newt_server::mcp::{CallLimits, McpAuth, McpServer, Toolset};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
@@ -163,6 +163,17 @@ impl ServerHandler for Server {
                 "Refuses and notes it in the turn state.",
                 schema(),
             ),
+            Tool::new("note_sent", "Patches the session state.", schema()),
+            Tool::new(
+                "note_refused",
+                "Refuses and patches the session state.",
+                schema(),
+            ),
+            Tool::new(
+                "bad_patch",
+                "Returns a state patch that is not an object.",
+                schema(),
+            ),
         ]))
     }
 
@@ -235,6 +246,12 @@ impl ServerHandler for Server {
                 CallToolResult::success(vec![ContentBlock::text(format!("attempt {}", count + 1))])
                     .with_meta(Some(meta(json!({ "newt/turn_state": { "count": count + 1 } }))))
             }
+            "note_refused" => CallToolResult::error(vec![ContentBlock::text("refused")])
+                .with_meta(Some(meta(json!({ "newt/state_patch": { "refusals": 1, "seen": null } })))),
+            "bad_patch" => CallToolResult::success(vec![ContentBlock::text("done")])
+                .with_meta(Some(meta(json!({ "newt/state_patch": [1, 2] })))),
+            "note_sent" => CallToolResult::success(vec![ContentBlock::text("noted")])
+                .with_meta(Some(meta(json!({ "newt/state_patch": { "sent": true } })))),
             "refuse" => CallToolResult::error(vec![ContentBlock::text("refused")])
                 .with_meta(Some(meta(json!({ "newt/turn_state": { "refused": true } })))),
             "bad_meta" => CallToolResult::success(vec![ContentBlock::text("done")]).with_meta(
@@ -346,7 +363,7 @@ async fn the_turn_state_travels_with_each_call_and_a_result_replaces_it() {
     let calls = Arc::new(Calls::default());
     let toolset = connect(&calls, true).await.unwrap();
     let turn_state = TurnState::default();
-    let host = toolset.host("customer-7", turn_state.clone());
+    let host = toolset.host("customer-7", turn_state.clone(), SessionState::default());
 
     host.call(&call("c1", "count_attempts", json!({})), &key("k1"))
         .await;
@@ -375,10 +392,23 @@ async fn the_turn_state_travels_with_each_call_and_a_result_replaces_it() {
 }
 
 #[tokio::test]
+async fn a_tool_result_can_patch_the_session_state() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect(&calls, true).await.unwrap();
+    let state = SessionState::starting_from(Some(json!({ "seen": 1 })));
+    let host = toolset.host("customer-7", TurnState::default(), state.clone());
+
+    host.call(&call("c1", "note_sent", json!({})), &key("k1"))
+        .await;
+
+    assert_eq!(state.changed(), Some(json!({ "seen": 1, "sent": true })));
+}
+
+#[tokio::test]
 async fn a_call_sends_the_session_and_idempotency_key_and_reads_result_meta() {
     let calls = Arc::new(Calls::default());
     let toolset = connect(&calls, true).await.unwrap();
-    let host = toolset.host("customer-7", TurnState::default());
+    let host = toolset.host("customer-7", TurnState::default(), SessionState::default());
 
     let output = host
         .call(
@@ -509,7 +539,7 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
         ]
         .into(),
     ));
-    let host = toolset.host("customer-7", TurnState::default());
+    let host = toolset.host("customer-7", TurnState::default(), SessionState::default());
     let outcome = run_turn(
         &TurnDeps {
             model: &model,
@@ -569,7 +599,7 @@ async fn invalid_result_metadata_is_loud_and_marks_every_page_stale() {
     let calls = Arc::new(Calls::default());
     let toolset = connect(&calls, true).await.unwrap();
     let output = toolset
-        .host("customer-7", TurnState::default())
+        .host("customer-7", TurnState::default(), SessionState::default())
         .call(&call("c1", "bad_meta", json!({})), &key("k1"))
         .await;
     assert_eq!(output.pages, Vec::<Page>::new());
@@ -628,7 +658,7 @@ async fn a_lost_connection_marks_the_toolset_broken_and_says_the_outcome_is_unkn
     stop.cancel();
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let output = toolset
-        .host("customer-7", TurnState::default())
+        .host("customer-7", TurnState::default(), SessionState::default())
         .call(
             &call("c1", "send_message", json!({ "text": "Hi" })),
             &key("k1"),
@@ -675,7 +705,7 @@ async fn a_server_announcing_new_tools_marks_the_toolset_stale() {
     assert_eq!(calls.listeners.lock().unwrap().len(), 1);
     assert!(!toolset.is_stale());
     let output = toolset
-        .host("customer-7", TurnState::default())
+        .host("customer-7", TurnState::default(), SessionState::default())
         .call(&call("c1", "change_tools", json!({})), &key("k1"))
         .await;
     assert!(!output.is_error, "{}", output.content);
@@ -692,7 +722,7 @@ async fn a_server_without_change_notifications_still_connects_and_stays_fresh() 
     .await
     .unwrap();
     let output = toolset
-        .host("customer-7", TurnState::default())
+        .host("customer-7", TurnState::default(), SessionState::default())
         .call(&call("c1", "plain_tool", json!({})), &key("k1"))
         .await;
     assert!(!output.is_error, "{}", output.content);
@@ -717,7 +747,7 @@ async fn progress_keeps_a_long_call_alive_past_the_quiet_limit_and_reaches_the_t
         ..key("k1")
     };
     let output = toolset
-        .host("customer-7", TurnState::default())
+        .host("customer-7", TurnState::default(), SessionState::default())
         .call(&call("c1", "slow_search", json!({})), &context)
         .await;
     assert!(!output.is_error, "{}", output.content);
@@ -737,7 +767,7 @@ async fn a_call_that_goes_quiet_times_out_and_says_the_outcome_is_unknown() {
     let calls = Arc::new(Calls::default());
     let toolset = tight_limits(connect(&calls, true).await.unwrap());
     let output = toolset
-        .host("customer-7", TurnState::default())
+        .host("customer-7", TurnState::default(), SessionState::default())
         .call(&call("c1", "silent_search", json!({})), &key("k1"))
         .await;
     assert!(output.is_error);
@@ -755,7 +785,7 @@ async fn progress_never_extends_a_call_past_the_total_limit() {
     let toolset = tight_limits(connect(&calls, true).await.unwrap());
     let started = std::time::Instant::now();
     let output = toolset
-        .host("customer-7", TurnState::default())
+        .host("customer-7", TurnState::default(), SessionState::default())
         .call(&call("c1", "endless_search", json!({})), &key("k1"))
         .await;
     assert!(output.is_error);
@@ -773,7 +803,11 @@ async fn many_sessions_call_one_server_at_once_without_queueing() {
     let toolset = connect(&calls, true).await.unwrap();
     let started = std::time::Instant::now();
     let outputs = futures_util::future::join_all((0..48).map(|index| {
-        let host = toolset.host(&format!("customer-{index}"), TurnState::default());
+        let host = toolset.host(
+            &format!("customer-{index}"),
+            TurnState::default(),
+            SessionState::default(),
+        );
         async move {
             host.call(
                 &call("c1", "silent_search", json!({})),
@@ -795,7 +829,7 @@ async fn many_sessions_call_one_server_at_once_without_queueing() {
 async fn an_abandoned_call_is_cancelled_on_the_server() {
     let calls = Arc::new(Calls::default());
     let toolset = connect(&calls, true).await.unwrap();
-    let host = toolset.host("customer-7", TurnState::default());
+    let host = toolset.host("customer-7", TurnState::default(), SessionState::default());
     let abandoned = tokio::time::timeout(
         Duration::from_millis(200),
         host.call(&call("c1", "wait_forever", json!({})), &key("k1")),
@@ -811,7 +845,7 @@ async fn a_call_carries_its_traceparent_to_the_server() {
     let toolset = connect(&calls, true).await.unwrap();
     let traceparent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
     toolset
-        .host("customer-7", TurnState::default())
+        .host("customer-7", TurnState::default(), SessionState::default())
         .call(
             &call("c1", "plain_tool", json!({})),
             &CallContext {
@@ -823,4 +857,36 @@ async fn a_call_carries_its_traceparent_to_the_server() {
         .await;
     let seen = calls.seen.lock().unwrap().clone();
     assert_eq!(seen[0].1["traceparent"], traceparent);
+}
+
+#[tokio::test]
+async fn an_error_result_can_patch_the_state_and_a_bad_patch_is_refused_loudly() {
+    let calls = Arc::new(Calls::default());
+    let toolset = connect(&calls, true).await.unwrap();
+    let state = SessionState::starting_from(Some(json!({ "seen": 1 })));
+    let host = toolset.host("customer-7", TurnState::default(), state.clone());
+
+    let refused = host
+        .call(&call("c1", "note_refused", json!({})), &key("k1"))
+        .await;
+    assert!(refused.is_error);
+    assert_eq!(
+        state.get(),
+        Some(json!({ "refusals": 1 })),
+        "null removed `seen`"
+    );
+
+    let bad = host
+        .call(&call("c2", "bad_patch", json!({})), &key("k2"))
+        .await;
+    assert!(
+        bad.content.contains("ignored this tool's state patch"),
+        "{}",
+        bad.content
+    );
+    assert_eq!(
+        state.get(),
+        Some(json!({ "refusals": 1 })),
+        "a non-object patch changes nothing"
+    );
 }

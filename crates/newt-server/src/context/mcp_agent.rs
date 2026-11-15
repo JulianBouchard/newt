@@ -11,7 +11,7 @@ use super::{
     Bootstrap, ContextProviderBackend, Loaded, default_history_budget, default_max_model_calls,
     default_max_output_tokens,
 };
-use crate::backend::{Prepared, TurnState};
+use crate::backend::{Prepared, SessionState, TurnRequest, TurnState};
 use crate::mcp::{McpAuth, McpHost, McpServer, Toolset};
 
 const VERSION: &str = "mcp";
@@ -90,6 +90,7 @@ impl ContextProviderBackend {
         agent: &str,
         key: &str,
         mcp: &McpAgent,
+        request: &TurnRequest,
     ) -> Result<Prepared<McpHost>, String> {
         let loaded = self.load_mcp(agent, mcp).await?;
         let workspace = match loaded.toolset.pages(key) {
@@ -102,6 +103,7 @@ impl ContextProviderBackend {
         };
         let bootstrap = &loaded.bootstrap;
         let turn_state = TurnState::default();
+        let state = SessionState::starting_from(request.state.clone());
         Ok(Prepared {
             system: bootstrap.instructions.clone(),
             tools: loaded.toolset.tools.clone(),
@@ -116,9 +118,9 @@ impl ContextProviderBackend {
             max_turn_tokens: bootstrap.max_turn_tokens,
             recite: bootstrap.recite,
             history_budget: bootstrap.history_budget,
-            state: None,
             turn_end: false,
-            host: loaded.toolset.host(key, turn_state.clone()),
+            host: loaded.toolset.host(key, turn_state.clone(), state.clone()),
+            state,
             turn_state,
         })
     }

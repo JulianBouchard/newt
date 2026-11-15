@@ -20,11 +20,13 @@ use serde_json::Value;
 
 use super::{
     META_IDEMPOTENCY_KEY, META_INVALIDATE, META_PAGES, META_PAGES_READ, META_SESSION,
-    META_SKILLS_LOADED, META_SUMMARY, META_TURN_STATE, McpHost, Remote, meta_field,
+    META_SKILLS_LOADED, META_STATE_PATCH, META_SUMMARY, META_TURN_STATE, McpHost, Remote,
+    meta_field,
 };
 
 const META_TRACEPARENT: &str = "traceparent";
 const OUTCOME_UNKNOWN: &str = "it may or may not have taken effect. Do not repeat it: check the workspace first, and tell the person if you cannot confirm it.";
+const BAD_STATE_PATCH: &str = "(newt ignored this tool's state patch: it must be a JSON object)";
 const BAD_META: &str = "(newt could not read this tool's workspace metadata, so every page will be refetched before its next read)";
 
 impl McpHost {
@@ -125,14 +127,24 @@ impl McpHost {
         }
     }
 
-    /// The tool output, after taking the turn state the result carries.
+    /// The tool output, after taking the turn state and the session state
+    /// patch the result carries.
     fn output(&self, result: CallToolResult) -> ToolOutput {
-        match meta_field::<Value>(result.meta.as_deref(), META_TURN_STATE) {
-            Ok(Some(state)) => self.turn_state.set(state),
-            Ok(None) => {}
-            Err(why) => tracing::error!(%why, "MCP result had an unreadable turn state"),
+        let meta = result.meta.as_deref();
+        if let Ok(Some(state)) = meta_field::<Value>(meta, META_TURN_STATE) {
+            self.turn_state.set(state);
         }
-        tool_output(result)
+        let patch = meta_field::<serde_json::Map<String, Value>>(meta, META_STATE_PATCH);
+        if let Ok(Some(patch)) = &patch {
+            self.session_state.patch(patch);
+        }
+        let mut output = tool_output(result);
+        if let Err(why) = patch {
+            tracing::error!(%why, "MCP result had a state patch that is not an object");
+            output.content.push('\n');
+            output.content.push_str(BAD_STATE_PATCH);
+        }
+        output
     }
 
     async fn send(

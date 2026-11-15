@@ -8,7 +8,7 @@ use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::backend::{Backend, BackendError, Prepared, TurnRequest, TurnState};
+use crate::backend::{Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState};
 use crate::mcp::{McpHost, McpServer, Toolset};
 
 mod mcp_agent;
@@ -79,6 +79,8 @@ struct TurnContext {
     constraints: Vec<String>,
     #[serde(default)]
     state: Option<serde_json::Value>,
+    #[serde(default)]
+    turn_state: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -128,6 +130,8 @@ impl TurnContext {
 #[serde(deny_unknown_fields)]
 struct PagesResponse {
     pages: Vec<Page>,
+    #[serde(default)]
+    state_patch: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Serialize)]
@@ -215,6 +219,7 @@ impl Client {
 struct ProviderPages {
     client: Client,
     session: String,
+    state: SessionState,
 }
 
 impl PageSource for ProviderPages {
@@ -227,6 +232,9 @@ impl PageSource for ProviderPages {
             .map_err(|error| error.to_string())?;
             let response: PagesResponse = self.client.call("pages", Some(body)).await?;
             check_pages(&response.pages)?;
+            if let Some(patch) = &response.state_patch {
+                self.state.patch(patch);
+            }
             Ok(response.pages)
         })
     }
@@ -369,7 +377,7 @@ impl ContextProviderBackend {
         request: &TurnRequest,
     ) -> Result<Prepared<McpHost>, String> {
         if let Some(mcp) = self.mcp_agents.get(agent) {
-            return self.prepare_mcp_turn(agent, key, mcp).await;
+            return self.prepare_mcp_turn(agent, key, mcp, request).await;
         }
         let client = self.client(agent)?;
         let body = serde_json::to_value(TurnCall {
@@ -385,9 +393,17 @@ impl ContextProviderBackend {
         let loaded = self.load(agent, &client, &turn.version).await?;
         let bootstrap = &loaded.bootstrap;
         let turn_state = TurnState::default();
+        if let Some(initial) = turn.turn_state.clone() {
+            turn_state.set(initial);
+        }
+        let state = SessionState::starting_from(request.state.clone());
+        if let Some(replaced) = turn.state.clone() {
+            state.replace(replaced);
+        }
         let source = ProviderPages {
             client,
             session: key.to_owned(),
+            state: state.clone(),
         };
         Ok(Prepared {
             system: with_pinned(&bootstrap.instructions, turn.pinned.as_deref()),
@@ -406,9 +422,9 @@ impl ContextProviderBackend {
             max_turn_tokens: bootstrap.max_turn_tokens,
             recite: bootstrap.recite,
             history_budget: bootstrap.history_budget,
-            state: turn.state,
             turn_end: bootstrap.turn_end,
-            host: loaded.toolset.host(key, turn_state.clone()),
+            host: loaded.toolset.host(key, turn_state.clone(), state.clone()),
+            state,
             turn_state,
         })
     }

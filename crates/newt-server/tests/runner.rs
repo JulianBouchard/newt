@@ -497,7 +497,10 @@ impl newt_server::backend::Backend for Remembers {
             .and_then(|state| state["turns"].as_i64())
             .unwrap_or(0);
         let mut prepared = self.inner.prepare(agent, key, request).await?;
-        prepared.state = Some(json!({ "turns": turns + 1 }));
+        prepared.state.replace(json!({ "turns": turns + 1 }));
+        if let Value::Object(patch) = json!({ "patched": true }) {
+            prepared.state.patch(&patch);
+        }
         prepared.turn_end = true;
         prepared.turn_state.set(json!({ "sent": false }));
         Ok(prepared)
@@ -572,7 +575,11 @@ async fn the_provider_state_carries_to_the_next_turn_and_each_turn_end_is_delive
         Some(json!({ "channel": "email" }))
     );
     assert_eq!(requests[0].state, None);
-    assert_eq!(requests[1].state, Some(json!({ "turns": 1 })));
+    assert_eq!(
+        requests[1].state,
+        Some(json!({ "turns": 1, "patched": true })),
+        "the saved state includes the turn's patches"
+    );
     let mut ends = backend.turn_ends.lock().unwrap().clone();
     ends.sort_by_key(|end| end["state"]["turns"].as_i64());
     assert_eq!(ends[0]["session"], "s1");
@@ -582,7 +589,7 @@ async fn the_provider_state_carries_to_the_next_turn_and_each_turn_end_is_delive
         json!([{ "id": "e1", "meta": { "channel": "email" } }])
     );
     assert_eq!(ends[0]["turn_state"], json!({ "sent": false }));
-    assert_eq!(ends[1]["state"], json!({ "turns": 2 }));
+    assert_eq!(ends[1]["state"], json!({ "turns": 2, "patched": true }));
     assert_eq!(
         runner.deliver_turn_ends().await,
         0,

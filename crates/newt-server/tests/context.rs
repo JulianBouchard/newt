@@ -26,6 +26,7 @@ struct Provider {
     turn_bodies: Mutex<Vec<Value>>,
     turn_ends: Mutex<Vec<Value>>,
     turn_end_status: Mutex<Option<StatusCode>>,
+    pages_state_patch: Mutex<Option<Value>>,
 }
 
 impl Provider {
@@ -101,7 +102,11 @@ async fn pages(
     provider.page_fetches.fetch_add(1, Ordering::SeqCst);
     assert_eq!(body["session"], "customer-7");
     assert_eq!(body["keys"], json!([["customer", "profile"]]));
-    Ok(Json(json!({ "pages": [provider.page()] })))
+    let mut response = json!({ "pages": [provider.page()] });
+    if let Some(patch) = provider.pages_state_patch.lock().unwrap().clone() {
+        response["state_patch"] = patch;
+    }
+    Ok(Json(response))
 }
 
 async fn turn_end(
@@ -343,7 +348,8 @@ async fn pinned_context_joins_the_cached_prefix_not_the_turn() {
 #[tokio::test]
 async fn the_turn_call_carries_events_and_state_and_takes_the_new_state() {
     let provider = Provider::new();
-    *provider.turn_extras.lock().unwrap() = json!({ "state": { "seen": 2 } });
+    *provider.turn_extras.lock().unwrap() =
+        json!({ "state": { "seen": 2 }, "turn_state": { "reply_channel": "email" } });
     provider.bootstrap.lock().unwrap()["turn_end"] = json!(true);
     let backend = serve(&provider, TOKEN).await;
 
@@ -368,7 +374,12 @@ async fn the_turn_call_carries_events_and_state_and_takes_the_new_state() {
         json!([{ "id": "e1", "meta": { "channel": "email" } }])
     );
     assert_eq!(body["state"], json!({ "seen": 1 }));
-    assert_eq!(prepared.state, Some(json!({ "seen": 2 })));
+    assert_eq!(prepared.state.changed(), Some(json!({ "seen": 2 })));
+    assert_eq!(
+        prepared.turn_state.get(),
+        json!({ "reply_channel": "email" }),
+        "the turn starts with the turn state /turn gave"
+    );
     assert!(prepared.turn_end);
 }
 
@@ -391,4 +402,33 @@ async fn a_turn_end_reaches_the_provider_and_a_refusal_is_an_error() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("503"), "{error}");
+}
+
+#[tokio::test]
+async fn a_page_fetch_can_patch_the_session_state() {
+    let provider = Provider::new();
+    *provider.pages_state_patch.lock().unwrap() = Some(json!({ "rendered": "r2", "old": null }));
+    let backend = serve(&provider, TOKEN).await;
+    let prepared = backend
+        .prepare(
+            "assistant",
+            "customer-7",
+            &TurnRequest {
+                events: Vec::new(),
+                state: Some(json!({ "rendered": "r1", "old": true, "kept": 1 })),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.state.changed(), None, "nothing changed it yet");
+
+    prepared
+        .workspace
+        .invalidate(&[vec!["customer".to_owned()]]);
+    prepared.workspace.read("profile.md").await.unwrap();
+
+    assert_eq!(
+        prepared.state.changed(),
+        Some(json!({ "rendered": "r2", "kept": 1 }))
+    );
 }

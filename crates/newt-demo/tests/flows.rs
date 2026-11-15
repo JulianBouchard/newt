@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use newt_core::message::ToolCall;
 use newt_core::tools::{CallContext, ToolHost};
 use newt_demo::{Demo, app};
-use newt_server::backend::TurnState;
+use newt_server::backend::{SessionState, TurnState};
 use newt_server::mcp::{McpAuth, McpServer, Toolset};
 use serde_json::{Value, json};
 
@@ -43,7 +43,7 @@ fn call(name: &str, arguments: Value) -> ToolCall {
 #[tokio::test]
 async fn clearing_tasks_waits_for_the_persons_approval() {
     let (demo, toolset) = connect().await;
-    let host = toolset.host("ana", TurnState::default());
+    let host = toolset.host("ana", TurnState::default(), SessionState::default());
     for text in ["call the bank", "book the dentist"] {
         let added = host
             .call(
@@ -97,7 +97,7 @@ async fn clearing_tasks_waits_for_the_persons_approval() {
 #[tokio::test]
 async fn the_weekly_review_runs_as_a_task_newt_polls_until_done() {
     let (_demo, toolset) = connect().await;
-    let host = toolset.host("ana", TurnState::default());
+    let host = toolset.host("ana", TurnState::default(), SessionState::default());
     host.call(
         &call("add_task", json!({ "text": "renew passport" })),
         &CallContext::default(),

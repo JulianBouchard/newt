@@ -12,7 +12,7 @@ use newt_core::provider::{
 };
 use newt_core::tools::NoTools;
 use newt_core::workspace::Workspace;
-use newt_server::backend::{Backend, BackendError, Prepared, TurnRequest, TurnState};
+use newt_server::backend::{Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState};
 use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::sessions::Lease;
@@ -49,7 +49,7 @@ impl Backend for Budgeted {
             max_turn_tokens: None,
             recite: false,
             history_budget: BUDGET,
-            state: None,
+            state: SessionState::default(),
             turn_end: false,
             turn_state: TurnState::default(),
             host: NoTools,

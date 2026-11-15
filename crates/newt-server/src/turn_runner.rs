@@ -7,7 +7,7 @@ use newt_core::turn::{TurnDeps, TurnError, TurnInput, TurnSettings, run_turn};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::backend::{Backend, Prepared, TurnEvent, TurnRequest, TurnState};
+use crate::backend::{Backend, Prepared, SessionState, TurnEvent, TurnRequest, TurnState};
 use crate::journal::TurnJournal;
 use crate::live::{Channel, Watch};
 use crate::runner::{Inner, elapsed_ms};
@@ -32,7 +32,7 @@ struct Ending {
     agent: String,
     key: String,
     previous_state: Option<Value>,
-    state: Option<Value>,
+    state: SessionState,
     turn_end: bool,
     turn_state: TurnState,
 }
@@ -53,7 +53,7 @@ struct TurnEndPayload<'a> {
     session: &'a str,
     turn: &'a str,
     outcome: Outcome,
-    state: Option<&'a Value>,
+    state: Option<Value>,
     turn_state: Value,
 }
 
@@ -63,10 +63,8 @@ impl Ending {
             return Ok(None);
         }
         let state = match outcome {
-            Outcome::DeadLettered => self.previous_state.as_ref(),
-            Outcome::Completed | Outcome::Failed => {
-                self.state.as_ref().or(self.previous_state.as_ref())
-            }
+            Outcome::DeadLettered => self.previous_state.clone(),
+            Outcome::Completed | Outcome::Failed => self.state.get(),
         };
         serde_json::to_value(TurnEndPayload {
             agent: &self.agent,
@@ -96,7 +94,7 @@ impl Ending {
             turn_id,
             messages,
             consumed,
-            provider_state: self.state.clone(),
+            provider_state: self.state.changed(),
             turn_end,
         })
     }
@@ -467,4 +465,58 @@ async fn finish_turn<B: Backend, M: Model>(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
+
+    use super::*;
+
+    fn ending() -> Ending {
+        let state = SessionState::starting_from(Some(serde_json::json!({ "step": 1 })));
+        if let Value::Object(patch) = serde_json::json!({ "step": 2 }) {
+            state.patch(&patch);
+        }
+        Ending {
+            agent: "assistant".into(),
+            key: "ana".into(),
+            previous_state: Some(serde_json::json!({ "step": 1 })),
+            state,
+            turn_end: true,
+            turn_state: TurnState::default(),
+        }
+    }
+
+    #[test]
+    fn a_failed_turn_reports_the_state_it_commits_and_a_dead_letter_the_previous_one() {
+        let ending = ending();
+        let failed = ending
+            .commit("t1".into(), Vec::new(), Vec::new(), true)
+            .unwrap();
+        assert_eq!(
+            failed.provider_state,
+            Some(serde_json::json!({ "step": 2 }))
+        );
+        assert_eq!(
+            failed.turn_end.unwrap()["state"],
+            serde_json::json!({ "step": 2 })
+        );
+
+        let dead = ending
+            .payload("t1", Outcome::DeadLettered)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dead["outcome"], "dead_lettered");
+        assert_eq!(dead["state"], serde_json::json!({ "step": 1 }));
+    }
+
+    #[test]
+    fn no_turn_end_is_built_when_the_provider_did_not_ask() {
+        let ending = Ending {
+            turn_end: false,
+            ..ending()
+        };
+        assert_eq!(ending.payload("t1", Outcome::Completed).unwrap(), None);
+    }
 }

@@ -108,6 +108,7 @@ Response:
 | `pinned` | string | no | none | Session-stable text. Trimmed; empty is ignored. |
 | `instructions` | string | no | none | Guidance for this turn only. |
 | `constraints` | array of string | no | `[]` | Rules that hold right now, for this turn only. Entries are trimmed; empty ones are dropped. |
+| `turn_state` | any JSON | no | none | The turn state the turn's tool calls start with (2.3), for facts the tools need that only this call knows, such as the channel to reply on. |
 | `state` | any JSON | no | none | The session's new provider state. Newt saves it in the same transaction that commits the turn, and sends it back as `state` on the next turn. Absent or `null` keeps the previous state; return `{}` to reset it. A turn that does not commit (the lease moved, or it was cancelled) saves nothing, so the state never runs ahead of the session's history. |
 
 ```json
@@ -143,6 +144,14 @@ Where each field goes:
 - `constraints` are text the model reads. They do not block a tool call. Enforce any constraint that must hold in your tool handlers as well.
 
 Typical uses of `state`: what the agent saw last turn, so this turn can say what changed; a cursor into the app's own records; a note that something was already announced.
+
+Later in the turn, a page fetch (1.6 `state_patch`) and a tool result (2.4 `newt/state_patch`) can change the state with a JSON merge patch. Patches touch only the keys they name, so a page load and a tool call running at the same time do not overwrite each other. The state the turn ends with is saved at commit, and only if `/turn`'s `state` or a patch changed it. A patch is lost when:
+
+- the turn does not commit (it failed with no effects and will be retried, or its lease moved);
+- it arrives after the commit, from a call that outlived the turn;
+- the turn was resumed after a crash: replayed tool results do not apply their patches again, and pages fetched before the crash are not refetched.
+
+So keep in the state what you can afford to recompute, and keep the record of anything that must not happen twice in your own data.
 
 ### 1.5 Pages and the workspace
 
@@ -182,8 +191,10 @@ Request:
 Response:
 
 ```json
-{ "pages": [ { "key": ["tasks"], "path": "tasks.md", "version": "8", "content": "# Tasks\n..." } ] }
+{ "pages": [ { "key": ["tasks"], "path": "tasks.md", "version": "8", "content": "# Tasks\n..." } ], "state_patch": { "rendered_at": "2026-11-12T09:30:02Z" } }
 ```
+
+`state_patch` (optional) is a JSON merge patch (RFC 7396) applied to the session's provider state (1.4): objects merge key by key, `null` removes a key, anything else replaces. It must be a JSON object; anything else fails the fetch. Use it to record what a lazy page load saw, such as the hashes of the pages it rendered, so the next turn can tell what changed.
 
 Rules newt applies to the response:
 
@@ -305,7 +316,7 @@ Newt sends these in `params._meta` of every `tools/call`:
 | `newt/idempotency_key` | string | `{agent}/{session}:{turn}:{call id}`. Opaque to you. Stable across retries and replays of the same call (section 4). For a call made through the `batch` tool the call id is `{batch call id}.{index}`. |
 | `newt/skills_loaded` | array of string | Skills the agent has loaded this turn, sorted. Lets a handler refuse an action until the right skill was read. |
 | `newt/pages_read` | array of `{ path, version }` | Pages the agent has read this turn, sorted by path, with the version newt holds. Lets a handler refuse to act on a page that has since changed. |
-| `newt/turn_state` | any JSON | The turn state: the last `newt/turn_state` a tool result returned this turn. Absent until a result sets one. One turn state is shared by all of an agent's MCP servers, which newt treats as one trust domain (they receive the same agent token). |
+| `newt/turn_state` | any JSON | The turn state: the `turn_state` from `/turn` (1.4), or the last `newt/turn_state` a tool result returned this turn. Absent until one of them sets it. One turn state is shared by all of an agent's MCP servers, which newt treats as one trust domain (they receive the same agent token). |
 | `traceparent` | string | W3C trace context of the call's `execute_tool` span, as newt's OTLP exporter emits it. Parent your own spans on it to see them under the turn's trace. Sent whether or not OTLP export is on. |
 | `progressToken` | string or number | Standard MCP. Report `notifications/progress` with it to keep a long call alive (section 2.1). |
 
@@ -327,14 +338,15 @@ Newt sends these in `params._meta` of every `tools/call`:
 
 ### 2.4 Result `_meta`
 
-Set on the `tools/call` result. All optional. Newt applies them only to results that are not errors, except `newt/turn_state`.
+Set on the `tools/call` result. All optional. Newt applies them only to results that are not errors, except `newt/turn_state` and `newt/state_patch`.
 
 | Field | Type | Meaning |
 |---|---|---|
 | `newt/summary` | string | What history keeps instead of the full result (section 3). |
 | `newt/invalidate` | array of page key | More key prefixes to mark stale, in addition to the tool's `newt/invalidates`. |
 | `newt/pages` | array of page | Fresh page data. Newt puts these pages in the workspace and clears their stale flag, so the next read needs no refetch. |
-| `newt/turn_state` | any JSON | Replaces the turn state that later calls in this turn receive (2.3). Applied whether or not the result is an error, so a refusal can be counted. Calls that run at the same time (a `batch`) each see the state from before them, and the last result to arrive wins. Starts empty each turn. A turn resumed after a crash replays its journaled tool results without their turn state, so it starts empty there too. |
+| `newt/state_patch` | object | A JSON merge patch (RFC 7396) applied to the session's provider state (1.4), saved when the turn commits (see 1.4 for when a patch is lost). For example, record which page hashes the agent saw. Applied whether or not the result is an error. A patch that is not an object is ignored, and the tool output tells the model so. |
+| `newt/turn_state` | any JSON | Replaces the turn state that later calls in this turn receive (2.3). Applied whether or not the result is an error, so a refusal can be counted. Calls that run at the same time (a `batch`) each see the state from before them, and the last result to arrive wins. Starts each turn as `/turn`'s `turn_state`, or empty. A turn resumed after a crash replays its journaled tool results without their turn state, so it starts from `/turn`'s value there too. |
 
 ```json
 {
