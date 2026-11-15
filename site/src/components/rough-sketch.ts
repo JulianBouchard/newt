@@ -16,6 +16,10 @@ export type SketchLabel = {
 
 type Options = Record<string, unknown>;
 
+function roundPathNumbers(d: string) {
+  return d.replace(/-?\d+\.\d+/g, (number) => String(Math.round(Number(number) * 10) / 10));
+}
+
 export function createSketch(firstSeed: number) {
   const generator = rough.generator();
   const strokes: SketchStroke[] = [];
@@ -25,7 +29,7 @@ export function createSketch(firstSeed: number) {
 
   const draw = (drawable: ReturnType<typeof generator.line>, dashed = false) => {
     for (const path of generator.toPaths(drawable)) {
-      strokes.push({ d: path.d, stroke: path.stroke, width: path.strokeWidth, fill: path.fill ?? "none", dashed });
+      strokes.push({ d: roundPathNumbers(path.d), stroke: path.stroke, width: path.strokeWidth, fill: path.fill ?? "none", dashed });
     }
   };
 

@@ -72,7 +72,6 @@ const groups = [
     if (markdownLink) {
       const path = location.pathname.replace(/\/$/, "");
       const base = import.meta.env.BASE_URL.replace(/\/$/, "");
-const isQuickstart = Astro.locals.starlightRoute.entry.id === "quickstart";
       markdownLink.href = path === base ? `${base}/index.md` : `${path}.md`;
     }
   }
