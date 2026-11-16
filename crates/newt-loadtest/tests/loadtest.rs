@@ -92,6 +92,7 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
         live,
         shutdown: CancellationToken::new(),
         instrumentation: None,
+        live_meta: Arc::default(),
     }))
     .await;
 

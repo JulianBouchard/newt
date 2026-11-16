@@ -170,6 +170,7 @@ async fn a_posted_event_runs_a_turn_and_commits_it(pool: PgPool) {
         live,
         shutdown: CancellationToken::new(),
         instrumentation: None,
+        live_meta: Arc::default(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -208,11 +209,11 @@ async fn a_posted_event_runs_a_turn_and_commits_it(pool: PgPool) {
 async fn queued_events_are_all_processed(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "t2", &event("e1", "one"))
+        .accept_event("assistant", "t2", &event("e1", "one"), false)
         .await
         .unwrap();
     store
-        .accept_event("assistant", "t2", &event("e2", "two"))
+        .accept_event("assistant", "t2", &event("e2", "two"), false)
         .await
         .unwrap();
     let runner = runner(
@@ -235,7 +236,7 @@ async fn queued_events_are_all_processed(pool: PgPool) {
 async fn a_failing_turn_backs_off_and_keeps_its_events(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "t3", &event("e1", "hi"))
+        .accept_event("assistant", "t3", &event("e1", "hi"), false)
         .await
         .unwrap();
     let thinking_aloud = Message {
@@ -269,7 +270,7 @@ async fn a_failing_turn_backs_off_and_keeps_its_events(pool: PgPool) {
 async fn a_runner_that_lost_its_lease_cannot_commit(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "t4", &event("e1", "hi"))
+        .accept_event("assistant", "t4", &event("e1", "hi"), false)
         .await
         .unwrap();
     let runner = runner(
@@ -296,7 +297,7 @@ async fn a_runner_that_lost_its_lease_cannot_commit(pool: PgPool) {
 async fn the_sweeper_picks_up_an_orphaned_session(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "t5", &event("e1", "hi"))
+        .accept_event("assistant", "t5", &event("e1", "hi"), false)
         .await
         .unwrap();
     sqlx::query(
@@ -337,14 +338,14 @@ async fn a_message_sent_mid_turn_joins_that_turn(pool: PgPool) {
         Arc::clone(&started),
     );
     store
-        .accept_event("assistant", "t6", &event("e1", "roles in Lisbon"))
+        .accept_event("assistant", "t6", &event("e1", "roles in Lisbon"), false)
         .await
         .unwrap();
 
     runner.wake("assistant", "t6");
     started.notified().await;
     store
-        .accept_event("assistant", "t6", &event("e2", "actually Berlin"))
+        .accept_event("assistant", "t6", &event("e2", "actually Berlin"), false)
         .await
         .unwrap();
     let status = wait_for(&store, "t6", |s| {
@@ -405,7 +406,7 @@ impl newt_server::backend::Backend for PanicsOnce {
 async fn a_session_whose_task_panics_recovers_after_its_lease_expires(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "t7", &event("e1", "hi"))
+        .accept_event("assistant", "t7", &event("e1", "hi"), false)
         .await
         .unwrap();
     let runner = Runner::new(
@@ -442,7 +443,7 @@ async fn a_session_whose_task_panics_recovers_after_its_lease_expires(pool: PgPo
 async fn a_turn_that_keeps_failing_is_dead_lettered(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "t8", &event("e1", "hi"))
+        .accept_event("assistant", "t8", &event("e1", "hi"), false)
         .await
         .unwrap();
     let runner = runner(&pool, Vec::new(), false, Topics::default());
@@ -555,11 +556,14 @@ async fn the_provider_state_carries_to_the_next_turn_and_each_turn_end_is_delive
         serde_json::from_value(json!({ "id": "e1", "text": "hi", "meta": { "channel": "email" } }))
             .unwrap();
 
-    store.accept_event("assistant", "s1", &first).await.unwrap();
+    store
+        .accept_event("assistant", "s1", &first, false)
+        .await
+        .unwrap();
     runner.wake("assistant", "s1");
     runner.idle().await;
     store
-        .accept_event("assistant", "s1", &event("e2", "again"))
+        .accept_event("assistant", "s1", &event("e2", "again"), false)
         .await
         .unwrap();
     runner.wake("assistant", "s1");
@@ -645,7 +649,7 @@ async fn a_refused_turn_end_waits_for_its_backoff_and_is_sent_again(pool: PgPool
     let store = Store::new(pool.clone());
     let runner = remembering_runner(&pool, vec![reply_and_end("one")]);
     store
-        .accept_event("assistant", "s2", &event("e1", "hi"))
+        .accept_event("assistant", "s2", &event("e1", "hi"), false)
         .await
         .unwrap();
     runner.wake("assistant", "s2");
@@ -674,7 +678,7 @@ async fn a_turn_end_refused_too_often_is_given_up(pool: PgPool) {
     let store = Store::new(pool.clone());
     let runner = remembering_runner(&pool, vec![reply_and_end("one")]);
     store
-        .accept_event("assistant", "s3", &event("e1", "hi"))
+        .accept_event("assistant", "s3", &event("e1", "hi"), false)
         .await
         .unwrap();
     runner.wake("assistant", "s3");

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -104,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         live: live_topics,
         shutdown: shutdown.clone(),
         instrumentation: http_instrumentation,
+        live_meta: Arc::new(access.live_meta),
     };
 
     let stopping = runner.clone();
@@ -173,6 +174,7 @@ struct AgentAccess {
     tokens: HashMap<String, String>,
     providers: BTreeMap<String, ProviderEndpoint>,
     mcp: BTreeMap<String, McpAgent>,
+    live_meta: HashSet<String>,
 }
 
 fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
@@ -180,6 +182,7 @@ fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
         tokens: HashMap::new(),
         providers: BTreeMap::new(),
         mcp: BTreeMap::new(),
+        live_meta: HashSet::new(),
     };
     for (name, agent) in &config.agents {
         let token = std::env::var(&agent.token_env)
@@ -208,6 +211,9 @@ fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
                 );
             }
             _ => anyhow::bail!("agent `{name}` needs exactly one of context_provider and mcp"),
+        }
+        if agent.live_meta {
+            access.live_meta.insert(name.clone());
         }
         access.tokens.insert(name.clone(), token);
     }

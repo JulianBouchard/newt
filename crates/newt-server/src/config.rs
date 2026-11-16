@@ -184,6 +184,9 @@ pub struct Agent {
     #[serde(default)]
     pub model: Option<String>,
     pub token_env: String,
+    /// Put the event's `meta` on its live `received` frame.
+    #[serde(default)]
+    pub live_meta: bool,
 }
 
 impl ServerConfig {

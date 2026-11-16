@@ -56,7 +56,7 @@ async fn journal_rows(pool: &PgPool, key: &str) -> i64 {
 async fn a_stale_owner_cannot_begin_a_turn(pool: PgPool) {
     let store = Store::new(pool.clone());
     let accepted = store
-        .accept_event("assistant", "s1", &event("e1", "hi"))
+        .accept_event("assistant", "s1", &event("e1", "hi"), false)
         .await
         .unwrap();
     let lease = claimed(&store, "s1", "me").await;
@@ -75,7 +75,7 @@ async fn a_stale_owner_cannot_begin_a_turn(pool: PgPool) {
 async fn a_stale_owner_of_an_idle_session_releases_nothing(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "s2", &event("e1", "hi"))
+        .accept_event("assistant", "s2", &event("e1", "hi"), false)
         .await
         .unwrap();
     let lease = claimed(&store, "s2", "me").await;
@@ -103,7 +103,7 @@ async fn a_stale_owner_of_an_idle_session_releases_nothing(pool: PgPool) {
 async fn an_owner_with_nothing_to_do_releases_its_lease(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "s3", &event("e1", "hi"))
+        .accept_event("assistant", "s3", &event("e1", "hi"), false)
         .await
         .unwrap();
     let lease = claimed(&store, "s3", "me").await;
@@ -130,7 +130,7 @@ async fn an_owner_with_nothing_to_do_releases_its_lease(pool: PgPool) {
 async fn a_crashed_turn_resumes_with_exactly_the_events_it_started_on(pool: PgPool) {
     let store = Store::new(pool.clone());
     let first = store
-        .accept_event("assistant", "s4", &event("e1", "hi"))
+        .accept_event("assistant", "s4", &event("e1", "hi"), false)
         .await
         .unwrap();
     let crashed = claimed(&store, "s4", "crashed").await;
@@ -140,7 +140,7 @@ async fn a_crashed_turn_resumes_with_exactly_the_events_it_started_on(pool: PgPo
         .unwrap()
         .unwrap();
     store
-        .accept_event("assistant", "s4", &event("e2", "later"))
+        .accept_event("assistant", "s4", &event("e2", "later"), false)
         .await
         .unwrap();
     expire(&pool, "s4").await;
@@ -164,7 +164,7 @@ async fn a_crashed_turn_resumes_with_exactly_the_events_it_started_on(pool: PgPo
 async fn commits_number_history_contiguously_and_consume_their_events(pool: PgPool) {
     let store = Store::new(pool.clone());
     let accepted = store
-        .accept_event("assistant", "s5", &event("e1", "hi"))
+        .accept_event("assistant", "s5", &event("e1", "hi"), false)
         .await
         .unwrap();
     let lease = claimed(&store, "s5", "me").await;
@@ -251,7 +251,7 @@ async fn commits_number_history_contiguously_and_consume_their_events(pool: PgPo
 async fn a_commit_saves_the_provider_state_and_queues_its_turn_end(pool: PgPool) {
     let store = Store::new(pool.clone());
     let first = store
-        .accept_event("assistant", "s6", &event("e1", "hi"))
+        .accept_event("assistant", "s6", &event("e1", "hi"), false)
         .await
         .unwrap();
     let lease = claimed(&store, "s6", "me").await;
@@ -286,7 +286,7 @@ async fn a_commit_saves_the_provider_state_and_queues_its_turn_end(pool: PgPool)
         .await
         .unwrap();
     store
-        .accept_event("assistant", "s6", &event("e2", "again"))
+        .accept_event("assistant", "s6", &event("e2", "again"), false)
         .await
         .unwrap();
 
@@ -323,7 +323,7 @@ async fn a_commit_saves_the_provider_state_and_queues_its_turn_end(pool: PgPool)
 async fn a_stale_commit_queues_no_turn_end_and_keeps_the_state(pool: PgPool) {
     let store = Store::new(pool.clone());
     store
-        .accept_event("assistant", "s7", &event("e1", "hi"))
+        .accept_event("assistant", "s7", &event("e1", "hi"), false)
         .await
         .unwrap();
     let lease = claimed(&store, "s7", "me").await;
@@ -361,7 +361,7 @@ fn with_meta(id: &str, channel: &str) -> InboundEvent {
 async fn a_turn_end_lists_every_event_the_turn_consumed_with_its_meta(pool: PgPool) {
     let store = Store::new(pool.clone());
     let first = store
-        .accept_event("assistant", "s8", &with_meta("e1", "email"))
+        .accept_event("assistant", "s8", &with_meta("e1", "email"), false)
         .await
         .unwrap();
     let lease = claimed(&store, "s8", "me").await;
@@ -371,7 +371,7 @@ async fn a_turn_end_lists_every_event_the_turn_consumed_with_its_meta(pool: PgPo
         .unwrap()
         .unwrap();
     let steered = store
-        .accept_event("assistant", "s8", &with_meta("e2", "sms"))
+        .accept_event("assistant", "s8", &with_meta("e2", "sms"), false)
         .await
         .unwrap();
     store
@@ -406,7 +406,7 @@ async fn a_turn_end_lists_every_event_the_turn_consumed_with_its_meta(pool: PgPo
 async fn dead_lettered_events_queue_a_turn_end_saying_so(pool: PgPool) {
     let store = Store::new(pool.clone());
     let first = store
-        .accept_event("assistant", "s9", &with_meta("e1", "email"))
+        .accept_event("assistant", "s9", &with_meta("e1", "email"), false)
         .await
         .unwrap();
     let lease = claimed(&store, "s9", "me").await;
@@ -434,4 +434,42 @@ async fn dead_lettered_events_queue_a_turn_end_saying_so(pool: PgPool) {
         .unwrap()
         .unwrap();
     assert_eq!(status.pending_events, 0);
+}
+
+async fn received_frame(pool: &PgPool, key: &str) -> Value {
+    sqlx::query_scalar(
+        "select event from live_events where key = $1 and event->>'type' = 'received'",
+    )
+    .bind(key)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_received_frame_carries_meta_only_for_agents_that_opt_in(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    let with_meta: InboundEvent =
+        serde_json::from_value(json!({ "id": "e1", "text": "hi", "meta": { "from": "ana" } }))
+            .unwrap();
+
+    store
+        .accept_event("assistant", "m1", &with_meta, true)
+        .await
+        .unwrap();
+    store
+        .accept_event("assistant", "m2", &with_meta, false)
+        .await
+        .unwrap();
+    store
+        .accept_event("assistant", "m3", &event("e1", "hi"), true)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        received_frame(&pool, "m1").await["meta"],
+        json!({ "from": "ana" })
+    );
+    assert!(received_frame(&pool, "m2").await.get("meta").is_none());
+    assert!(received_frame(&pool, "m3").await.get("meta").is_none());
 }

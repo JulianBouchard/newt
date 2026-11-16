@@ -8,7 +8,10 @@ use sqlx::PgPool;
 async fn batched_live_events_keep_gapless_ordered_sequence_numbers(pool: PgPool) {
     let store = Store::new(pool);
     let event: InboundEvent = serde_json::from_value(json!({ "id": "e1", "text": "hi" })).unwrap();
-    store.accept_event("assistant", "k", &event).await.unwrap();
+    store
+        .accept_event("assistant", "k", &event, false)
+        .await
+        .unwrap();
     let before = store
         .live_since("assistant", "k", 0, 100)
         .await

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,6 +37,8 @@ pub struct AppState {
     pub live: Topics,
     pub shutdown: CancellationToken,
     pub instrumentation: Option<Arc<dyn EventSink>>,
+    /// Agents whose live `received` frames carry the event's `meta`.
+    pub live_meta: Arc<HashSet<String>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -158,7 +160,10 @@ async fn post_event(
         return Err(ApiError::Invalid("an event needs text"));
     }
     let started = std::time::Instant::now();
-    let accepted = state.store.accept_event(&agent, &key, &event).await?;
+    let accepted = state
+        .store
+        .accept_event(&agent, &key, &event, state.live_meta.contains(&agent))
+        .await?;
     if let Some(sink) = &state.instrumentation
         && !accepted.duplicate
     {
