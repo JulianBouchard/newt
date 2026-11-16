@@ -1,0 +1,101 @@
+---
+import { ARCHITECTURE_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(7);
+const { box, line, ellipse, arc, arrow } = sketch;
+
+function badge(x: number, y: number) {
+  sketch.circle(x, y, 26, { stroke: ACCENT, roughness: 0.8 });
+}
+
+box(40, 120, 300, 430);
+box(62, 185, 256, 190);
+box(82, 235, 150, 34, { stroke: ACCENT, strokeWidth: 2 });
+box(82, 279, 150, 34);
+box(82, 323, 150, 34);
+box(62, 395, 256, 135);
+
+box(450, 90, 360, 480, { stroke: ACCENT, strokeWidth: 2.2 });
+box(480, 180, 300, 62, { fill: "var(--sk-fill)", fillStyle: "hachure", hachureGap: 9, fillWeight: 1 });
+box(480, 252, 300, 82, { fill: "var(--sk-fill-soft)", fillStyle: "hachure", hachureGap: 12, fillWeight: 1 });
+box(480, 344, 300, 120, {}, true);
+
+box(930, 215, 230, 110);
+
+ellipse(630, 600, 260, 28);
+line(500, 600, 500, 668);
+line(760, 600, 760, 668);
+arc(630, 668, 260, 28, 0, Math.PI);
+
+arrow([[345, 152], [446, 152]]);
+badge(366, 132);
+arrow([[446, 300], [340, 295], [238, 286]]);
+badge(366, 262);
+arrow([[812, 250], [926, 250]]);
+arrow([[926, 292], [812, 292]]);
+badge(852, 230);
+arrow([[446, 440], [380, 452], [322, 458]]);
+badge(366, 418);
+arrow([[86, 462], [28, 360], [78, 253]], ACCENT);
+arrow([[786, 430], [838, 380], [786, 312]], ACCENT);
+badge(842, 412);
+arrow([[630, 572], [630, 586]]);
+arrow([[925, 160], [872, 182], [786, 210]], ACCENT);
+arrow([[796, 624], [780, 628], [766, 630]], ACCENT);
+arrow([[452, 690], [478, 680], [498, 664]], ACCENT);
+
+const labels: SketchLabel[] = [
+  { x: 60, y: 160, text: "your app", size: 32, weight: 700 },
+  { x: 78, y: 218, text: "context provider", size: 23, weight: 600 },
+  { x: 98, y: 259, text: "tasks.md", size: 20, tone: "accent", weight: 600 },
+  { x: 98, y: 303, text: "notes.md", size: 20 },
+  { x: 98, y: 347, text: "profile.md", size: 20 },
+  { x: 78, y: 428, text: "MCP tools", size: 23, weight: 600 },
+  { x: 92, y: 467, text: "complete_task", size: 20 },
+  { x: 92, y: 503, text: "send_message", size: 20 },
+
+  { x: 470, y: 132, text: "newt", size: 36, tone: "accent", weight: 700 },
+  { x: 556, y: 130, text: "one Rust binary", size: 19, tone: "muted" },
+  { x: 482, y: 170, text: "the prompt, every turn:", size: 19, tone: "muted" },
+  { x: 495, y: 208, text: "frozen prefix", size: 22, weight: 600 },
+  { x: 495, y: 231, text: "instructions · tools", size: 18, tone: "muted" },
+  { x: 495, y: 282, text: "history", size: 22, weight: 600 },
+  { x: 495, y: 306, text: "append-only · replies · write summaries", size: 18, tone: "muted" },
+  { x: 495, y: 374, text: "scratch (this turn only)", size: 22, weight: 600 },
+  { x: 495, y: 400, text: "new events · page reads", size: 18, tone: "muted" },
+  { x: 495, y: 424, text: "tool results · reasoning", size: 18, tone: "muted" },
+  { x: 482, y: 510, text: "runner: leases · wakeups · steering", size: 18, tone: "muted" },
+
+  { x: 950, y: 258, text: "model", size: 30, weight: 700 },
+  { x: 950, y: 292, text: "Anthropic, OpenAI, …", size: 19, tone: "muted" },
+
+  { x: 586, y: 642, text: "Postgres", size: 26, weight: 700 },
+  { x: 548, y: 665, text: "history · journal · leases", size: 18, tone: "muted" },
+
+  { x: 362, y: 139, text: "1", size: 19, tone: "accent", weight: 700 },
+  { x: 384, y: 142, text: "event", size: 20 },
+  { x: 362, y: 269, text: "2", size: 19, tone: "accent", weight: 700 },
+  { x: 384, y: 272, text: ["read", "pages"], size: 20 },
+  { x: 848, y: 237, text: "3", size: 19, tone: "accent", weight: 700 },
+  { x: 870, y: 240, text: "think", size: 20 },
+  { x: 362, y: 425, text: "4", size: 19, tone: "accent", weight: 700 },
+  { x: 384, y: 428, text: "call tool", size: 20 },
+  { x: 838, y: 419, text: "5", size: 19, tone: "accent", weight: 700 },
+
+  { x: 930, y: 128, text: ["prefix + history are cached:", "each turn pays only for", "what is new"], size: 21, tone: "accent" },
+  { x: 862, y: 420, text: ["end of turn: reads dropped,", "writes kept as one-line", "summaries"], size: 21, tone: "accent" },
+  { x: 40, y: 590, text: ["complete_task marks tasks.md stale.", "The next read refetches it,", "like React Query."], size: 21, tone: "accent" },
+  { x: 804, y: 612, text: ["send_message is journaled here first,", "so it goes out once, even after a crash"], size: 20, tone: "accent" },
+  { x: 150, y: 700, text: "any newt instance can run any session", size: 20, tone: "accent" },
+];
+---
+
+<SketchCanvas
+  viewBox="10 62 1190 682"
+  strokes={sketch.strokes}
+  labels={labels}
+  description={ARCHITECTURE_DESCRIPTION}
+  captionId="newt-architecture-caption"
+/>

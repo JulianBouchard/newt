@@ -1,0 +1,44 @@
+---
+import type { SketchLabel, SketchStroke } from "./rough-sketch";
+import { labelsToGlyphs } from "./sketch-text";
+
+interface Props {
+  viewBox: string;
+  strokes: SketchStroke[];
+  labels: SketchLabel[];
+  description: string;
+  captionId: string;
+  minWidth?: string;
+  class?: string;
+}
+
+const { viewBox, strokes, labels, description, captionId, minWidth = "46rem", class: className } = Astro.props;
+const glyphs = labelsToGlyphs(labels, captionId.split("-")[1].slice(0, 4));
+---
+
+<figure class:list={["newt-sketch", "not-content", className]}>
+  <div class="newt-sketch-scroll">
+    <svg viewBox={viewBox} role="img" aria-labelledby={captionId} style={`min-width:${minWidth}`}>
+      <slot />
+      {
+        strokes.map((stroke) => (
+          <path
+            d={stroke.d}
+            style={`stroke:${stroke.stroke};stroke-width:${stroke.width};fill:${stroke.fill}`}
+            stroke-linecap="round"
+            stroke-dasharray={stroke.dashed ? "7 7" : undefined}
+          />
+        ))
+      }
+      <defs>{glyphs.definitions.map((glyph) => <path id={glyph.id} d={glyph.d} />)}</defs>
+      {
+        glyphs.lines.map((line) => (
+          <g transform={line.transform} class={`sk-${line.tone}`}>
+            {line.glyphs.map((glyph) => <use href={glyph.href} x={glyph.x} />)}
+          </g>
+        ))
+      }
+    </svg>
+  </div>
+  <figcaption id={captionId} class="sr-only">{description}</figcaption>
+</figure>

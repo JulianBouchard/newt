@@ -1,0 +1,19 @@
+---
+import lockupDark from "../assets/generated/lockup-dark.svg?raw";
+import lockupLight from "../assets/generated/lockup-light.svg?raw";
+
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+
+function inlineLockup(svg: string, variant: string) {
+  return svg
+    .replace(/\sid="([^"]+)"/g, ` id="${variant}-$1"`)
+    .replace(/url\(#([^)]+)\)/g, `url(#${variant}-$1)`)
+    .replace("<svg ", '<svg aria-hidden="true" focusable="false" ');
+}
+---
+
+<a href={siteTitleHref} class="site-title sl-flex newt-site-title">
+  <span class="newt-lockup newt-lockup-dark" set:html={inlineLockup(lockupDark, "dark")} />
+  <span class="newt-lockup newt-lockup-light" set:html={inlineLockup(lockupLight, "light")} />
+  <span class="sr-only" translate="no">{siteTitle}</span>
+</a>
