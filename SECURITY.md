@@ -8,7 +8,7 @@ Include what you found, the version or commit, and steps to reproduce it. Expect
 
 ## Supported versions
 
-newt is pre-1.0 and not published to crates.io. Only the `main` branch is supported. Fixes land on `main`; there are no backports.
+Only the latest release is supported. Fixes land on `main` and ship in the next patch release; older minor versions get no backports. The crates are not published to crates.io.
 
 ## Threat model
 

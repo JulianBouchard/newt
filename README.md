@@ -6,7 +6,7 @@ Newts regrow what they lose. So does this: every turn strips the context back an
 
 In it: streaming clients for Anthropic, OpenAI and any Chat Completions host (vLLM, Ollama, OpenRouter), the turn loop with retention classes, steering, a crash-safe journal, the Postgres runtime, a reactive workspace fed by a context provider, MCP tools, approvals and tasks over MCP, compaction and OTLP tracing.
 
-**Status:** 1.0. Each release ships `newt` binaries for Linux (x86_64, arm64) and macOS (arm64) and a Docker image at `ghcr.io/julianbouchard/newt`. To build from source you need Rust 1.99. newt runs its own Postgres 18 or connects to yours.
+**Status:** stable since 1.0. Each release ships `newt` binaries for Linux (x86_64) and macOS (arm64) and a Docker image at `ghcr.io/julianbouchard/newt`. To build from source you need Rust 1.99. newt runs its own Postgres 18 or connects to yours.
 
 | Maturity | What |
 |---|---|
