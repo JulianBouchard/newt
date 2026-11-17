@@ -2,14 +2,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Context;
+use newt_core::otlp::parse_headers;
 use newt_core::prompt::{Lane, ModelRequest};
 use newt_core::provider::{
     Model, ModelResponse, Protocol as CoreProtocol, ProviderClient, ProviderError, StreamEvent,
 };
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{Protocol, ServerConfig};
+use crate::config::{Protocol, Route as RouteConfig, ServerConfig};
 
 #[derive(Debug)]
 pub struct Admission {
@@ -70,6 +72,32 @@ pub struct Routes {
     aliases: HashMap<String, Vec<Arc<Route>>>,
 }
 
+fn route_headers(route: &RouteConfig, variable: &str, raw: &str) -> anyhow::Result<HeaderMap> {
+    let pairs = parse_headers(raw).map_err(|error| anyhow::anyhow!("{variable}: {error}"))?;
+    let key_header = route
+        .api_key_header
+        .as_deref()
+        .unwrap_or(match route.protocol {
+            Protocol::AnthropicMessages => "x-api-key",
+            Protocol::OpenaiResponses | Protocol::OpenaiChat => "authorization",
+        });
+    let mut headers = HeaderMap::new();
+    for (name, value) in pairs {
+        let header = HeaderName::from_bytes(name.as_bytes())
+            .with_context(|| format!("{variable}: `{name}` is not a valid header name"))?;
+        anyhow::ensure!(
+            !header.as_str().eq_ignore_ascii_case(key_header),
+            "{variable}: `{name}` is the header that carries the route's key; set it with key_env"
+        );
+        let mut value = HeaderValue::from_str(&value).with_context(|| {
+            format!("{variable}: the value of `{name}` is not a valid header value")
+        })?;
+        value.set_sensitive(true);
+        headers.insert(header, value);
+    }
+    Ok(headers)
+}
+
 impl Routes {
     pub fn from_config(config: &ServerConfig) -> anyhow::Result<Self> {
         let mut routes = HashMap::new();
@@ -84,6 +112,14 @@ impl Routes {
             let mut client = ProviderClient::new(protocol, &route.base_url, key)?;
             if let Some(header) = &route.api_key_header {
                 client = client.with_api_key_header(header);
+            }
+            if let Some(variable) = &route.headers_env {
+                let raw = std::env::var(variable)
+                    .with_context(|| format!("environment variable {variable} is not set"))?;
+                client = client.with_headers(
+                    route_headers(route, variable, &raw)
+                        .with_context(|| format!("route `{name}` headers_env"))?,
+                );
             }
             if !route.replay_reasoning {
                 client = client.without_reasoning_replay();
@@ -191,6 +227,47 @@ mod tests {
     use super::*;
 
     const OPENAI_STREAM: &str = include_str!("../../newt-core/tests/fixtures/openai_tool_use.sse");
+
+    fn route_config(api_key_header: Option<&str>) -> RouteConfig {
+        RouteConfig {
+            protocol: Protocol::OpenaiResponses,
+            model: "m".to_owned(),
+            base_url: "http://localhost:3456".to_owned(),
+            key_env: "K".to_owned(),
+            api_key_header: api_key_header.map(str::to_owned),
+            headers_env: Some("H".to_owned()),
+            max_concurrent: 1,
+            replay_reasoning: true,
+        }
+    }
+
+    #[test]
+    fn route_headers_are_parsed_and_marked_sensitive() {
+        let headers = route_headers(
+            &route_config(None),
+            "H",
+            "x-clera-internal=tok, x-other = 2",
+        )
+        .unwrap();
+        assert_eq!(headers.get("x-clera-internal").unwrap(), "tok");
+        assert_eq!(headers.get("x-other").unwrap(), "2");
+        assert!(headers.values().all(HeaderValue::is_sensitive));
+    }
+
+    #[test]
+    fn route_headers_refuse_the_header_that_carries_the_key() {
+        let bearer = route_headers(&route_config(None), "H", "Authorization=Bearer x");
+        assert!(bearer.unwrap_err().to_string().contains("key_env"));
+        let custom = route_headers(&route_config(Some("api-key")), "H", "api-key=x");
+        assert!(custom.unwrap_err().to_string().contains("key_env"));
+        assert!(route_headers(&route_config(Some("api-key")), "H", "authorization=x").is_ok());
+    }
+
+    #[test]
+    fn route_headers_reject_malformed_pairs() {
+        assert!(route_headers(&route_config(None), "H", "x-clera-internal").is_err());
+        assert!(route_headers(&route_config(None), "H", "bad name=x").is_err());
+    }
 
     async fn provider(status: StatusCode, body: &'static str) -> (String, Arc<AtomicUsize>) {
         let hits = Arc::new(AtomicUsize::new(0));

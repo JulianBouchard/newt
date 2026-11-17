@@ -596,6 +596,47 @@ async fn an_api_key_header_route_sends_that_header_and_no_bearer_token() {
 }
 
 #[tokio::test]
+async fn extra_route_headers_go_out_next_to_the_bearer_key() {
+    let seen: Arc<Mutex<Option<axum::http::HeaderMap>>> = Arc::new(Mutex::new(None));
+    let sink = Arc::clone(&seen);
+    let app = Router::new().route(
+        "/responses",
+        post(move |headers: axum::http::HeaderMap| {
+            let sink = Arc::clone(&sink);
+            async move {
+                *sink.lock().await = Some(headers);
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(include_str!("fixtures/openai_tool_use.sse")))
+                    .unwrap()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut extra = reqwest::header::HeaderMap::new();
+    extra.insert("x-clera-internal", "internal-token".parse().unwrap());
+    let client = ProviderClient::new(
+        Protocol::OpenaiResponses,
+        format!("http://{address}"),
+        "service-key",
+    )
+    .unwrap()
+    .with_headers(extra);
+
+    stream_once(&client, &CancellationToken::new())
+        .await
+        .0
+        .unwrap();
+
+    let headers = seen.lock().await.take().unwrap();
+    assert_eq!(headers.get("x-clera-internal").unwrap(), "internal-token");
+    assert_eq!(headers.get("authorization").unwrap(), "Bearer service-key");
+    assert!(!format!("{client:?}").contains("internal-token"));
+}
+
+#[tokio::test]
 async fn capture_mode_writes_the_request_and_raw_stream_without_the_key() {
     let fixture = include_str!("fixtures/anthropic_tool_use.sse");
     let (base, _) = serve("/v1/messages", StatusCode::OK, Body::from(fixture)).await;

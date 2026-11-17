@@ -91,7 +91,7 @@ pub fn parse_headers(raw: &str) -> Result<Vec<(String, String)>, String> {
             pair.split_once('=')
                 .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
                 .filter(|(name, _)| !name.is_empty())
-                .ok_or_else(|| "OTLP headers must look like name=value,name=value".to_owned())
+                .ok_or_else(|| "headers must look like name=value,name=value".to_owned())
         })
         .collect()
 }

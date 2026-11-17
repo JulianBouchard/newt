@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use reqwest::header::HeaderMap;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -184,6 +185,7 @@ pub struct ProviderClient {
     base_url: String,
     api_key: String,
     auth: Auth,
+    headers: HeaderMap,
     capture: Option<Capture>,
     deadline: Duration,
     replay_reasoning: bool,
@@ -197,6 +199,7 @@ impl fmt::Debug for ProviderClient {
             .field("base_url", &self.base_url)
             .field("api_key", &"<redacted>")
             .field("auth", &self.auth)
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
             .field("capture", &self.capture)
             .field("deadline", &self.deadline)
             .field("replay_reasoning", &self.replay_reasoning)
@@ -224,6 +227,7 @@ impl ProviderClient {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             api_key: api_key.into(),
             auth,
+            headers: HeaderMap::new(),
             capture: None,
             deadline: CALL_DEADLINE,
             replay_reasoning: true,
@@ -243,6 +247,12 @@ impl ProviderClient {
     }
 
     #[must_use]
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    #[must_use]
     pub fn without_reasoning_replay(mut self) -> Self {
         self.replay_reasoning = false;
         self
@@ -255,6 +265,7 @@ impl ProviderClient {
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let request = request.headers(self.headers.clone());
         match &self.auth {
             Auth::Bearer => request.bearer_auth(&self.api_key),
             Auth::Header(name) => request.header(name.as_str(), &self.api_key),

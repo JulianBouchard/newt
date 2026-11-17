@@ -151,6 +151,8 @@ pub struct Route {
     pub key_env: String,
     #[serde(default)]
     pub api_key_header: Option<String>,
+    #[serde(default)]
+    pub headers_env: Option<String>,
     pub max_concurrent: u32,
     #[serde(default = "default_replay_reasoning")]
     pub replay_reasoning: bool,
@@ -219,7 +221,9 @@ impl ServerConfig {
     }
 
     pub fn missing_secrets(&self) -> Vec<&str> {
-        let route_keys = self.routes.values().map(|route| route.key_env.as_str());
+        let route_keys = self.routes.values().flat_map(|route| {
+            std::iter::once(route.key_env.as_str()).chain(route.headers_env.as_deref())
+        });
         let agent_tokens = self.agents.values().map(|agent| agent.token_env.as_str());
         let tracing_headers = self
             .tracing
@@ -355,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_secrets_lists_unset_route_keys_and_agent_tokens() {
+    fn missing_secrets_lists_unset_route_keys_route_headers_and_agent_tokens() {
         let raw = r#"
             server = { listen = "127.0.0.1:0" }
             database = { url_env = "X" }
@@ -364,6 +368,7 @@ mod tests {
             model = "m"
             base_url = "http://localhost:3456"
             key_env = "NEWT_TEST_SURELY_UNSET_ROUTE_KEY"
+            headers_env = "NEWT_TEST_SURELY_UNSET_ROUTE_HEADERS"
             max_concurrent = 1
             [agents.demo]
             context_provider = "http://localhost:4000"
@@ -374,6 +379,7 @@ mod tests {
             config.missing_secrets(),
             vec![
                 "NEWT_TEST_SURELY_UNSET_ROUTE_KEY",
+                "NEWT_TEST_SURELY_UNSET_ROUTE_HEADERS",
                 "NEWT_TEST_SURELY_UNSET_AGENT_TOKEN"
             ]
         );
