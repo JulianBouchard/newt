@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-16
+
+### Added
+
+- **`headers_env` per route.** `[routes.<name>]` may name an environment variable holding extra request headers as `name=value,name=value`, the same format `[tracing]` uses. They are sent on every model call next to the route's key, for a gateway that also wants something like an internal token. A header that would replace the key's own header is refused at startup; values are marked sensitive and never appear in logs or `Debug` output. `ProviderClient::with_headers` in `newt-core` carries them.
+
 ## [1.6.1] - 2026-11-16
 
 ### Added
