@@ -28,15 +28,11 @@ max_concurrent = 6
 [models.default]
 chain = ["openai", "anthropic"]
 
+# An agent is its home MCP server: its instructions, model, tools, skills and
+# workspace pages all come from it. Reach it over HTTP, or let newt run it:
+# mcp = "stdio:node ./agent/server.js"
 [agents.assistant]
-context_provider = "http://localhost:4000/assistant"
-token_env = "ASSISTANT_TOKEN"
-
-# The same demo with no context provider: instructions, tools, skills and
-# workspace pages all come from its MCP server.
-[agents.assistant-mcp]
 mcp = "http://localhost:4000/mcp"
-model = "default"
 token_env = "ASSISTANT_TOKEN"
 
 # Export one trace per turn over OTLP/HTTP (JSON). For Langfuse, headers_env names a variable

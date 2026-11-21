@@ -297,13 +297,12 @@ async fn connect(calls: &Arc<Calls>, outward_idempotent: bool) -> Result<Toolset
 async fn connect_to(server: Server) -> Result<Toolset, String> {
     let url = spawn_server(server).await;
     Toolset::connect(
-        &[McpServer {
+        &McpServer {
             name: "app".into(),
             url,
-            headers: BTreeMap::new(),
-            auth: McpAuth::AgentToken,
-        }],
-        "agent-token",
+            auth: McpAuth::Bearer("agent-token".into()),
+        },
+        &[],
     )
     .await
 }
@@ -628,13 +627,12 @@ async fn invalid_result_metadata_is_loud_and_marks_every_page_stale() {
 #[tokio::test]
 async fn a_server_url_that_is_not_http_is_refused() {
     let error = Toolset::connect(
-        &[McpServer {
+        &McpServer {
             name: "app".into(),
             url: "ftp://example.test/mcp".into(),
-            headers: BTreeMap::new(),
-            auth: McpAuth::AgentToken,
-        }],
-        "agent-token",
+            auth: McpAuth::Bearer("agent-token".into()),
+        },
+        &[],
     )
     .await
     .unwrap_err();
@@ -642,15 +640,14 @@ async fn a_server_url_that_is_not_http_is_refused() {
 }
 
 #[test]
-fn header_values_never_appear_in_debug_output() {
+fn tokens_never_appear_in_debug_output() {
     let server = McpServer {
         name: "app".into(),
         url: "https://example.test/mcp".into(),
-        headers: BTreeMap::from([("x-api-key".to_owned(), "super-secret-value".to_owned())]),
-        auth: McpAuth::None,
+        auth: McpAuth::Bearer("super-secret-value".into()),
     };
     let printed = format!("{server:?}");
-    assert!(printed.contains("x-api-key"));
+    assert!(printed.contains("Bearer"));
     assert!(!printed.contains("super-secret-value"));
 }
 
@@ -659,13 +656,12 @@ async fn a_lost_connection_marks_the_toolset_broken_and_says_the_outcome_is_unkn
     let calls = Arc::new(Calls::default());
     let (url, stop) = spawn_stoppable(Server::new(&calls)).await;
     let toolset = Toolset::connect(
-        &[McpServer {
+        &McpServer {
             name: "app".into(),
             url,
-            headers: BTreeMap::new(),
             auth: McpAuth::None,
-        }],
-        "agent-token",
+        },
+        &[],
     )
     .await
     .unwrap();

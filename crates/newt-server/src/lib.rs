@@ -1,5 +1,5 @@
-//! The newt server: an HTTP event API, a Postgres-backed runner and the adapters that feed
-//! turns from a context provider and MCP tool servers.
+//! The newt server: an HTTP event API, a Postgres-backed runner, and the MCP client that
+//! runs each agent from its home server and the servers it adds.
 //!
 //! Events land in a per-session inbox; the runner leases sessions, runs turns with
 //! [`newt_core`], and commits history and journal entries in Postgres. See `docs/` in the
@@ -11,11 +11,11 @@ pub mod cache_keys;
 pub mod checkpoints;
 mod compaction;
 pub mod config;
-pub mod context;
 pub mod db;
 #[cfg(feature = "embedded-postgres")]
 pub mod embedded;
 pub mod fork;
+pub mod home;
 pub mod http;
 pub mod journal;
 pub mod journal_store;

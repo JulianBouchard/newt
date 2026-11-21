@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use newt_server::config::ServerConfig;
-use newt_server::context::{ContextProviderBackend, McpAgent, ProviderEndpoint};
+use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::http::{self, AppState};
 use newt_server::models::Routes;
 use newt_server::runner::{Runner, RunnerConfig};
@@ -81,8 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .context("subscribing to Postgres notifications")?;
     let instrumentation = instrumentation(jsonl.as_ref(), otlp.as_ref());
     let http_instrumentation = instrumentation.clone();
-    let backend = ContextProviderBackend::new(access.providers, config.models.keys().cloned())?
-        .with_mcp_agents(access.mcp);
+    let backend = HomeBackend::new(access.homes, config.models.keys().cloned());
     let runner = Runner::new(
         Store::new(pool.clone()),
         backend,
@@ -172,16 +171,14 @@ fn instrumentation(
 
 struct AgentAccess {
     tokens: HashMap<String, String>,
-    providers: BTreeMap<String, ProviderEndpoint>,
-    mcp: BTreeMap<String, McpAgent>,
+    homes: BTreeMap<String, HomeServer>,
     live_meta: HashSet<String>,
 }
 
 fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
     let mut access = AgentAccess {
         tokens: HashMap::new(),
-        providers: BTreeMap::new(),
-        mcp: BTreeMap::new(),
+        homes: BTreeMap::new(),
         live_meta: HashSet::new(),
     };
     for (name, agent) in &config.agents {
@@ -190,28 +187,13 @@ fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
         if token.trim().is_empty() {
             anyhow::bail!("environment variable {} is empty", agent.token_env);
         }
-        match (&agent.context_provider, &agent.mcp, &agent.model) {
-            (Some(base_url), _, _) => {
-                access.providers.insert(
-                    name.clone(),
-                    ProviderEndpoint {
-                        base_url: base_url.clone(),
-                        token: token.clone(),
-                    },
-                );
-            }
-            (None, Some(url), Some(model)) => {
-                access.mcp.insert(
-                    name.clone(),
-                    McpAgent {
-                        url: url.clone(),
-                        model: model.clone(),
-                        token: token.clone(),
-                    },
-                );
-            }
-            _ => anyhow::bail!("agent `{name}` needs exactly one of context_provider and mcp"),
-        }
+        access.homes.insert(
+            name.clone(),
+            HomeServer {
+                url: agent.mcp.clone(),
+                token: token.clone(),
+            },
+        );
         if agent.live_meta {
             access.live_meta.insert(name.clone());
         }

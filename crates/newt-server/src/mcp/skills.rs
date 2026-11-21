@@ -14,7 +14,7 @@ use rmcp::model::{
 };
 use serde_json::Value;
 
-use super::{Client, McpHost, Remote};
+use super::{Client, McpHost, Owner, Remote};
 
 const MAX_FILES: usize = 512;
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -34,6 +34,8 @@ pub(super) type Verified = Arc<Mutex<HashMap<(String, String), (String, String)>
 pub(super) async fn list(
     server: &str,
     client: &Arc<Client>,
+    speaks_newt: bool,
+    owner: &Owner,
 ) -> Result<Vec<(Skill, Served)>, String> {
     if !client
         .peer_info()
@@ -86,6 +88,9 @@ pub(super) async fn list(
         let remote = Remote {
             client: Arc::clone(client),
             server: server.to_owned(),
+            tool: String::new(),
+            speaks_newt,
+            owner: owner.clone(),
         };
         skills.push((
             skill,
@@ -253,21 +258,6 @@ impl McpHost {
     }
 }
 
-pub(super) fn merge(bootstrap: &[Skill], served: &[Skill]) -> Result<Vec<Skill>, String> {
-    let mut skills = bootstrap.to_vec();
-    for skill in served {
-        if bootstrap.iter().any(|own| own.name == skill.name) {
-            return Err(format!(
-                "the bootstrap and MCP server `{}` both offer a skill named `{}`",
-                skill.served_by.as_deref().unwrap_or_default(),
-                skill.name
-            ));
-        }
-        skills.push(skill.clone());
-    }
-    Ok(skills)
-}
-
 fn cache(
     verified: &Verified,
 ) -> std::sync::MutexGuard<'_, HashMap<(String, String), (String, String)>> {
@@ -315,28 +305,7 @@ fn same_frontmatter(text: &str, entry: &Entry) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Skill, is_relative, merge};
-
-    #[test]
-    fn a_served_skill_never_shadows_a_bootstrap_skill() {
-        let own = Skill::inline("app/writing", "Ours.", "Short sentences.");
-        let served = Skill {
-            served_by: Some("app".into()),
-            ..Skill::inline("app/writing", "Theirs.", "")
-        };
-        assert_eq!(
-            merge(std::slice::from_ref(&own), &[served]),
-            Err("the bootstrap and MCP server `app` both offer a skill named `app/writing`".into())
-        );
-        let other = Skill {
-            served_by: Some("app".into()),
-            ..Skill::inline("app/refunds", "Refunds.", "")
-        };
-        assert_eq!(
-            merge(std::slice::from_ref(&own), std::slice::from_ref(&other)),
-            Ok(vec![own, other])
-        );
-    }
+    use super::is_relative;
 
     #[test]
     fn only_plain_relative_paths_reach_a_skill_file() {

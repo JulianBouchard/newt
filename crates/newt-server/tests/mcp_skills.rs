@@ -4,7 +4,6 @@
     reason = "tests fail loudly on setup errors; the test server's handlers read like real async ones"
 )]
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -148,13 +147,12 @@ async fn connect(server: Server) -> Toolset {
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     Toolset::connect(
-        &[McpServer {
+        &McpServer {
             name: "app".into(),
             url: format!("http://{address}/mcp"),
-            headers: BTreeMap::new(),
             auth: McpAuth::None,
-        }],
-        "agent-token",
+        },
+        &[],
     )
     .await
     .unwrap()

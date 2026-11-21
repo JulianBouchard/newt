@@ -26,10 +26,5 @@ max_concurrent = 6
 chain = ["fake"]
 
 [agents.assistant]
-context_provider = "http://demo:4000/assistant"
-token_env = "ASSISTANT_TOKEN"
-
-[agents.assistant-mcp]
 mcp = "http://demo:4000/mcp"
-model = "default"
 token_env = "ASSISTANT_TOKEN"

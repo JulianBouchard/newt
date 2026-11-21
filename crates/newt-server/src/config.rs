@@ -179,12 +179,9 @@ pub struct ModelChain {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Agent {
-    #[serde(default)]
-    pub context_provider: Option<String>,
-    #[serde(default)]
-    pub mcp: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
+    /// The agent's home MCP server: `https://…`, `http://…` or
+    /// `stdio:<command>`.
+    pub mcp: String,
     pub token_env: String,
     /// Put the event's `meta` on its live `received` frame.
     #[serde(default)]
@@ -253,21 +250,8 @@ impl ServerConfig {
 
     fn check_agents(&self) -> anyhow::Result<()> {
         for (name, agent) in &self.agents {
-            match (&agent.context_provider, &agent.mcp, &agent.model) {
-                (Some(url), None, None) | (None, Some(url), Some(_)) if !is_http_url(url) => {
-                    bail!("agent `{name}`: {url} must start with http:// or https://");
-                }
-                (Some(_), None, None) => {}
-                (None, Some(_), Some(model)) => {
-                    if !self.models.contains_key(model) {
-                        bail!("agent `{name}` names model `{model}`, which is not in [models]");
-                    }
-                }
-                (None, Some(_), None) => bail!("agent `{name}` sets mcp, so it needs a model"),
-                (Some(_), _, Some(_)) => bail!(
-                    "agent `{name}`: a context provider's bootstrap names the model, so drop model"
-                ),
-                _ => bail!("agent `{name}` needs exactly one of context_provider and mcp"),
+            if let Err(error) = crate::mcp::McpServer::check_url(&agent.mcp) {
+                bail!("agent `{name}`: mcp {error}");
             }
         }
         Ok(())
@@ -371,7 +355,7 @@ mod tests {
             headers_env = "NEWT_TEST_SURELY_UNSET_ROUTE_HEADERS"
             max_concurrent = 1
             [agents.demo]
-            context_provider = "http://localhost:4000"
+            mcp = "http://localhost:4000/mcp"
             token_env = "NEWT_TEST_SURELY_UNSET_AGENT_TOKEN"
         "#;
         let config = ServerConfig::parse(raw).unwrap();
@@ -386,53 +370,31 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_is_a_context_provider_or_an_mcp_server_with_a_model() {
+    fn an_agent_is_a_home_mcp_server_reached_over_http_or_stdio() {
         let with = |agent: &str| {
             ServerConfig::parse(&format!(
                 r#"
                 server = {{ listen = "127.0.0.1:0" }}
                 database = {{ url_env = "X" }}
-                [routes.local]
-                protocol = "openai-responses"
-                model = "m"
-                base_url = "http://localhost:3456"
-                key_env = "K"
-                max_concurrent = 1
-                [models.default]
-                chain = ["local"]
                 [agents.demo]
                 token_env = "T"
                 {agent}
                 "#
             ))
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| format!("{error:#}"))
         };
-        assert_eq!(
-            with(r#"mcp = "http://localhost:4000/mcp""#),
-            Err("agent `demo` sets mcp, so it needs a model".into())
+        assert_eq!(with(r#"mcp = "http://localhost:4000/mcp""#), Ok(()));
+        assert_eq!(with(r#"mcp = "stdio:node ./agent/server.js""#), Ok(()));
+        assert!(
+            with(r#"mcp = "localhost:4000/mcp""#)
+                .unwrap_err()
+                .contains("must start with https://, http:// or stdio:")
         );
-        assert_eq!(
-            with("mcp = \"http://localhost:4000/mcp\"\nmodel = \"default\""),
-            Ok(())
-        );
-        assert_eq!(
-            with("mcp = \"http://localhost:4000/mcp\"\nmodel = \"other\""),
-            Err("agent `demo` names model `other`, which is not in [models]".into())
-        );
-        assert_eq!(
-            with("mcp = \"localhost:4000/mcp\"\nmodel = \"default\""),
-            Err("agent `demo`: localhost:4000/mcp must start with http:// or https://".into())
-        );
-        assert_eq!(
-            with(
-                "context_provider = \"http://localhost:4000\"\nmcp = \"http://localhost:4000/mcp\""
-            ),
-            Err("agent `demo` needs exactly one of context_provider and mcp".into())
-        );
-        assert_eq!(
-            with(""),
-            Err("agent `demo` needs exactly one of context_provider and mcp".into())
+        assert!(with("").is_err(), "an agent needs its home server");
+        assert!(
+            with("mcp = \"http://localhost:4000/mcp\"\nmodel = \"default\"").is_err(),
+            "the home names the model, not server.toml"
         );
     }
 
