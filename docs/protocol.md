@@ -27,7 +27,7 @@ The same three ways to run it hold for the database: someone else hosts it (`htt
 
 Newt speaks MCP `2026-07-28` (`server/discover`, no handshake) and falls back to the `2025-11-25` `initialize` handshake for a server that does not answer `server/discover`. Connecting and listing tools may take 20 seconds per server.
 
-Newt keeps one connection per agent, shared by every session, and connects again before the next turn when the connection breaks or closes, when a server says its tools changed (`notifications/tools/list_changed` on a `subscriptions/listen` stream), when that stream ends, or when a server that was down answers again (2.1). It then reads `server/discover` again, so a change to the agent's instructions or settings takes effect on the next turn after one of these. A home that changes its settings should restart or announce a tool change.
+Newt keeps one connection per agent, shared by every session, and connects again before the next turn when the connection breaks or closes, when a server says its tools changed (`notifications/tools/list_changed` on a `subscriptions/listen` stream), when that stream ends, or when a server that was down answers again (2.1). It then reads `server/discover` again, so a change to the agent's instructions or settings takes effect on the next turn after one of these. A home that changes its settings should restart or announce a tool change. A home newt runs over stdio is the exception: it keeps its state in its process, so newt keeps that process while it runs, relists its tools on the same connection, and reads its declaration only when it starts it.
 
 A failure to connect to the home, or a home whose declaration is rejected (1.2), stops the turn from starting. The session's events stay pending, the lease is released with exponential backoff (2 s doubling, capped at 300 s) and the sweeper tries again. The error is logged as `agent `<agent>`: ...`.
 
@@ -177,7 +177,7 @@ At the start of each turn newt calls `resources/list` (every page) on each serve
 | `version` | The `sha256:` digest of the text |
 | `content` | The text contents whose `uri` matches |
 
-Resources with a `skill://` URI are skills, not pages, and are left out. A resource with no text contents is left out with a warning. Two pages with the same path, or a page with an empty path or key, fail the read.
+Resources with a `skill://` URI are skills, not pages, and are left out. A resource with no text contents is left out with a warning. Two pages with the same path, a page with an empty path or key, or a home resource whose name starts with an added server's folder (`crm/…` when the home adds `crm`), fail the read. If an added server fails a read, only its own pages are left out of it; if the home fails, the read fails.
 
 A `resources/read` result from a server that speaks newt may carry `_meta["newt/state_patch"]`, a JSON merge patch applied to the session's state (1.3). Use it to record what a page showed, such as the hashes of the pages it rendered, so the next turn can tell what changed. A patch that is not an object fails the read.
 
@@ -261,11 +261,11 @@ The home lists the other servers of the agent in `servers` (1.2):
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | yes | 1 to 32 lowercase letters, digits or `-`, starting with a letter or digit. Unique per agent. It becomes the server's folder in the workspace and the prefix of its tools. |
+| `name` | string | yes | 1 to 32 lowercase letters, digits or `-`, starting with a letter or digit. Unique per agent, and not the agent's own name. It becomes the server's folder in the workspace and the prefix of its tools. |
 | `url` | string | yes | `https://…`, `http://…` or `stdio:<command>`, as for the home (1.1). |
 | `auth_env` | string | no | The environment variable holding the server's token, sent as `Authorization: Bearer <token>`. Newt refuses to load the agent if it is unset or empty. Without it, nothing is sent. |
 
-Newt connects to every added server at the same time, each with its own 20 second limit. A server that cannot be reached, or does not list its tools in time, is left out: its tools and pages are missing, and the turn context names it (1.3) so the model can say so. The rest of the agent runs. Newt tries the server again every 30 seconds and reconnects everything before the next turn once it answers.
+Newt connects to every added server at the same time, each with its own 20 second limit. A server that cannot be reached, does not list its tools in time, or offers a tool newt cannot load (a name over the length limit, an `outward` tool without `newt/idempotent`), is left out: its tools and pages are missing, and the turn context names it (1.3) so the model can say so. The rest of the agent runs. Newt tries the server again every 30 seconds, the same way, and reconnects everything before the next turn once it connects and lists cleanly.
 
 What newt does with an added server depends on whether it **speaks newt** (declares `capabilities.extensions.newt`, with an empty object):
 
@@ -281,7 +281,7 @@ What newt does with an added server depends on whether it **speaks newt** (decla
 
 Choosing a server is choosing to trust it: its tool descriptions reach the model's prompt and its results reach the model. Newt only keeps the session's data from servers that did not ask for it, and never takes instructions on retention, pages or state from them.
 
-The home's tools keep their names. An added server's tools are named `<name>__<tool>`, so no two servers' tools can clash; a name longer than 64 characters, the limit model APIs accept, fails the load. Tool names must not collide with newt's built-ins: `read_file`, `glob`, `grep`, `end_turn`, `remember`, `batch`, `checkpoint`, `load_skill`. A collision fails the turn with `two tools share the name`.
+The home's tools keep their names. An added server's tools are named `<name>__<tool>`, so no two servers' tools can clash. A name longer than 64 characters, the limit model APIs accept, fails the load for the home and leaves an added server out. Tool names must not collide with newt's built-ins: `read_file`, `glob`, `grep`, `end_turn`, `remember`, `batch`, `checkpoint`, `load_skill`. A collision fails the turn with `two tools share the name`.
 
 Newt sorts each server's tools by name, so the tool list in the cached prompt prefix is byte-identical whatever order a server lists them in. The home's tools come first, then each added server's in the order `servers` lists them.
 

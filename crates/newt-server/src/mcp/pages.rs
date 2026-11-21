@@ -30,6 +30,8 @@ pub(super) struct McpPages {
     speaks_newt: bool,
     owner: Owner,
     state: SessionState,
+    /// The added servers' folders, which the home's pages may not use.
+    folders: Arc<HashSet<String>>,
     listed: watch::Sender<Arc<Vec<(String, PageKey)>>>,
 }
 
@@ -51,6 +53,7 @@ impl McpPages {
         speaks_newt: bool,
         owner: Owner,
         state: SessionState,
+        folders: Arc<HashSet<String>>,
     ) -> Self {
         Self {
             client,
@@ -59,6 +62,7 @@ impl McpPages {
             speaks_newt,
             owner,
             state,
+            folders,
             listed: watch::Sender::new(Arc::new(Vec::new())),
         }
     }
@@ -93,6 +97,15 @@ impl McpPages {
             for resource in page.resources {
                 if resource.uri.starts_with(SKILL_SCHEME) {
                     continue;
+                }
+                if self.owner == Owner::HOME
+                    && let Some((folder, _)) = resource.name.split_once('/')
+                    && self.folders.contains(folder)
+                {
+                    return Err(format!(
+                        "MCP server `{}`: resource `{}` is named `{}`, inside the folder of added server `{folder}`",
+                        self.server, resource.uri, resource.name
+                    ));
                 }
                 let key = meta_field::<PageKey>(resource.meta.as_deref(), META_KEY)
                     .map_err(|error| {
@@ -282,6 +295,9 @@ impl ServerPages {
 }
 
 impl PageSource for ServerPages {
+    /// The pages for these keys from every server that may own them. The
+    /// home's failure fails the fetch; an added server's only leaves its own
+    /// pages out, as when it was unreachable at the start of the turn.
     fn fetch(&self, keys: Vec<PageKey>) -> PageFuture<'_> {
         Box::pin(async move {
             let fetches = self.servers.iter().filter_map(|server| {
@@ -290,9 +306,19 @@ impl PageSource for ServerPages {
                     .filter(|key| server.owner.may_own(key))
                     .cloned()
                     .collect();
-                (!owned.is_empty()).then_some(async move { server.fetch_owned(&owned).await })
+                (!owned.is_empty())
+                    .then_some(async move { (server, server.fetch_owned(&owned).await) })
             });
-            let pages: Vec<Page> = try_join_all(fetches).await?.into_iter().flatten().collect();
+            let mut pages = Vec::new();
+            for (server, fetched) in join_all(fetches).await {
+                match fetched {
+                    Ok(owned_pages) => pages.extend(owned_pages),
+                    Err(error) if server.owner == Owner::HOME => return Err(error),
+                    Err(error) => {
+                        tracing::warn!(server = %server.server, %error, "MCP server's pages left out of this read");
+                    }
+                }
+            }
             check_pages(&pages)?;
             Ok(pages)
         })

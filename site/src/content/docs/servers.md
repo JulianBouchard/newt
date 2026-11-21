@@ -17,7 +17,7 @@ An agent is its [home server](../home-server/) plus any servers the home adds. A
 
 | Field | Meaning |
 |---|---|
-| `name` | 1 to 32 lowercase letters, digits or `-`. Becomes the server's folder and its tools' prefix. |
+| `name` | 1 to 32 lowercase letters, digits or `-`, and not the agent's own name. Becomes the server's folder and its tools' prefix; the home's resources cannot use that folder. |
 | `url` | `https://…`, `http://…` or `stdio:<command>`, as for the home. |
 | `auth_env` | Optional. The environment variable whose value newt sends as `Authorization: Bearer`. newt refuses to load the agent if it is unset. |
 
@@ -56,7 +56,7 @@ Choosing a server is choosing to trust it. Its tool descriptions reach the model
 
 ## When a server is down
 
-newt connects to every server at once, each with its own 20 second limit. A server that cannot be reached is left out of the turn: its tools and pages are missing, and the model is told which server is unavailable so it can say so. The rest of the agent runs. newt tries the server again every 30 seconds and adds it back before the next turn once it answers.
+newt connects to every server at once, each with its own 20 second limit. A server that cannot be reached, or offers a tool newt cannot load (a name over 64 characters with its prefix, an outward tool that is not idempotent), is left out of the turn: its tools and pages are missing, and the model is told which server is unavailable so it can say so. The rest of the agent runs, and the home's pages stay readable even if a server drops out mid-turn. newt tries the server again every 30 seconds and adds it back before the next turn once it connects and lists cleanly.
 
 A server that changes its tool descriptions costs one prompt cache miss on the next turn, and `newt-report` names the tool that changed.
 

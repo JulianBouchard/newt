@@ -264,6 +264,7 @@ impl std::fmt::Debug for McpHost {
 }
 
 /// A connected home server, before the servers it adds are connected.
+#[derive(Clone)]
 pub struct Home {
     server: McpServer,
     client: Arc<Client>,
@@ -318,6 +319,11 @@ impl Home {
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
         call::custom(&self.client, &self.server.name, method, params).await
     }
+
+    /// Whether the connection to the home is gone.
+    pub fn is_closed(&self) -> bool {
+        self.client.is_closed()
+    }
 }
 
 pub struct Toolset {
@@ -329,6 +335,8 @@ pub struct Toolset {
     home: Home,
     remotes: Arc<HashMap<String, Remote>>,
     resources: Vec<(McpServer, Arc<Client>, bool, Owner)>,
+    /// The added servers' names: folders the home's pages may not use.
+    folders: Arc<HashSet<String>>,
     clients: Vec<Arc<Client>>,
     served: Arc<HashMap<String, skills::Served>>,
     verified: skills::Verified,
@@ -360,11 +368,12 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// One server's tools and skills, once it is connected and listed.
+/// One server's tools, under the names the model sees, and its skills, once
+/// it is connected, listed and checked.
 struct Listed {
     server: McpServer,
     client: Arc<Client>,
-    tools: Vec<Tool>,
+    tools: Vec<(String, ToolDef, Remote)>,
     skills: Vec<(Skill, skills::Served)>,
     speaks_newt: bool,
     owner: Owner,
@@ -402,6 +411,7 @@ impl Toolset {
                             *speaks_newt,
                             owner.clone(),
                             state.clone(),
+                            Arc::clone(&self.folders),
                         )
                     })
                     .collect(),
@@ -440,22 +450,32 @@ impl Home {
     /// `unavailable`; newt keeps trying it in the background and reconnects
     /// everything once it answers.
     pub async fn with_servers(self, added: &[McpServer]) -> Result<Toolset, String> {
-        let mut names = HashSet::new();
+        let mut folders = HashSet::new();
         for server in added {
             check_server_name(&server.name)?;
-            if !names.insert(server.name.as_str()) {
+            if server.name == self.server.name {
+                return Err(format!(
+                    "an added server cannot be named `{}`, like the agent: their skills would share names",
+                    server.name
+                ));
+            }
+            if !folders.insert(server.name.clone()) {
                 return Err(format!("two servers are both named `{}`", server.name));
             }
         }
         let stale = Arc::new(AtomicBool::new(false));
-        let home = list(
-            self.server.clone(),
-            Arc::clone(&self.client),
-            true,
-            Owner::HOME,
-            &stale,
+        let home = within_connect_timeout(
+            "list its tools",
+            list(
+                self.server.clone(),
+                Arc::clone(&self.client),
+                true,
+                Owner::HOME,
+                &stale,
+            ),
         )
-        .await?;
+        .await
+        .map_err(|error| format!("MCP server `{}`: {error}", self.server.name))??;
         let attempts = join_all(added.iter().map(|server| {
             let stale = Arc::clone(&stale);
             async move { (server, connect_added(server, &stale).await) }
@@ -490,6 +510,7 @@ impl Home {
             home: self,
             remotes: Arc::new(remotes),
             resources,
+            folders: Arc::new(folders),
             clients,
             served: Arc::new(served),
             verified: skills::Verified::default(),
@@ -528,32 +549,7 @@ fn index(servers: Vec<Listed>) -> Result<Indexed, String> {
                 listed.owner.clone(),
             ));
         }
-        for tool in listed.tools {
-            let tool_name = tool.name.to_string();
-            let name = match &listed.owner.0 {
-                Some(prefix) => format!("{prefix}{TOOL_SEPARATOR}{tool_name}"),
-                None => tool_name.clone(),
-            };
-            if name.len() > MAX_TOOL_NAME {
-                return Err(format!(
-                    "MCP server `{}`: tool name `{name}` is longer than the {MAX_TOOL_NAME} characters model APIs accept",
-                    listed.server.name
-                ));
-            }
-            let def =
-                tool_def(tool, &name, listed.speaks_newt, &listed.owner).map_err(|error| {
-                    format!(
-                        "MCP server `{}`, tool `{tool_name}`: {error}",
-                        listed.server.name
-                    )
-                })?;
-            let remote = Remote {
-                client: Arc::clone(&listed.client),
-                server: listed.server.name.clone(),
-                tool: tool_name,
-                speaks_newt: listed.speaks_newt,
-                owner: listed.owner.clone(),
-            };
+        for (name, def, remote) in listed.tools {
             if indexed.remotes.insert(name.clone(), remote).is_some() {
                 return Err(format!("two tools are both named `{name}`"));
             }
@@ -567,23 +563,32 @@ fn index(servers: Vec<Listed>) -> Result<Indexed, String> {
     Ok(indexed)
 }
 
-async fn connect_added(server: &McpServer, stale: &Arc<AtomicBool>) -> Result<Listed, String> {
-    let client = tokio::time::timeout(CONNECT_TIMEOUT, connect(server))
+async fn within_connect_timeout<T>(
+    what: &str,
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, String> {
+    tokio::time::timeout(CONNECT_TIMEOUT, work)
         .await
         .map_err(|_| {
             format!(
-                "did not connect within {} seconds",
+                "did not {what} within {} seconds",
                 CONNECT_TIMEOUT.as_secs()
             )
-        })??;
+        })
+}
+
+/// Connects an added server and lists and checks its tools. Any failure,
+/// including a tool newt cannot offer, leaves the server out of the turn.
+async fn connect_added(server: &McpServer, stale: &Arc<AtomicBool>) -> Result<Listed, String> {
+    let client = within_connect_timeout("connect", connect(server)).await??;
     let speaks_newt = client.peer_info().is_some_and(|info| {
         info.capabilities
             .extensions
             .as_ref()
             .is_some_and(|extensions| extensions.contains_key(NEWT_EXTENSION))
     });
-    tokio::time::timeout(
-        CONNECT_TIMEOUT,
+    within_connect_timeout(
+        "list its tools",
         list(
             server.clone(),
             Arc::new(client),
@@ -592,13 +597,7 @@ async fn connect_added(server: &McpServer, stale: &Arc<AtomicBool>) -> Result<Li
             stale,
         ),
     )
-    .await
-    .map_err(|_| {
-        format!(
-            "did not list its tools within {} seconds",
-            CONNECT_TIMEOUT.as_secs()
-        )
-    })?
+    .await?
 }
 
 async fn list(
@@ -613,6 +612,10 @@ async fn list(
         .await
         .map_err(|error| format!("MCP server `{}`: listing tools: {error}", server.name))?;
     tools.sort_by(|left, right| left.name.cmp(&right.name));
+    let tools = tools
+        .into_iter()
+        .map(|tool| offer(tool, &server.name, &client, speaks_newt, &owner))
+        .collect::<Result<Vec<_>, String>>()?;
     watch_tool_list(&server.name, &client, stale).await;
     let skills = skills::list(&server.name, &client, speaks_newt, &owner).await?;
     tracing::info!(server = %server.name, tools = tools.len(), skills = skills.len(), speaks_newt, "MCP server connected");
@@ -626,8 +629,40 @@ async fn list(
     })
 }
 
-/// Keeps trying a server that was down. Once it answers, the toolset is
-/// marked stale, so the next turn reconnects with it.
+/// A tool as the model will see it: its name, its definition and where calls
+/// to it go. Fails for a tool newt cannot offer.
+fn offer(
+    tool: Tool,
+    server: &str,
+    client: &Arc<Client>,
+    speaks_newt: bool,
+    owner: &Owner,
+) -> Result<(String, ToolDef, Remote), String> {
+    let tool_name = tool.name.to_string();
+    let name = match &owner.0 {
+        Some(prefix) => format!("{prefix}{TOOL_SEPARATOR}{tool_name}"),
+        None => tool_name.clone(),
+    };
+    if name.len() > MAX_TOOL_NAME {
+        return Err(format!(
+            "MCP server `{server}`: tool name `{name}` is longer than the {MAX_TOOL_NAME} characters model APIs accept"
+        ));
+    }
+    let def = tool_def(tool, &name, speaks_newt, owner)
+        .map_err(|error| format!("MCP server `{server}`, tool `{tool_name}`: {error}"))?;
+    let remote = Remote {
+        client: Arc::clone(client),
+        server: server.to_owned(),
+        tool: tool_name,
+        speaks_newt,
+        owner: owner.clone(),
+    };
+    Ok((name, def, remote))
+}
+
+/// Keeps trying a server that was down, the same way the toolset connects
+/// it. Once it connects and lists cleanly, the toolset is marked stale, so
+/// the next turn reconnects with it.
 fn probe(server: McpServer, stale: Arc<AtomicBool>) -> AbortOnDrop {
     let task = tokio::spawn(async move {
         loop {
@@ -635,7 +670,8 @@ fn probe(server: McpServer, stale: Arc<AtomicBool>) -> AbortOnDrop {
             if stale.load(Ordering::Relaxed) {
                 return;
             }
-            if let Ok(Ok(_client)) = tokio::time::timeout(CONNECT_TIMEOUT, connect(&server)).await {
+            let ignored = Arc::new(AtomicBool::new(false));
+            if connect_added(&server, &ignored).await.is_ok() {
                 tracing::info!(server = %server.name, "MCP server answers again; reconnecting before the next turn");
                 stale.store(true, Ordering::Relaxed);
                 return;

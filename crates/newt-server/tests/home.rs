@@ -299,16 +299,26 @@ impl ServerHandler for App {
 }
 
 async fn serve(app: App) -> String {
-    let service: StreamableHttpService<App, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(app.clone()),
-        Arc::default(),
-        StreamableHttpServerConfig::default(),
-    );
+    serve_stoppable(app).await.0
+}
+
+async fn serve_stoppable(app: App) -> (String, tokio_util::sync::CancellationToken) {
+    let stop = tokio_util::sync::CancellationToken::new();
+    let mut config = StreamableHttpServerConfig::default();
+    config.cancellation_token = stop.clone();
+    let service: StreamableHttpService<App, LocalSessionManager> =
+        StreamableHttpService::new(move || Ok(app.clone()), Arc::default(), config);
     let router = axum::Router::new().nest_service("/mcp", service);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    format!("http://{address}/mcp")
+    let shutdown = stop.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    (format!("http://{address}/mcp"), stop)
 }
 
 fn backend_at(url: String) -> HomeBackend {
@@ -786,4 +796,106 @@ fn the_agent_token_never_appears_in_debug_output() {
         token: "super-secret-value".into(),
     };
     assert!(!format!("{home:?}").contains("super-secret-value"));
+}
+
+#[tokio::test]
+async fn an_added_server_with_a_tool_newt_cannot_offer_is_left_out_not_fatal() {
+    let broken = App {
+        tools: vec![(
+            "synchronize_contacts_with_the_external_directory_service_now",
+            json!({}),
+        )],
+        ..App::default()
+    };
+    let home = App::home();
+    home.settings(json!({
+        "model": "default",
+        "servers": [{ "name": "crm", "url": serve(broken).await }],
+    }));
+    let prepared = prepare(&backend(home).await, "ana").await;
+    assert!(
+        prepared
+            .context
+            .as_deref()
+            .unwrap()
+            .contains("<unavailable_servers>\ncrm: unreachable")
+    );
+    assert!(
+        prepared
+            .tools
+            .iter()
+            .any(|tool| tool.spec.name == "complete_task")
+    );
+}
+
+#[tokio::test]
+async fn an_added_server_going_down_leaves_the_homes_pages_readable() {
+    let (url, stop) = serve_stoppable(App::plain()).await;
+    let home = App::home();
+    home.settings(json!({
+        "model": "default",
+        "servers": [{ "name": "paraform", "url": url }],
+    }));
+    let prepared = prepare(&backend(home).await, "ana").await;
+    prepared.workspace.read("tasks.md").await.unwrap();
+    assert_eq!(
+        prepared.workspace.paths(),
+        ["notes.md", "paraform/jobs/acme-sre.md", "tasks.md"]
+    );
+    stop.cancel();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    prepared.workspace.invalidate(&[Vec::new()]);
+    assert_eq!(
+        prepared
+            .workspace
+            .read("tasks.md")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("- [ ] Call the bank\n")
+    );
+    assert_eq!(
+        prepared
+            .workspace
+            .read("paraform/jobs/acme-sre.md")
+            .await
+            .unwrap(),
+        None,
+        "the down server's page is gone for this read, not an error"
+    );
+}
+
+#[tokio::test]
+async fn a_home_page_inside_an_added_servers_folder_fails_loudly() {
+    let home = App::home();
+    home.set("app://ana/paraform/jobs.md", "mine");
+    home.settings(json!({
+        "model": "default",
+        "servers": [{ "name": "paraform", "url": serve(App::plain()).await }],
+    }));
+    let prepared = prepare(&backend(home).await, "ana").await;
+    let error = prepared
+        .workspace
+        .read("tasks.md")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("inside the folder of added server `paraform`"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn an_added_server_cannot_share_the_agents_name() {
+    let home = App::home();
+    home.settings(json!({
+        "model": "default",
+        "servers": [{ "name": "assistant", "url": "http://127.0.0.1:9/mcp" }],
+    }));
+    let error = prepare_error(home).await;
+    assert!(
+        error.contains("cannot be named `assistant`, like the agent"),
+        "{error}"
+    );
 }
