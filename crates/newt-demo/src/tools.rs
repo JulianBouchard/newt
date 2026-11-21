@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetTaskParams,
-    GetTaskResult, JsonObject, ListResourcesResult, ListSkillsResult, ListToolsResult, MetaObject,
-    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
-    ServerConfig, SubscriptionFilter, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, CustomRequest,
+    CustomResult, GetTaskParams, GetTaskResult, JsonObject, ListResourcesResult, ListSkillsResult,
+    ListToolsResult, MetaObject, PaginatedRequestParams, ReadResourceRequestParams,
+    ReadResourceResponse, ServerCapabilities, ServerConfig, SubscriptionFilter, Tool,
 };
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -204,16 +204,32 @@ impl Tools {
 
 impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .enable_resources_subscribe()
-                .enable_skills()
-                .enable_tasks()
-                .build(),
-        )
-        .with_instructions(crate::provider::INSTRUCTIONS)
+        let mut capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .enable_resources_subscribe()
+            .enable_skills()
+            .enable_tasks()
+            .build();
+        capabilities
+            .extensions
+            .get_or_insert_with(Default::default)
+            .insert("newt".to_owned(), crate::agent::settings());
+        ServerConfig::new(capabilities).with_instructions(crate::agent::INSTRUCTIONS)
+    }
+
+    fn on_custom_request(
+        &self,
+        request: CustomRequest,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<CustomResult, ErrorData>> + Send + '_ {
+        std::future::ready(match request.method.as_str() {
+            "newt/turn" => Ok(CustomResult::new(crate::agent::turn())),
+            other => Err(ErrorData::invalid_request(
+                format!("the demo does not answer `{other}`"),
+                None,
+            )),
+        })
     }
 
     fn accepted_subscription_filter(

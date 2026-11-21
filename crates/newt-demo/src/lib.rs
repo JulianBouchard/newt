@@ -1,8 +1,9 @@
-//! A small reference app for newt: a context provider and an MCP tool server for a
-//! to-do assistant, used by the quickstart and the integration tests.
+//! A small reference agent for newt: a to-do assistant that is one MCP server,
+//! served over HTTP or over stdio, used by the quickstart and the integration
+//! tests.
 
+mod agent;
 mod flows;
-mod provider;
 mod resources;
 mod tools;
 
@@ -86,13 +87,6 @@ impl Session {
             version: self.revision.to_string(),
             content,
         })
-    }
-
-    fn pages(&self) -> Vec<Page> {
-        resources::PAGES
-            .iter()
-            .filter_map(|name| self.page(name))
-            .collect()
     }
 }
 
@@ -214,11 +208,22 @@ pub fn app(demo: Arc<Demo>) -> Router {
         StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts(&demo.public_url)),
     );
     Router::new()
-        .merge(provider::routes())
+        .merge(agent::routes())
         .nest_service("/mcp", mcp)
         .layer(middleware::from_fn_with_state(
             Arc::clone(&demo),
             require_token,
         ))
         .with_state(demo)
+}
+
+/// Serves the demo over stdin and stdout, for newt to run as
+/// `mcp = "stdio:newt-demo --stdio"`. Returns when newt closes stdin.
+pub async fn serve_stdio(demo: Arc<Demo>) -> anyhow::Result<()> {
+    use rmcp::ServiceExt as _;
+    let running = tools::Tools(demo)
+        .serve((tokio::io::stdin(), tokio::io::stdout()))
+        .await?;
+    running.waiting().await?;
+    Ok(())
 }
