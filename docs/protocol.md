@@ -1,49 +1,65 @@
 # Protocol
 
-This document specifies the two interfaces an application implements for newt, and the small event API it uses to talk to newt:
+This document specifies what an application implements for newt, and the small event API it uses to talk to newt:
 
-1. the **context provider**, three JSON endpoints newt calls over HTTP, which an agent can skip by being only an MCP server (2.7);
-2. **MCP tools**, served over Streamable HTTP, with newt's `_meta` fields;
+1. the **home server**: an MCP server that is the agent. Its instructions are the system prompt, it declares the agent's settings in the `newt` extension, its resources are the workspace, and it can answer two requests the extension defines, `newt/turn` and `newt/turn_end`;
+2. **servers the home adds**, and the `_meta` fields newt reads and sends on tools, calls and results;
 3. the **event API**, which the application calls on newt.
 
-It is written from `crates/newt-server/src/{context,http}.rs`, `crates/newt-server/src/mcp/`, `crates/newt-core/src/{workspace,tools,skills,checkpoint,batch,commit}.rs` and the reference implementation in `crates/newt-demo`. Anything not confirmed in code is marked "(unverified)".
+There is nothing else to implement: an agent is one MCP server, plus any servers it adds.
 
-Terms: an **agent** is a name in `[agents.<name>]` in `server.toml`. A **session** is one conversation of one agent, identified by a **session key**, a string of 1 to 200 bytes with no `/`. A **turn** is one run of the model loop over the events that arrived for a session.
+It is written from `crates/newt-server/src/{home,http}.rs`, `crates/newt-server/src/mcp/`, `crates/newt-core/src/{workspace,tools,skills,checkpoint,batch,commit}.rs` and the reference agent in `crates/newt-demo`. Anything not confirmed in code is marked "(unverified)".
 
-## 1. Context provider
+Terms: an **agent** is a name in `[agents.<name>]` in `server.toml`. A **session** is one conversation of one agent, identified by a **session key**, a string of 1 to 200 bytes with no `/`. A **turn** is one run of the model loop over the events that arrived for a session. A server **speaks newt** when it declares the `newt` extension; the home always counts as one.
 
-Each agent names a base URL (`context_provider`) and a token variable (`token_env`). Below, `{base}` is the base URL with any trailing `/` removed.
+## 1. The home server
 
-### 1.1 Conventions
+### 1.1 Connecting
 
-- Every request carries `Authorization: Bearer <token>`, where the token is the value of the agent's `token_env`. This is the same token callers of the event API use.
-- Bodies are JSON. Newt sends `POST` bodies with `content-type: application/json` and does not send a body on `GET`.
-- Each request has a 10 second timeout. Newt does not retry inside a request.
-- A non-2xx response fails the call. The error keeps the status and the first 300 characters of the body.
-- Decoding is strict. The bootstrap, the turn response, the pages response, each skill and each MCP server entry reject unknown fields. A page object tolerates extra fields.
-- The protocol has no version field of its own. `version` below is the version of your bootstrap.
-- A failure in any call, or a rejected bootstrap, stops the turn from starting. The session's events stay pending, the lease is released with exponential backoff (2 s doubling, capped at 300 s) and the sweeper tries again. The error is logged as `context provider for `<agent>`: ...`.
+Each agent names its home in `server.toml` (`mcp`) with a token variable (`token_env`):
 
-### 1.2 Call order
+| `mcp` | How newt reaches it |
+|---|---|
+| `https://…` or `http://…` | MCP over Streamable HTTP, with `Authorization: Bearer <token>`, the value of the agent's `token_env`. This is the same token callers of the event API use. |
+| `stdio:<command>` | Newt runs `<command>` with `sh -c` and speaks MCP over its stdin and stdout. Its stderr goes to newt's. No token is sent. When the connection is dropped, newt closes its stdin, waits, then sends SIGTERM and finally kills it. A server that exits is started again before the next turn. |
 
-At the start of every turn newt calls `POST {base}/turn`. The response names a `version`. If newt holds no bootstrap for that agent at that version, or its tool set went stale since (section 2.1), it then calls `GET {base}/bootstrap`, which must return the same version, and connects the MCP servers. Otherwise it reuses the loaded bootstrap and tool set. Newt keeps one loaded bootstrap per agent in memory.
+The same three ways to run it hold for the database: someone else hosts it (`https://`), you run it next to newt in the same deploy (`http://localhost:…`), or newt runs it (`stdio:`). The server code is the same in all three.
 
-`POST {base}/pages` is called during the turn, when the agent reads a page that a tool made stale, and once at the start when `turn` returned no `pages`.
+Newt speaks MCP `2026-07-28` (`server/discover`, no handshake) and falls back to the `2025-11-25` `initialize` handshake for a server that does not answer `server/discover`. Connecting and listing tools may take 20 seconds per server.
 
-`POST {base}/turn_end` is called after a turn commits, when the bootstrap sets `turn_end` (1.8).
+Newt keeps one connection per agent, shared by every session, and connects again before the next turn when the connection breaks or closes, when a server says its tools changed (`notifications/tools/list_changed` on a `subscriptions/listen` stream), when that stream ends, or when a server that was down answers again (2.1). It then reads `server/discover` again, so a change to the agent's instructions or settings takes effect on the next turn after one of these. A home that changes its settings should restart or announce a tool change.
 
-Newt keeps the state a provider needs between these calls (1.4 `state`, 2.3 `newt/turn_state`) and sends it on every call (`/turn`, `/pages`, each tool call), so a provider can run as many stateless instances as it likes: any instance can answer any call. Pages served as MCP resources (2.7) do not receive the state.
+A failure to connect to the home, or a home whose declaration is rejected (1.2), stops the turn from starting. The session's events stay pending, the lease is released with exponential backoff (2 s doubling, capped at 300 s) and the sweeper tries again. The error is logged as `agent `<agent>`: ...`.
 
-### 1.3 `GET {base}/bootstrap`
+Newt keeps the state a home needs between turns (1.3 `state`, 2.3 `newt/turn_state`) and sends it on every request to a server that speaks newt (`newt/turn`, each resource read, each tool call), so the home can run as many stateless copies as it likes: any copy can answer any request.
 
-Everything that is the same for every session at one version. Changing any field means a new `version`; the first turn after that pays one prompt cache miss, because the instructions, skills index and tool list form the cached prefix.
+### 1.2 The `newt` extension: the agent's settings
 
-Response:
+The home declares the agent in `capabilities.extensions.newt` of its `server/discover` result (or `initialize`, on `2025-11-25`), next to its `instructions`, which are the system prompt.
+
+```json
+{
+  "instructions": "You are a personal assistant for one person, reached by chat. ...",
+  "capabilities": {
+    "tools": {}, "resources": { "subscribe": true },
+    "extensions": {
+      "newt": {
+        "model": "default",
+        "first_call_effort": "low",
+        "effort": "medium",
+        "turn": true,
+        "turn_end": true,
+        "servers": [
+          { "name": "crm", "url": "https://crm.example.com/mcp", "auth_env": "CRM_TOKEN" }
+        ]
+      }
+    }
+  }
+}
+```
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `version` | string | yes | | Non-empty after trimming. Must equal the `version` in the turn response. |
-| `instructions` | string | yes | | The system prompt. Non-empty after trimming. |
 | `model` | string | yes | | A `[models]` alias from `server.toml`. Unknown alias is an error. |
 | `first_call_effort` | `"low"`, `"medium"` or `"high"` | no | none | Reasoning effort for the first model call of a turn. When absent, newt sends no effort. |
 | `effort` | `"low"`, `"medium"` or `"high"` | no | none | Effort for later calls in the turn. |
@@ -52,38 +68,19 @@ Response:
 | `max_turn_tokens` | integer | no | none | Input plus output tokens one turn may spend across its model calls. Past it, the model is told to send what it has and call `end_turn`; if its next call does not end the turn, the turn fails. |
 | `recite` | boolean | no | `false` | Recitation: on long turns, from the fifth model call and every fourth after, append a `<goal>` note quoting the turn's events. Lives in scratch only. Experimental. |
 | `history_budget` | integer | no | 60000 | Tokens of live history before compaction. Must be at least 1000. |
-| `skills` | array of skill | no | `[]` | See 1.7. |
-| `mcp_servers` | array of server | no | `[]` | See 2.1. |
-| `turn_end` | boolean | no | `false` | Call `POST {base}/turn_end` after each committed turn (1.8). |
+| `turn` | boolean | no | `false` | Send `newt/turn` before each turn (1.3). |
+| `turn_end` | boolean | no | `false` | Send `newt/turn_end` after each committed turn (1.6). |
+| `servers` | array of server | no | `[]` | Servers the agent adds (2.1). |
 
-```json
-{
-  "version": "2026-11-12.1",
-  "instructions": "You are a personal assistant for one person, reached by chat. ...",
-  "model": "default",
-  "first_call_effort": "low",
-  "effort": "medium",
-  "max_output_tokens": 4096,
-  "max_model_calls": 8,
-  "history_budget": 60000,
-  "skills": [
-    {
-      "name": "writing",
-      "description": "How to word a message to the person.",
-      "content": "Short sentences. Lead with the answer."
-    }
-  ],
-  "mcp_servers": [
-    { "name": "app", "url": "https://app.example.com/mcp", "auth": "agent_token" }
-  ]
-}
-```
+Decoding is strict: an unknown field fails the turn. So do empty instructions, and a home that does not declare the extension.
 
-### 1.4 `POST {base}/turn`
+The instructions, the skills index and the tool list form the cached prompt prefix. Any change to them, from the home or from an added server, makes the next turn pay one prompt cache miss; `newt-report` names what changed.
 
-Called at the start of every turn, before the first model call.
+### 1.3 `newt/turn`
 
-Request:
+Sent to the home at the start of every turn, before the first model call, when the home declares `turn: true`. It is a JSON-RPC request with method `newt/turn`, like `tools/call`, and has a 10 second timeout. A home that does not declare `turn` is never asked, and the turn runs on the declared settings with no per-turn text.
+
+Params:
 
 ```json
 {
@@ -97,31 +94,24 @@ Request:
 |---|---|---|
 | `session` | string | The session key from the event URL, without the agent name. |
 | `events` | array of `{ id, meta }` | The events this turn answers, oldest first: each event's `id` and the `meta` you sent with it (section 5.1), or `null`. A turn resumed after a crash gets the events it started with. Events that arrive during the turn as steering are not listed. |
-| `state` | any JSON, or `null` | The `state` this provider returned on the last committed turn of the session, or `null` before the first. |
+| `state` | any JSON, or `null` | The `state` the home set on the last committed turn of the session, or `null` before the first. |
 
-Response:
+Result, every field optional (unknown fields fail the turn; `_meta` is allowed):
 
-| Field | Type | Required | Default | Meaning |
-|---|---|---|---|---|
-| `version` | string | yes | | The bootstrap version this response was built for. |
-| `pages` | array of page | no | absent | The session's workspace. Absent or `null` means load lazily (1.5). `[]` means a workspace with no pages. |
-| `pinned` | string | no | none | Session-stable text. Trimmed; empty is ignored. |
-| `instructions` | string | no | none | Guidance for this turn only. |
-| `constraints` | array of string | no | `[]` | Rules that hold right now, for this turn only. Entries are trimmed; empty ones are dropped. |
-| `turn_state` | any JSON | no | none | The turn state the turn's tool calls start with (2.3), for facts the tools need that only this call knows, such as the channel to reply on. |
-| `model` | string | no | the bootstrap's | A `[models]` alias for this turn's model calls. Resolved through the `server.toml` routes like the bootstrap's `model`. An alias `server.toml` does not define fails the turn like any other bad response: nothing is sent to the model, and the turn is retried with backoff. |
-| `effort` | `"low"`, `"medium"` or `"high"` | no | the bootstrap's | `effort` for this turn's later model calls. |
-| `first_call_effort` | `"low"`, `"medium"` or `"high"` | no | the bootstrap's | `first_call_effort` for this turn's first model call. |
-| `reset` | boolean | no | `false` | `true` runs the turn as if the session had no history (1.4.1). |
-| `state` | any JSON | no | none | The session's new provider state. Newt saves it in the same transaction that commits the turn, and sends it back as `state` on the next turn. Absent or `null` keeps the previous state; return `{}` to reset it. A turn that does not commit (the lease moved, or it was cancelled) saves nothing, so the state never runs ahead of the session's history. |
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `pinned` | string | none | Session-stable text. Trimmed; empty is ignored. |
+| `instructions` | string | none | Guidance for this turn only. |
+| `constraints` | array of string | `[]` | Rules that hold right now, for this turn only. Entries are trimmed; empty ones are dropped. |
+| `turn_state` | any JSON | none | The turn state the turn's tool calls start with (2.3), for facts the tools need that only this request knows, such as the channel to reply on. |
+| `model` | string | the declared one | A `[models]` alias for this turn's model calls. An alias `server.toml` does not define fails the turn like any other bad result: nothing is sent to the model, and the turn is retried with backoff. |
+| `effort` | `"low"`, `"medium"` or `"high"` | the declared one | `effort` for this turn's later model calls. |
+| `first_call_effort` | `"low"`, `"medium"` or `"high"` | the declared one | `first_call_effort` for this turn's first model call. |
+| `reset` | boolean | `false` | `true` runs the turn as if the session had no history (1.3.1). |
+| `state` | any JSON | none | The session's new state. Newt saves it in the same transaction that commits the turn, and sends it back as `state` on the next turn. Absent or `null` keeps the previous state; return `{}` to reset it. A turn that does not commit (the lease moved, or it was cancelled) saves nothing, so the state never runs ahead of the session's history. |
 
 ```json
 {
-  "version": "2026-11-12.1",
-  "pages": [
-    { "key": ["tasks"], "path": "tasks.md", "version": "7", "content": "# Tasks\n- [ ] #1 Call the bank\n" },
-    { "key": ["notes"], "path": "notes.md", "version": "7", "content": "# Notes\n- Lives in Lisbon\n" }
-  ],
   "pinned": "Write for WhatsApp: no markdown, two short paragraphs at most.",
   "instructions": "It is 2026-11-12T09:30:00Z.",
   "constraints": ["Do not message the person before Monday: they are on holiday."]
@@ -144,113 +134,97 @@ Where each field goes:
   </turn_context>
   ```
 
-  If both are empty, no message is added.
+  The same message names any added server that could not be reached (2.1). If there is nothing to say, no message is added.
 - `constraints` are text the model reads. They do not block a tool call. Enforce any constraint that must hold in your tool handlers as well.
-
-- `model`, `effort` and `first_call_effort` replace the bootstrap's values for every model call of this turn, and for the compaction that runs right after it, and for nothing else: the next turn starts from the bootstrap again unless its `/turn` response says otherwise. A different model is a prompt cache miss for that turn and for the next one on the usual model, so use it for turns that are worth it.
-- `reset` is described in 1.4.1.
+- `model`, `effort` and `first_call_effort` replace the declared values for every model call of this turn, and for the compaction that runs right after it, and for nothing else: the next turn starts from the declared settings again unless its `newt/turn` result says otherwise. A different model is a prompt cache miss for that turn and for the next one on the usual model, so use it for turns that are worth it.
+- `reset` is described in 1.3.1.
 
 Typical uses of `state`: what the agent saw last turn, so this turn can say what changed; a cursor into the app's own records; a note that something was already announced.
 
-Later in the turn, a page fetch (1.6 `state_patch`) and a tool result (2.4 `newt/state_patch`) can change the state with a JSON merge patch. Patches touch only the keys they name, so a page load and a tool call running at the same time do not overwrite each other. The state the turn ends with is saved at commit, and only if `/turn`'s `state` or a patch changed it. A patch is lost when:
+Later in the turn, a resource read (1.4) and a tool result (2.4 `newt/state_patch`) can change the state with a JSON merge patch (RFC 7396): objects merge key by key, `null` removes a key, anything else replaces. Patches touch only the keys they name, so a page read and a tool call running at the same time do not overwrite each other. The state the turn ends with is saved at commit, and only if `newt/turn`'s `state` or a patch changed it. A patch is lost when:
 
 - the turn does not commit (it failed with no effects and will be retried, or its lease moved);
 - it arrives after the commit, from a call that outlived the turn;
-- the turn was resumed after a crash: replayed tool results do not apply their patches again, and pages fetched before the crash are not refetched.
+- the turn was resumed after a crash: replayed tool results do not apply their patches again, and pages read before the crash are not read again.
 
 So keep in the state what you can afford to recompute, and keep the record of anything that must not happen twice in your own data.
 
-The whole state travels with every `/pages` request and every tool call, to every MCP server of the agent. Keep it small (a few kilobytes; newt does not cap it), and keep out of it anything one of the agent's tool servers should not read.
+The state travels with every resource read and tool call to every server that speaks newt. Keep it small (a few kilobytes; newt does not cap it). Servers that do not speak newt never receive it.
 
-#### 1.4.1 Starting a session over
+#### 1.3.1 Starting a session over
 
-`"reset": true` rolls the session to a fresh conversation while it keeps its key, inbox, provider state and live feed. Use it when the conversation has gone cold, or when the agent's prompt moved on and the old history no longer fits it.
+`"reset": true` rolls the session to a fresh conversation while it keeps its key, inbox, state and live feed. Use it when the conversation has gone cold, or when the agent's prompt moved on and the old history no longer fits it.
 
 - The turn's model calls see no earlier history entries and no earlier checkpoint summary. The events the turn answers are delivered as usual, and the turn's own messages become the start of the new conversation. The history layer of the prompt changes, so the turn is a prompt cache miss.
 - Nothing is deleted. `GET .../history` (5.4) still returns every entry and `fork` (5.5) still copies them; the entries are only never loaded into the model's prompt again. Compaction after a reset considers only what came after it.
-- The reset is saved in the statement that commits the turn, so it takes effect only if the turn commits. A turn that does not commit (its lease moved, it was cancelled, or it failed with no effects and is retried) resets nothing, and its retry calls `/turn` again.
-- A turn resumed after a crash (or retried) keeps the `model`, `effort`, `first_call_effort` and `reset` it had once any of its model calls is journaled, whatever `/turn` answers the second time. If it chose any of them, newt journals the choice before the first call. If it chose none, the resumed turn runs on the bootstrap's settings with no reset, even when `/turn` now asks for one. Before the first model call is journaled, a retry starts afresh and takes the new response.
+- The reset is saved in the statement that commits the turn, so it takes effect only if the turn commits. A turn that does not commit (its lease moved, it was cancelled, or it failed with no effects and is retried) resets nothing, and its retry sends `newt/turn` again.
+- A turn resumed after a crash (or retried) keeps the `model`, `effort`, `first_call_effort` and `reset` it had once any of its model calls is journaled, whatever `newt/turn` answers the second time. If it chose any of them, newt journals the choice before the first call. If it chose none, the resumed turn runs on the declared settings with no reset, even when `newt/turn` now asks for one. Before the first model call is journaled, a retry starts afresh and takes the new result.
 - A reset needs history to start over from: a commit that adds no history rows resets nothing.
 - `state` works as without a reset: return the new state, or `{}` to clear it.
 
 Both are in the live feed: `turn_started` carries `model` (the alias the turn uses) and `reset` (5.3).
 
-### 1.5 Pages and the workspace
+### 1.4 Pages: resources as the workspace
 
-A **page** is one file in the agent's workspace. The agent reads them with the built-in `read_file`, `glob` and `grep` tools.
+A **page** is one file in the agent's workspace. The agent reads pages with the built-in `read_file`, `glob` and `grep` tools. Pages are the resources of the home and of the servers it adds; there is no other way to supply them.
 
-Page object:
+At the start of each turn newt calls `resources/list` (every page) on each server that offers resources and reads each resource with `resources/read`, in the background: the first model call starts at once, and the agent's first `read_file`, `glob` or `grep` waits for the load. If the load fails, those tools return the error for the rest of the turn. Requests to a server that speaks newt carry `_meta: { "newt/session": "<session key>", "newt/state": <state> }`, so one server can serve every session; requests to any other server carry nothing of newt's. Each text resource becomes a page:
 
-| Field | Type | Meaning |
-|---|---|---|
-| `key` | array of string, non-empty | Invalidation key. Tools invalidate pages by key prefix (2.3). Several pages may share a key. |
-| `path` | string, non-empty | What the agent sees. Unique within one response. Glob patterns match it with `/` as a literal separator (`*` does not cross `/`, `**` does). |
-| `version` | string | Opaque. Newt reports it back to tools in `newt/pages_read`. |
-| `content` | string | The page text. |
+| Page field | From the resource |
+|---|---|
+| `path` | `name`, under `<server>/` for an added server (2.1) |
+| `key` | `_meta["newt/key"]` when set (an array of string), otherwise `[uri]` |
+| `version` | The `sha256:` digest of the text |
+| `content` | The text contents whose `uri` matches |
 
-```json
-{ "key": ["customer", "profile"], "path": "profile.md", "version": "12", "content": "# Profile\nRemote only.\n" }
-```
+Resources with a `skill://` URI are skills, not pages, and are left out. A resource with no text contents is left out with a warning. Two pages with the same path, or a page with an empty path or key, fail the read.
 
-A response with an empty `key`, an empty `path` or a repeated `path` is rejected as a whole.
+A `resources/read` result from a server that speaks newt may carry `_meta["newt/state_patch"]`, a JSON merge patch applied to the session's state (1.3). Use it to record what a page showed, such as the hashes of the pages it rendered, so the next turn can tell what changed. A patch that is not an object fails the read.
 
-**Eager loading.** `turn` returns `pages`. The workspace starts with them.
+Paths match `glob` patterns with `/` as a literal separator (`*` does not cross `/`, `**` does). Newt reports the path and version of each page the agent read to tools in `newt/pages_read` (2.3).
 
-**Lazy loading.** `turn` leaves out `pages`. Newt starts the first model call at once and requests every page in the background with `POST {base}/pages` and `keys: [[]]`. The first `read_file`, `glob` or `grep` waits for that load. If it fails, those tools return the error for the rest of the turn. Use this when rendering pages is slow.
+**Invalidation.** A page goes stale when:
 
-**Refetching.** A successful tool call can make pages stale (2.3). The next read of a stale page asks the provider for it again, and `grep` refreshes all stale pages first. After a tool call, stale pages the agent has already read in this turn are also refreshed in the background.
+- a tool's `newt/invalidates` (2.2) or a result's `newt/invalidate` (2.4) names a prefix of its key;
+- the server sends `notifications/resources/updated` for its URI, or `notifications/resources/list_changed` (which makes all of that server's pages stale). Once the pages are listed, newt opens `subscriptions/listen` with `resourceSubscriptions` set to the session's resource URIs, and `resourcesListChanged`, for the rest of the turn. The subscription follows the URIs of the latest listing and closes when the turn ends. A server that does not accept resource subscriptions still works: its pages are fresh at the start of each turn, and tool metadata can still invalidate them during one.
 
-### 1.6 `POST {base}/pages`
+The next read of a stale page lists the resources again and reads the matching ones, so a page that is no longer listed disappears and a new one appears; `grep` refreshes all stale pages first. After a tool call, stale pages the agent has already read in this turn are also refreshed in the background.
 
-Request:
+A server's keys are its own: a key from an added server's tool or notification only ever matches that server's pages. The home's empty key `[]` matches every page of the agent.
 
-```json
-{ "session": "ana", "keys": [["tasks"], ["customer", "profile"]], "state": { "last_seen_task": 12 } }
-```
+The update notification travels on its own stream, so it can arrive after the tool result that caused it. A tool that changes a page and wants the model's next read to see the change for certain should also return `newt/invalidate` or the page itself in `newt/pages` (2.4).
 
-`state` is the session's provider state as the turn holds it now: what `/turn` returned or kept, with any patches applied so far (1.4), or `null`.
+### 1.5 Skills
 
-`keys` is a list of page keys. For a refetch newt sends the exact key of each stale page. The empty key `[]` means every page. Return the pages whose key starts with any listed key; `[]` matches all of them.
+A skill is instructions for one kind of task, loaded when the agent needs them. Skills are served over MCP: a server that declares the `io.modelcontextprotocol/skills` extension ([SEP-2640](https://modelcontextprotocol.io/seps/2640-skills-extension)) serves skills in the [Agent Skills](https://agentskills.io/specification) format. When newt connects, it calls `skills/list` (every page) and offers each skill under the name `{server}/{skill path}`: the server's name (the agent's name for the home, the name in `servers` for an added server), then the skill's URI without its scheme and `/SKILL.md`. `skill://acme/billing/refunds/SKILL.md` on the home of agent `app` becomes `app/acme/billing/refunds`. The description is the frontmatter's `description`.
 
-Response:
-
-```json
-{ "pages": [ { "key": ["tasks"], "path": "tasks.md", "version": "8", "content": "# Tasks\n..." } ], "state_patch": { "rendered_at": "2026-11-12T09:30:02Z" } }
-```
-
-`state_patch` (optional) is a JSON merge patch (RFC 7396) applied to the session's provider state (1.4): objects merge key by key, `null` removes a key, anything else replaces. It must be a JSON object; anything else fails the fetch. Use it to record what a lazy page load saw, such as the hashes of the pages it rendered, so the next turn can tell what changed.
-
-Rules newt applies to the response:
-
-- A page it asked for but that is missing from the response is deleted from the workspace.
-- A returned page replaces the current one only if the page was one of those requested and has not been invalidated again while the request was in flight. If it was, the response for it is discarded and it stays stale.
-- A returned page whose `path` the workspace does not have yet is added.
-- The response is checked like any other page list (see the page object above).
-
-### 1.7 Skills
-
-A skill is instructions for one kind of task, loaded when the agent needs them.
-
-```json
-{ "name": "writing", "description": "How to word a message to the person.", "content": "Short sentences." }
-```
-
-All three fields are required strings. Newt appends this block to the system prompt, after `pinned`:
+Newt appends this block to the system prompt, after `pinned`, sorted by name:
 
 ```
 <skills>
 Load a skill with load_skill before doing what it covers.
-- writing: How to word a message to the person.
+- app/acme/billing/refunds: How to handle a refund request.
 </skills>
 ```
 
-and adds a built-in `load_skill` tool whose `name` argument is one of the skill names. The skill's `content` comes back as the tool result. It stays in that turn's scratch and never enters history. Newt does not check that bootstrap skill names are unique. Loaded skill names are passed to MCP tools in `newt/skills_loaded`.
+and adds a built-in `load_skill` tool whose `name` argument is one of the skill names. Loaded skill names are passed to tools in `newt/skills_loaded`.
 
-MCP servers can serve skills too (section 2.6). Those follow the bootstrap's skills in the index, sorted by name.
+A skill is not offered, with a warning in the log, if its `resources` is `"dynamic"` (newt cannot verify it), its URI does not end in `/{name}/SKILL.md`, it has more than 512 files or more than 16 MiB, its file list leaves out its own `SKILL.md`, or it lists a file outside its directory. Two skills from one server that would get the same name fail the load.
 
-### 1.8 `POST {base}/turn_end`
+Nothing is fetched until the model loads a skill. Then newt reads `SKILL.md` with `resources/read`, checks its size and `sha256` digest against the listing, and checks that its frontmatter equals the listing's `frontmatter`. The result is the file, followed by the skill's other files when it has any:
 
-Called after a turn commits, when the bootstrap sets `turn_end: true`. Use it for bookkeeping that should follow the agent's turn: mark what it handled, stop a typing indicator, log the run, bill usage.
+```
+<skill_files>
+Read one with load_skill and `file`:
+- references/tone.md
+</skill_files>
+```
+
+`load_skill` also takes `file`, a path relative to the skill. Only files the listing names can be read, each checked the same way. Absolute paths, `..`, `.` and empty segments are refused. Verified files are cached by server, URI and digest for as long as the connection lives. A file that fails a check is never shown to the model: the call fails, and the tool set is marked stale so the next turn lists the skills again. Only text contents are read. The skill stays in that turn's scratch and never enters history.
+
+### 1.6 `newt/turn_end`
+
+Sent to the home after a turn commits, when the home declares `turn_end: true`. Use it for bookkeeping that should follow the agent's turn: mark what it handled, stop a typing indicator, log the run, bill usage, or post the reply somewhere.
 
 ```json
 {
@@ -267,47 +241,60 @@ Called after a turn commits, when the bootstrap sets `turn_end: true`. Use it fo
 
 | Field | Meaning |
 |---|---|
-| `outcome` | `completed`; `failed` for a turn that failed after it had effects (an outward call or a durable tool) and was committed with what it did; `dead_lettered` when newt gave up on the events after `max_attempts` failed turns with no effects. A failed turn with no effects that will be retried does not call `turn_end`. |
+| `outcome` | `completed`; `failed` for a turn that failed after it had effects (an outward call or a durable tool) and was committed with what it did; `dead_lettered` when newt gave up on the events after `max_attempts` failed turns with no effects. A failed turn with no effects that will be retried does not send `newt/turn_end`. |
 | `events` | Every event the turn consumed, as `{ id, meta }`, oldest first: the ones it started on and any that steered it. For `dead_lettered`, the events given up on. |
-| `state` | The session's provider state after the turn (unchanged for `dead_lettered`). |
+| `state` | The session's state after the turn (unchanged for `dead_lettered`). |
 | `turn_state` | The turn state when the turn ended (2.3). After a crash and resume, only what calls made since the resume set. |
-| `reply` | What the agent said when it finished, for a provider that posts it somewhere (a chat, a thread): the text of the message that called `end_turn`, or, when that message had none, the text-only message just before it that made newt remind the agent to end. `null` when there is neither, and always for `failed` and `dead_lettered`. Earlier mid-turn text is never used. |
+| `reply` | What the agent said when it finished, for a home that posts it somewhere (a chat, a thread): the text of the message that called `end_turn`, or, when that message had none, the text-only message just before it that made newt remind the agent to end. `null` when there is neither, and always for `failed` and `dead_lettered`. Earlier mid-turn text is never used. |
 
-Newt writes the callback in the same transaction as the turn, so it survives a crash, and delivers it at least once: right after the commit, then retried with backoff (at least 30 seconds, up to 5 minutes apart) until the provider answers 2xx. A delivery holds the callback for 30 seconds, so two runners do not send it at once, but a retry after a lost response is possible: use `turn` to deduplicate. Deliveries across turns can arrive late and out of order. Any 2xx counts; the body is ignored. After 30 failed attempts (about two hours) newt gives up on the callback and logs an error. Deleting the session deletes its undelivered callbacks.
+Answer with an empty result. Newt writes the request in the same transaction as the turn, so it survives a crash, and sends it at least once: right after the commit, then again with backoff (at least 30 seconds, up to 5 minutes apart) until the home answers with a result instead of an error. A delivery holds the request for 30 seconds, so two runners do not send it at once, but a repeat after a lost answer is possible: use `turn` to deduplicate. Deliveries across turns can arrive late and out of order. After 30 failed attempts (about two hours) newt gives up and logs an error. Deleting the session deletes its undelivered requests.
 
-## 2. MCP tools
+## 2. Servers and tools
 
-Tools come from the servers in the bootstrap's `mcp_servers`. A server that knows nothing about newt still works; its tools are `durable` and invalidate nothing.
+### 2.1 Servers the home adds
 
-### 2.1 Servers and connections
+The home lists the other servers of the agent in `servers` (1.2):
 
 ```json
-{ "name": "app", "url": "https://app.example.com/mcp", "headers": { "x-tenant": "acme" }, "auth": "agent_token" }
+{ "name": "crm", "url": "https://crm.example.com/mcp", "auth_env": "CRM_TOKEN" }
 ```
 
-| Field | Type | Required | Default | Meaning |
-|---|---|---|---|---|
-| `name` | string | yes | | Used in logs and errors. |
-| `url` | string | yes | | Must start with `http://` or `https://`. Streamable HTTP endpoint. |
-| `headers` | object of string to string | no | `{}` | Static headers sent on every request. Do not put secrets here; use `auth` for the agent token. |
-| `auth` | `"none"` or `"agent_token"` | no | `"none"` | `"agent_token"` sends `Authorization: Bearer <agent token>`. |
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | yes | 1 to 32 lowercase letters, digits or `-`, starting with a letter or digit. Unique per agent. It becomes the server's folder in the workspace and the prefix of its tools. |
+| `url` | string | yes | `https://…`, `http://…` or `stdio:<command>`, as for the home (1.1). |
+| `auth_env` | string | no | The environment variable holding the server's token, sent as `Authorization: Bearer <token>`. Newt refuses to load the agent if it is unset or empty. Without it, nothing is sent. |
 
-Newt connects to each server in order and lists all its tools. All servers together get 20 seconds. Newt speaks MCP `2026-07-28` (`server/discover`, no handshake) and falls back to the `2025-11-25` `initialize` handshake for a server that does not answer `server/discover`. Two servers offering the same tool name is an error. Connections are shared by every session of the same bootstrap version.
+Newt connects to every added server at the same time, each with its own 20 second limit. A server that cannot be reached, or does not list its tools in time, is left out: its tools and pages are missing, and the turn context names it (1.3) so the model can say so. The rest of the agent runs. Newt tries the server again every 30 seconds and reconnects everything before the next turn once it answers.
 
-Newt sorts each server's tools by name, so the tool list in the cached prompt prefix is byte-identical whatever order a server lists them in. Servers keep the order the bootstrap lists them in.
+What newt does with an added server depends on whether it **speaks newt** (declares `capabilities.extensions.newt`, with an empty object):
 
-If a server accepts `subscriptions/listen` for `toolsListChanged`, newt keeps that subscription open. A `notifications/tools/list_changed` marks the tool set stale, and so does the subscription ending. A stale tool set is also what a closed or unsendable transport causes during a call. Either way, the next turn fetches the bootstrap again, reconnects and lists the tools again. A server that does not offer the subscription is only relisted on a new bootstrap version or a broken connection. A proxy that cuts long-lived streams causes one relist per cut.
+| | Speaks newt | Plain MCP server |
+|---|---|---|
+| Tool names | `<name>__<tool>` | `<name>__<tool>` |
+| Tool `_meta` (2.2) | used | ignored: every tool is `durable` and invalidates nothing |
+| Call `_meta` (2.3) | all of it | `newt/idempotency_key`, `traceparent` and `progressToken` only |
+| Result `_meta` (2.4) | applied, to its own pages | ignored |
+| Resources | pages under `<name>/`, read with the session and state | pages under `<name>/`, read with nothing of newt's |
+| Skills | offered as `<name>/<skill path>` | the same |
+| `instructions` | not used | not used |
+
+Choosing a server is choosing to trust it: its tool descriptions reach the model's prompt and its results reach the model. Newt only keeps the session's data from servers that did not ask for it, and never takes instructions on retention, pages or state from them.
+
+The home's tools keep their names. An added server's tools are named `<name>__<tool>`, so no two servers' tools can clash; a name longer than 64 characters, the limit model APIs accept, fails the load. Tool names must not collide with newt's built-ins: `read_file`, `glob`, `grep`, `end_turn`, `remember`, `batch`, `checkpoint`, `load_skill`. A collision fails the turn with `two tools share the name`.
+
+Newt sorts each server's tools by name, so the tool list in the cached prompt prefix is byte-identical whatever order a server lists them in. The home's tools come first, then each added server's in the order `servers` lists them.
 
 Every call may go 90 seconds without a result or a `notifications/progress` for its progress token (newt always sends one), and at most 10 minutes in total, however much progress it reports. A call past either limit is cancelled with `notifications/cancelled`, and so is a call whose turn ends before it answers. Each progress notification also reaches the session's live feed as a `tool_progress` event (5.3) carrying the notification's `message`, or `{progress} of {total}` without one, so the app can show "searching…" while a tool runs.
 
 ### 2.2 Tool `_meta`
 
-Set on each tool in the `tools/list` response. All optional.
+Set on each tool in the `tools/list` response of a server that speaks newt. All optional. Other servers' tool `_meta` is ignored.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `newt/retention` | `"ephemeral"`, `"durable"` or `"outward"` | `"durable"` | What reaches history (section 3). |
-| `newt/invalidates` | array of page key | `[]` | Page key prefixes that every successful call makes stale. |
+| `newt/invalidates` | array of page key | `[]` | Key prefixes of the server's own pages that every successful call makes stale. |
 | `newt/idempotent` | boolean | `false` | Must be `true` on an `outward` tool. Declares that the handler honours `newt/idempotency_key`. |
 
 ```json
@@ -328,13 +315,13 @@ Set on each tool in the `tools/list` response. All optional.
 }
 ```
 
-A field with the wrong type or value, or an `outward` tool without `newt/idempotent: true`, makes the whole tool set fail to load, and the turn does not start. Tool names must not collide with newt's built-ins: `read_file`, `glob`, `grep`, `end_turn`, `remember`, `batch`, `checkpoint`, `load_skill`. A collision fails the turn with `two tools share the name`.
+A field with the wrong type or value, or an `outward` tool without `newt/idempotent: true`, makes the whole tool set fail to load, and the turn does not start.
 
 Newt does not validate call arguments against `inputSchema`. It checks only that `arguments` is a JSON object. Validate in the handler.
 
 ### 2.3 Call `_meta`
 
-Newt sends these in `params._meta` of every `tools/call`:
+Newt sends these in `params._meta` of every `tools/call` to a server that speaks newt. A plain server gets only `newt/idempotency_key`, `traceparent` and `progressToken`.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -342,8 +329,8 @@ Newt sends these in `params._meta` of every `tools/call`:
 | `newt/idempotency_key` | string | `{agent}/{session}:{turn}:{call id}`. Opaque to you. Stable across retries and replays of the same call (section 4). For a call made through the `batch` tool the call id is `{batch call id}.{index}`. |
 | `newt/skills_loaded` | array of string | Skills the agent has loaded this turn, sorted. Lets a handler refuse an action until the right skill was read. |
 | `newt/pages_read` | array of `{ path, version }` | Pages the agent has read this turn, sorted by path, with the version newt holds. Lets a handler refuse to act on a page that has since changed. |
-| `newt/state` | any JSON | The session's provider state as the turn holds it now (1.4), with any patches applied so far. Absent when there is none. Sent to all of the agent's MCP servers, like `newt/turn_state`. |
-| `newt/turn_state` | any JSON | The turn state: the `turn_state` from `/turn` (1.4), or the last `newt/turn_state` a tool result returned this turn. Absent until one of them sets it. One turn state is shared by all of an agent's MCP servers, which newt treats as one trust domain (they receive the same agent token). |
+| `newt/state` | any JSON | The session's state as the turn holds it now (1.3), with any patches applied so far. Absent when there is none. |
+| `newt/turn_state` | any JSON | The turn state: the `turn_state` from `newt/turn` (1.3), or the last `newt/turn_state` a tool result returned this turn. Absent until one of them sets it. One turn state is shared by all of the agent's servers that speak newt. |
 | `traceparent` | string | W3C trace context of the call's `execute_tool` span, as newt's OTLP exporter emits it. Parent your own spans on it to see them under the turn's trace. Sent whether or not OTLP export is on. |
 | `progressToken` | string or number | Standard MCP. Report `notifications/progress` with it to keep a long call alive (section 2.1). |
 
@@ -356,24 +343,26 @@ Newt sends these in `params._meta` of every `tools/call`:
     "newt/idempotency_key": "assistant/ana:0198f2a4-6b1e-7c3d-9a10-5e7d2c8b4f01:call_9xk2",
     "newt/skills_loaded": ["writing"],
     "newt/pages_read": [
-      { "path": "notes.md", "version": "7" },
-      { "path": "tasks.md", "version": "7" }
+      { "path": "notes.md", "version": "sha256:…" },
+      { "path": "tasks.md", "version": "sha256:…" }
     ]
   }
 }
 ```
 
+The call carries the tool's name on its own server, without the `<name>__` prefix.
+
 ### 2.4 Result `_meta`
 
-Set on the `tools/call` result. All optional. Newt applies them only to results that are not errors, except `newt/turn_state` and `newt/state_patch`.
+Set on the `tools/call` result by a server that speaks newt; ignored from any other server. All optional. Newt applies them only to results that are not errors, except `newt/turn_state` and `newt/state_patch`.
 
 | Field | Type | Meaning |
 |---|---|---|
 | `newt/summary` | string | What history keeps instead of the full result (section 3). |
-| `newt/invalidate` | array of page key | More key prefixes to mark stale, in addition to the tool's `newt/invalidates`. |
-| `newt/pages` | array of page | Fresh page data. Newt puts these pages in the workspace and clears their stale flag, so the next read needs no refetch. |
-| `newt/state_patch` | object | A JSON merge patch (RFC 7396) applied to the session's provider state (1.4), saved when the turn commits (see 1.4 for when a patch is lost). For example, record which page hashes the agent saw. Applied whether or not the result is an error. A patch that is not an object is ignored, and the tool output tells the model so. |
-| `newt/turn_state` | any JSON | Replaces the turn state that later calls in this turn receive (2.3). Applied whether or not the result is an error, so a refusal can be counted. Calls that run at the same time (a `batch`) each see the state from before them, and the last result to arrive wins. Starts each turn as `/turn`'s `turn_state`, or empty. A turn resumed after a crash replays its journaled tool results without their turn state, so it starts from `/turn`'s value there too. |
+| `newt/invalidate` | array of page key | More key prefixes of the server's own pages to mark stale, in addition to the tool's `newt/invalidates`. |
+| `newt/pages` | array of page | Fresh page data for the server's own pages: `{ key, path, version, content }`, with the path as the server names it (newt puts an added server's under its folder). Newt puts these pages in the workspace and clears their stale flag, so the next read needs no refetch. |
+| `newt/state_patch` | object | A JSON merge patch (RFC 7396) applied to the session's state (1.3), saved when the turn commits (see 1.3 for when a patch is lost). Applied whether or not the result is an error. A patch that is not an object is ignored, and the tool output tells the model so. |
+| `newt/turn_state` | any JSON | Replaces the turn state that later calls in this turn receive (2.3). Applied whether or not the result is an error, so a refusal can be counted. Calls that run at the same time (a `batch`) each see the state from before them, and the last result to arrive wins. Starts each turn as `newt/turn`'s `turn_state`, or empty. A turn resumed after a crash replays its journaled tool results without their turn state, so it starts from `newt/turn`'s value there too. |
 
 ```json
 {
@@ -389,7 +378,7 @@ Set on the `tools/call` result. All optional. Newt applies them only to results 
 
 Invalidation reaches only pages newt already has. A tool that creates a page should return it in `newt/pages`. When a call changes pages, newt appends `(workspace pages changed: a.md, b.md)` to the result the model sees.
 
-If any of the three fields is malformed (wrong type, or a page list that breaks the page rules), newt drops all three, marks every page stale (`[[]]`), appends a note to the result, and logs an error. The call itself still counts as having run.
+If any of the three workspace fields is malformed (wrong type, or a page list that breaks the page rules), newt drops all three, marks every page of that server stale, appends a note to the result, and logs an error. The call itself still counts as having run.
 
 ### 2.5 Result content and errors
 
@@ -399,54 +388,6 @@ If any of the three fields is malformed (wrong type, or a page list that breaks 
 - A broken connection, 90 seconds without a result or progress, or 10 minutes in total, becomes an error result that says the outcome is unknown and tells the model not to repeat the call but to check the workspace first.
 - An `input_required` result (the MCP multi round-trip pattern) whose requests are all elicitations (a form, or a link) is how a tool asks the person before it acts, for example to approve a payment. Newt declares the `elicitation` capability (form and url) and turns the result into an error result that says nothing was done yet, lists each question with its fields, and tells the model to ask the person, then call the tool again with the same arguments plus `"_input": { "answers": { "<request id>": { ...fields } or "decline" }, "state": "<requestState>" }`. Newt takes `_input` out of the arguments and sends the answers as `inputResponses` (`{ "action": "accept", "content": ... }`, or `{ "action": "decline" }`) and `state` as `requestState`. The question is also the result's `newt/summary`, so a `durable` or `outward` tool keeps it in history and the answer can come in a later turn; nothing is stored in between. Requests for sampling or roots fail the call with nothing done. A tool with `additionalProperties: false` in its `inputSchema` should still accept `_input`, which never reaches the handler's arguments.
 - Newt declares the `io.modelcontextprotocol/tasks` extension. A call the server answers with a task is polled with `tasks/get` at the task's `pollInterval` (default 1 s, kept between 250 ms and 10 s) for up to an hour, instead of the 10 minute call limit, and its completed result is read like any other. A task that fails, is cancelled, asks for input or outlives the hour becomes an error result that says the outcome is unknown. Polling is not journaled: if newt restarts while it waits, the call's outcome is unknown, as for any call.
-
-### 2.6 Skills served over MCP
-
-A server that declares the `io.modelcontextprotocol/skills` extension ([SEP-2640](https://modelcontextprotocol.io/seps/2640-skills-extension)) can serve skills in the [Agent Skills](https://agentskills.io/specification) format instead of putting them in the bootstrap. When newt connects, it calls `skills/list` (every page) and offers each skill under the name `{server}/{skill path}`: the server's name from the bootstrap, then the skill's URI without its scheme and `/SKILL.md`. `skill://acme/billing/refunds/SKILL.md` on server `app` becomes `app/acme/billing/refunds`. The description is the frontmatter's `description`.
-
-A skill is not offered, with a warning in the log, if its `resources` is `"dynamic"` (newt cannot verify it), its URI does not end in `/{name}/SKILL.md`, it has more than 512 files or more than 16 MiB, its file list leaves out its own `SKILL.md`, or it lists a file outside its directory. Two skills from one server that would get the same name, or an MCP skill with the same name as a bootstrap skill, fail the bootstrap load.
-
-Nothing is fetched until the model loads a skill. Then newt reads `SKILL.md` with `resources/read`, checks its size and `sha256` digest against the listing, and checks that its frontmatter equals the listing's `frontmatter`. The result is the file, followed by the skill's other files when it has any:
-
-```
-<skill_files>
-Read one with load_skill and `file`:
-- references/tone.md
-</skill_files>
-```
-
-When any skill is served over MCP, `load_skill` also takes `file`, a path relative to the skill. Only files the listing names can be read, each checked the same way. Absolute paths, `..`, `.` and empty segments are refused. Verified files are cached by server, URI and digest for as long as the tool set lives. A file that fails a check is never shown to the model: the call fails, and the tool set is marked stale so the next turn lists the skills again. Only text contents are read.
-
-### 2.7 An agent that is only an MCP server
-
-An agent can skip the context provider entirely: `[agents.<name>] mcp = "<url>"` with a `model` (`docs/config.md`). Newt then gets everything from that one server, over plain MCP:
-
-| Context provider field | From the MCP server |
-|---|---|
-| bootstrap `instructions` | The server's `instructions` (`server/discover`, or `initialize` on `2025-11-25`). Empty instructions fail the turn. |
-| bootstrap `model` | `model` in `server.toml`. The other bootstrap knobs take their defaults (1.3). |
-| bootstrap `skills` | `skills/list` (2.6). Skills are named `{agent}/{skill path}`. |
-| bootstrap `mcp_servers` | The server itself, with `auth: "agent_token"`. |
-| `version` | None. Newt reconnects when the tool set goes stale (2.1), which includes the server restarting. |
-| turn `pages` | The server's resources for the session, loaded lazily (1.5). |
-| turn `pinned`, `instructions`, `constraints` | None. |
-
-**Pages as resources.** At the start of each turn newt calls `resources/list` (every page) and reads each resource with `resources/read`, both with `_meta: { "newt/session": "<session key>" }`, so one server can serve every session. Each text resource becomes a page:
-
-| Page field | From the resource |
-|---|---|
-| `path` | `name` |
-| `key` | `_meta["newt/key"]` when set (an array of string), otherwise `[uri]` |
-| `version` | The `sha256:` digest of the text |
-| `content` | The text contents whose `uri` matches |
-
-Resources with a `skill://` URI are skills, not pages, and are left out. A resource with no text contents is left out with a warning. The page rules of 1.5 apply: two resources with the same `name` fail the load. Refetching a stale page lists the resources again and reads the matching ones, so a page that is no longer listed disappears and a new one appears.
-
-**Invalidation.** Once the pages are listed, newt opens `subscriptions/listen` with `resourceSubscriptions` set to the session's resource URIs, and `resourcesListChanged`, for the rest of the turn. `notifications/resources/updated` marks that resource's page stale, and `notifications/resources/list_changed` marks every page stale; the next read refetches. The subscription follows the URIs of the latest listing and closes when the turn ends. A server that does not accept resource subscriptions still works: its pages are fresh at the start of each turn, and tool `_meta` (2.2, 2.4) can still invalidate them during one.
-
-The update notification travels on its own stream, so it can arrive after the tool result that caused it. A tool that changes a page and wants the model's next read to see the change for certain should also return `newt/invalidate` or the page itself in `newt/pages` (2.4).
-
-A minimal agent is an MCP server with instructions, tools that do things, and resources that show the person's state. Nothing in it needs to know about newt.
 
 ## 3. Retention classes
 
@@ -515,7 +456,7 @@ Errors are `{ "error": "<message>" }` with status 400 (bad body or key), 401 (mi
 | `kind` | `"message"` or `"signal"` | no | `"message"` | Stored. Nothing else reads it. |
 | `policy` | `"steer"`, `"queue"` or `"collect"` | no | `"steer"` | `steer`: if a turn is running, the event joins it between model calls, and interrupts a model call that has not started producing output. `queue` and `collect`: the event waits for the next turn. Only `steer` is treated differently in code. |
 | `priority` | `"interactive"` or `"background"` | no | `"interactive"` | A turn that includes any interactive event runs in the interactive lane. Background model calls may use at most `max_concurrent - 1` of a route's slots (at least 1), which keeps a slot free for interactive turns. |
-| `meta` | any JSON | no | none | Stored with the event and sent to the context provider with the turn that answers it (1.4). Not shown to the model. |
+| `meta` | any JSON | no | none | Stored with the event and sent to the home in `newt/turn` with the turn that answers it (1.3). Not shown to the model. |
 
 Unknown fields are rejected. Response, status 202:
 
@@ -533,7 +474,7 @@ Unknown fields are rejected. Response, status 202:
 
 ### 5.3 `GET .../live`
 
-A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. Frames older than `[retention] live_days` (7 days by default) are deleted, so a resume from further back starts at the oldest frame kept. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`, and the event's `meta` when the agent sets `live_meta`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. `turn_started` also carries `model` (the alias the turn's model calls use) and `reset` (whether the turn runs on a reset history, 1.4.1), and its `history_messages` counts the messages the model sees. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
+A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. Frames older than `[retention] live_days` (7 days by default) are deleted, so a resume from further back starts at the oldest frame kept. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`, and the event's `meta` when the agent sets `live_meta`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. `turn_started` also carries `model` (the alias the turn's model calls use) and `reset` (whether the turn runs on a reset history, 1.3.1), and its `history_messages` counts the messages the model sees. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
 
 ```
 id: 1
@@ -551,7 +492,7 @@ The session's history entries in order. 404 if there is no such session.
 { "entries": [ { "seq": 0, "turn": "0198f2a4-...", "kind": "message", "entry": { "role": "user", "parts": [ { "type": "text", "text": "Add milk." } ] } } ] }
 ```
 
-`entry` is a message as newt stores it: `role` is `user` or `assistant`, and each part has a `type` of `text`, `tool_call` (`id`, `name`, `arguments`) or `tool_result` (`call_id`, `content`, `is_error`). Only what the retention rules kept is there (section 3). A history reset (1.4.1) leaves no entry: the history before it is returned like the rest.
+`entry` is a message as newt stores it: `role` is `user` or `assistant`, and each part has a `type` of `text`, `tool_call` (`id`, `name`, `arguments`) or `tool_result` (`call_id`, `content`, `is_error`). Only what the retention rules kept is there (section 3). A history reset (1.3.1) leaves no entry: the history before it is returned like the rest.
 
 ### 5.5 `POST .../fork`
 
