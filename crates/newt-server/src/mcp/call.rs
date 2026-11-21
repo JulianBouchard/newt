@@ -11,8 +11,8 @@ use newt_core::tools::{CallContext, Progress, ToolHost, ToolOutput};
 use newt_core::workspace::{Page, PageKey};
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotification,
-    CancelledNotificationParam, ClientRequest, ContentBlock, ProgressNotificationParam, RequestId,
-    RequestMetaObject, ServerResult,
+    CancelledNotificationParam, ClientRequest, ContentBlock, CustomRequest, CustomResult,
+    ProgressNotificationParam, RequestId, RequestMetaObject, ServerResult,
 };
 use rmcp::service::{Peer, PeerRequestOptions};
 use rmcp::{RoleClient, ServiceError};
@@ -21,10 +21,12 @@ use serde_json::Value;
 use super::{
     META_IDEMPOTENCY_KEY, META_INVALIDATE, META_PAGES, META_PAGES_READ, META_SESSION,
     META_SKILLS_LOADED, META_STATE, META_STATE_PATCH, META_SUMMARY, META_TURN_STATE, McpHost,
-    Remote, meta_field,
+    Owner, Remote, meta_field,
 };
 
 const META_TRACEPARENT: &str = "traceparent";
+/// How long the home may take to answer `newt/turn` or `newt/turn_end`.
+const CUSTOM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const OUTCOME_UNKNOWN: &str = "it may or may not have taken effect. Do not repeat it: check the workspace first, and tell the person if you cannot confirm it.";
 const BAD_STATE_PATCH: &str = "(newt ignored this tool's state patch: it must be a JSON object)";
 const BAD_META: &str = "(newt could not read this tool's workspace metadata, so every page will be refetched before its next read)";
@@ -41,48 +43,22 @@ impl McpHost {
             Ok(input) => input,
             Err(why) => return ToolOutput::error(why),
         };
-        let mut meta = RequestMetaObject::new();
-        meta.insert(META_SESSION.to_owned(), Value::from(self.session.as_str()));
-        meta.insert(
-            META_IDEMPOTENCY_KEY.to_owned(),
-            Value::from(context.idempotency_key.as_str()),
-        );
-        meta.insert(
-            META_SKILLS_LOADED.to_owned(),
-            serde_json::json!(context.skills_loaded),
-        );
-        meta.insert(
-            META_PAGES_READ.to_owned(),
-            serde_json::json!(context.pages_read),
-        );
-        let turn_state = self.turn_state.get();
-        if !turn_state.is_null() {
-            meta.insert(META_TURN_STATE.to_owned(), turn_state);
-        }
-        if let Some(state) = self.session_state.get() {
-            meta.insert(META_STATE.to_owned(), state);
-        }
-        if let Some(traceparent) = &context.traceparent {
-            meta.insert(
-                META_TRACEPARENT.to_owned(),
-                Value::from(traceparent.as_str()),
-            );
-        }
-        let mut params = CallToolRequestParams::new(call.name.clone()).with_arguments(arguments);
+        let meta = self.call_meta(remote, context);
+        let mut params = CallToolRequestParams::new(remote.tool.clone()).with_arguments(arguments);
         params.meta = Some(meta);
         if let Some((responses, state)) = input {
             params.input_responses = Some(responses);
             params.request_state = state;
         }
         match self.send(remote, params, context.progress.as_ref()).await {
-            Ok(ServerResult::CallToolResult(result)) => self.output(result),
+            Ok(ServerResult::CallToolResult(result)) => self.output(remote, result),
             Ok(ServerResult::InputRequiredResult(result)) => {
                 tracing::info!(server = %remote.server, tool = %call.name, "MCP tool asked for the person's input");
                 super::mrtr::ask(&call.name, &result)
             }
             Ok(ServerResult::CreateTaskResult(created)) => {
                 match super::mrtr::finish_task(&remote.client, created).await {
-                    Ok(result) => self.output(result),
+                    Ok(result) => self.output(remote, result),
                     Err(why) => {
                         tracing::warn!(server = %remote.server, tool = %call.name, %why, "MCP task did not finish");
                         ToolOutput::error(format!(
@@ -130,9 +106,49 @@ impl McpHost {
         }
     }
 
-    /// The tool output, after taking the turn state and the session state
-    /// patch the result carries.
-    fn output(&self, result: CallToolResult) -> ToolOutput {
+    /// What a call carries in `_meta`: the idempotency key and trace context
+    /// for every server, and the session data only for a server that speaks
+    /// newt.
+    fn call_meta(&self, remote: &Remote, context: &CallContext) -> RequestMetaObject {
+        let mut meta = RequestMetaObject::new();
+        meta.insert(
+            META_IDEMPOTENCY_KEY.to_owned(),
+            Value::from(context.idempotency_key.as_str()),
+        );
+        if let Some(traceparent) = &context.traceparent {
+            meta.insert(
+                META_TRACEPARENT.to_owned(),
+                Value::from(traceparent.as_str()),
+            );
+        }
+        if remote.speaks_newt {
+            meta.insert(META_SESSION.to_owned(), Value::from(self.session.as_str()));
+            meta.insert(
+                META_SKILLS_LOADED.to_owned(),
+                serde_json::json!(context.skills_loaded),
+            );
+            meta.insert(
+                META_PAGES_READ.to_owned(),
+                serde_json::json!(context.pages_read),
+            );
+            let turn_state = self.turn_state.get();
+            if !turn_state.is_null() {
+                meta.insert(META_TURN_STATE.to_owned(), turn_state);
+            }
+            if let Some(state) = self.session_state.get() {
+                meta.insert(META_STATE.to_owned(), state);
+            }
+        }
+        meta
+    }
+
+    /// The tool output. For a server that speaks newt, also takes the turn
+    /// state, the session state patch and the workspace fields its result
+    /// carries; any other server's `newt/*` fields are ignored.
+    fn output(&self, remote: &Remote, result: CallToolResult) -> ToolOutput {
+        if !remote.speaks_newt {
+            return plain_output(result);
+        }
         let meta = result.meta.as_deref();
         if let Ok(Some(state)) = meta_field::<Value>(meta, META_TURN_STATE) {
             self.turn_state.set(state);
@@ -141,7 +157,7 @@ impl McpHost {
         if let Ok(Some(patch)) = &patch {
             self.session_state.patch(patch);
         }
-        let mut output = tool_output(result);
+        let mut output = tool_output(result, &remote.owner);
         if let Err(why) = patch {
             tracing::error!(%why, "MCP result had a state patch that is not an object");
             output.content.push('\n');
@@ -242,7 +258,7 @@ impl ToolHost for McpHost {
     }
 }
 
-fn tool_output(result: CallToolResult) -> ToolOutput {
+fn plain_output(result: CallToolResult) -> ToolOutput {
     let mut content: Vec<String> = result
         .content
         .into_iter()
@@ -258,24 +274,45 @@ fn tool_output(result: CallToolResult) -> ToolOutput {
     {
         content.push(structured.to_string());
     }
-    let mut output = ToolOutput {
+    ToolOutput {
         content: content.join("\n"),
         is_error: result.is_error == Some(true),
         ..ToolOutput::default()
-    };
-    let meta = result.meta.as_deref();
+    }
+}
+
+/// A newt-speaking server's result, with its workspace fields scoped to the
+/// server's own pages.
+fn tool_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
+    let meta = result.meta.clone();
+    let mut output = plain_output(result);
+    let meta = meta.as_deref();
     let summary = meta_field::<String>(meta, META_SUMMARY);
     let invalidate = meta_field::<Vec<PageKey>>(meta, META_INVALIDATE);
     let pages = meta_field::<Vec<Page>>(meta, META_PAGES).and_then(|pages| {
+        let pages: Option<Vec<Page>> = pages.map(|pages| {
+            pages
+                .into_iter()
+                .map(|page| Page {
+                    key: owner.key(page.key),
+                    path: owner.path(&page.path),
+                    ..page
+                })
+                .collect()
+        });
         if let Some(pages) = &pages {
-            crate::context::check_pages(pages)?;
+            super::check_pages(pages)?;
         }
         Ok(pages)
     });
     match (summary, invalidate, pages) {
         (Ok(summary), Ok(invalidate), Ok(pages)) => {
             output.summary = summary;
-            output.invalidate = invalidate.unwrap_or_default();
+            output.invalidate = invalidate
+                .unwrap_or_default()
+                .into_iter()
+                .map(|key| owner.key(key))
+                .collect();
             output.pages = pages.unwrap_or_default();
         }
         (summary, invalidate, pages) => {
@@ -284,10 +321,37 @@ fn tool_output(result: CallToolResult) -> ToolOutput {
                 .flatten()
                 .collect();
             tracing::error!(problems = %problems.join("; "), "MCP result had invalid newt metadata");
-            output.invalidate = vec![Vec::new()];
+            output.invalidate = vec![owner.key(Vec::new())];
             output.content.push('\n');
             output.content.push_str(BAD_META);
         }
     }
     output
+}
+
+/// Sends a request the newt extension defines (`newt/turn`, `newt/turn_end`)
+/// and returns its result, `{}` for an empty one.
+pub(super) async fn custom(
+    client: &super::Client,
+    server: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let request = ClientRequest::CustomRequest(CustomRequest::new(method, Some(params)));
+    let handle = client
+        .send_request_with_option(request, PeerRequestOptions::with_timeout(CUSTOM_TIMEOUT))
+        .await
+        .map_err(|error| format!("MCP server `{server}`: {method}: {error}"))?;
+    match handle.await_response().await {
+        Ok(ServerResult::CustomResult(CustomResult(value))) => Ok(value),
+        Ok(ServerResult::EmptyResult(_)) => Ok(Value::Object(serde_json::Map::new())),
+        Ok(_) => Err(format!(
+            "MCP server `{server}`: {method}: answered with something other than a result"
+        )),
+        Err(ServiceError::McpError(error)) => Err(format!(
+            "MCP server `{server}`: {method} failed: {}",
+            error.message
+        )),
+        Err(error) => Err(format!("MCP server `{server}`: {method}: {error}")),
+    }
 }

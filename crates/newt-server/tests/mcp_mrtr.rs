@@ -147,13 +147,12 @@ async fn connect(bank: Bank) -> Toolset {
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     Toolset::connect(
-        &[McpServer {
+        &McpServer {
             name: "bank".into(),
             url: format!("http://{address}/mcp"),
-            headers: BTreeMap::new(),
             auth: McpAuth::None,
-        }],
-        "agent-token",
+        },
+        &[],
     )
     .await
     .unwrap()
