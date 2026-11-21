@@ -1,16 +1,16 @@
 ---
 title: Stability
-description: What newt promises within 1.x, what minor releases may add, and what is outside the promise.
+description: What newt promises within a major version, what minor releases may add, and what is outside the promise.
 ---
 
-From 1.0 newt follows semantic versioning. Within 1.x, nothing below changes in a way that breaks a working setup.
+newt follows semantic versioning. Within a major version (2.x now), nothing below changes in a way that breaks a working setup. 2.0 replaced the HTTP context provider with the home MCP server; the [changelog](../changelog/) has what changed.
 
 ## Covered
 
 - **The event API** ([Protocol, section 5](../protocol/#5-event-api-called-by-your-application)): paths, fields, status codes.
-- **The context-provider protocol** and the `newt/*` MCP `_meta` fields ([Protocol, sections 1 to 4](../protocol/)).
+- **The `newt` MCP extension**: the home's declaration, `newt/turn`, `newt/turn_end` and the `newt/*` `_meta` fields ([Protocol, sections 1 to 4](../protocol/)).
 - **The `server.toml` keys** and their defaults ([Configuration](../configuration/)).
-- **The database.** newt applies its own migrations on start, and within 1.x they only add tables, columns and indexes. Upgrading is replacing the binary. Downgrading is not supported.
+- **The database.** newt applies its own migrations on start, and within a major version they only add tables, columns and indexes. Upgrading is replacing the binary. Downgrading is not supported.
 
 ## What a minor release may add
 

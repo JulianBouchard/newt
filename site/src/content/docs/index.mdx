@@ -73,9 +73,9 @@ Copy a real conversation into a new session and run it against another prompt or
 
 <div>
 
-### [MCP-only agents](mcp-agents/)
+### [Agents are MCP servers](home-server/)
 
-An agent can be a single MCP server. Its instructions, tools and resources are the agent.
+An agent is one MCP server, plus any servers it adds. newt reaches them over HTTP or runs them itself over stdio.
 
 </div>
 
@@ -101,7 +101,7 @@ One binary and Postgres. Any instance can run any session.
 
 <NewtPlusMcp />
 
-Point newt at it with `mcp = "https://…"` in `server.toml`. The server's instructions, tools and resources become the agent. [MCP-only agents](mcp-agents/) has the details.
+Point newt at it with `mcp = "https://…"` in `server.toml`, or let newt run it with `mcp = "stdio:…"`. The server's instructions, tools and resources become the agent, and declaring the `newt` extension gives it the model, settings and per-turn control. [The home server](home-server/) has the details.
 
 ## Try it with Docker
 
@@ -109,13 +109,13 @@ A fake model answers, so you don't need an API key.
 
 ```sh
 docker compose -f deploy/compose.yaml up --build -d
-curl -X POST localhost:7878/v1/agents/assistant-mcp/sessions/ana/events \
+curl -X POST localhost:7878/v1/agents/assistant/sessions/ana/events \
   -H "Authorization: Bearer demo-token" -H 'content-type: application/json' \
   -d '{"id":"m1","text":"Remind me to call the bank tomorrow."}'
-curl -N localhost:7878/v1/agents/assistant-mcp/sessions/ana/live -H "Authorization: Bearer demo-token"
+curl -N localhost:7878/v1/agents/assistant/sessions/ana/live -H "Authorization: Bearer demo-token"
 ```
 
 <CardGrid>
   <LinkCard title="Quickstart" description="Run the demo and watch a turn live." href="quickstart/" />
-  <LinkCard title="Context provider" description="The three endpoints your app serves." href="context-provider/" />
+  <LinkCard title="The home server" description="The MCP server that is your agent." href="home-server/" />
 </CardGrid>

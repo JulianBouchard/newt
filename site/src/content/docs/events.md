@@ -29,7 +29,7 @@ A session key is 1 to 200 bytes with no `/`. A session starts with its first eve
 | `text` | required | What the agent reads. |
 | `policy` | `steer` | `steer` joins a running turn between model calls. `queue` and `collect` wait for the next turn. |
 | `priority` | `interactive` | `background` turns leave a model slot free for interactive ones. |
-| `meta` | none | Any JSON, stored with the event and sent to your context provider with the turn that answers it. Never shown to the model. |
+| `meta` | none | Any JSON, stored with the event and sent to your home server in `newt/turn` with the turn that answers it. Never shown to the model. |
 
 newt answers `202` with `{ "inbox_id": 41, "duplicate": false }`. Retrying a post with the same `id` is safe.
 
