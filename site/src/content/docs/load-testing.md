@@ -8,7 +8,7 @@ description: Run load against newt with a fake model and a mock app, so you meas
 | Part | What it does |
 |---|---|
 | `fake-model` | Speaks the OpenAI Responses stream with random text. Timings and tool use come from a production assistant's profile: about 16 tool calls per turn. Prompt caching is simulated per prefix, so a rewritten history misses as it would against a real model. |
-| `mock-app` | A context provider with a production-sized prompt and workspace, and an MCP server whose tools have that assistant's latencies and error rates. |
+| `mock-app` | The agent's home MCP server: a production-sized prompt, workspace and skills, and tools with that assistant's latencies and error rates. `--stdio true` serves it over stdin and stdout, for newt to run itself. |
 | `run` | Drives sessions against the events API and live feed, and reports read receipt, time to turn start, turn duration, model calls, cache rate and tool calls. |
 
 ## Run it
@@ -21,7 +21,7 @@ LOADTEST_TOKEN=... newt-loadtest run --base http://127.0.0.1:7878 --agent assist
   --fake http://127.0.0.1:9100 --mock http://127.0.0.1:9200
 ```
 
-Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `context_provider` at `http://127.0.0.1:9200/agent`.
+Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `mcp` at `http://127.0.0.1:9200/mcp`, or at `stdio:newt-loadtest mock-app --stdio true`.
 
 ## The fake model's cache
 

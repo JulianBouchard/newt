@@ -9,7 +9,8 @@
 #
 # Builds the release binaries, starts the loadtest's fake model (prompt caching
 # simulated per key and spread over 4 machines, as OpenAI routes), the mock app
-# (a production-sized prompt, workspace and tool latencies) and newt on its own
+# (the agent's home MCP server: a production-sized prompt, workspace and tool
+# latencies) and newt on its own
 # ports, runs every session at once, and prints the load report, newt's CPU and
 # memory, and the cache report card. Needs Postgres: NEWT_DATABASE_URL, or the
 # repo's docker-compose.yml database. See docs/benchmark.md.
@@ -49,7 +50,7 @@ max_concurrent = 1000
 chain = ["fake"]
 
 [agents.bench]
-context_provider = "http://127.0.0.1:9200/agent"
+mcp = "http://127.0.0.1:9200/mcp"
 token_env = "BENCH_TOKEN"
 EOF
 

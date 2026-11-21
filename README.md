@@ -98,7 +98,7 @@ The event is accepted in a few milliseconds; the turn reads the workspace, adds 
 `newt-loadtest` runs load against newt with no real model behind it:
 
 - `fake-model` speaks the OpenAI Responses stream with random text. Its timings (response headers, thinking, token rate, prefill per uncached token) and its tool use come from the profile of a production assistant: about 16 tool calls per turn, picked with that assistant's real tool mix. Prompt caching is simulated per prefix: a request reuses the longest run of 128-token blocks an earlier request with the same `prompt_cache_key` wrote (at least 1,024 tokens, readable 2 seconds after the write, five-minute expiry), so a rewritten history misses just as it would against a real model.
-- `mock-app` is a context provider with a production-sized prompt and workspace, and an MCP server whose tools have the latencies and error rates of that assistant's tools.
+- `mock-app` is the agent's home MCP server: a production-sized prompt, workspace and skills, and tools with the latencies and error rates of that assistant's tools. `--stdio true` serves it over stdin and stdout, for newt to run itself.
 - `run` drives sessions against newt's events API and live feed and reports read receipt, time to turn start, turn duration, model calls, cache rate and tool calls.
 
 ```sh
@@ -109,7 +109,7 @@ LOADTEST_TOKEN=... newt-loadtest run --base http://127.0.0.1:7878 --agent assist
   --fake http://127.0.0.1:9100 --mock http://127.0.0.1:9200
 ```
 
-Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `context_provider` at `http://127.0.0.1:9200/agent`. `scripts/bench.sh` does all of this in one command and adds newt's CPU, memory and cache report card; see [docs/benchmark.md](docs/benchmark.md).
+Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `mcp` at `http://127.0.0.1:9200/mcp`, or at `stdio:newt-loadtest mock-app --stdio true`. `scripts/bench.sh` does all of this in one command and adds newt's CPU, memory and cache report card; see [docs/benchmark.md](docs/benchmark.md).
 
 ## Running the tests
 
