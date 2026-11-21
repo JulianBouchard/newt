@@ -59,7 +59,7 @@ The home declares the agent's settings in its capabilities, as the `newt` extens
 
 `model` is a `[models]` alias from `server.toml`: the home picks the alias, `server.toml` decides which providers it means. Optional knobs (`max_model_calls`, `history_budget`, `servers` and more) are in [Protocol 1.2](../protocol/#12-the-newt-extension-the-agents-settings). Unknown fields fail the turn loudly.
 
-The instructions, skills and tools form the cached prompt prefix. Change them and the next turn pays one prompt cache miss. newt reads the declaration again whenever it reconnects, which includes the server restarting or announcing a tool change.
+The instructions, skills and tools form the cached prompt prefix. Change them and the next turn pays one prompt cache miss. newt reads the declaration again whenever it reconnects, which includes the server restarting or announcing a tool change. A home newt runs over stdio keeps its process, and so its in-memory state, until it exits: newt relists its tools on the same connection and reads its declaration when it starts it.
 
 ## Resources are the workspace
 

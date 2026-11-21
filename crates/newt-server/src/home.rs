@@ -239,7 +239,10 @@ impl HomeBackend {
                 McpAuth::Bearer(home.token.clone())
             },
         };
-        let connected = crate::mcp::Home::connect(&server).await?;
+        let connected = match running_stdio_home(slot.as_ref(), &home.url) {
+            Some(running) => running,
+            None => crate::mcp::Home::connect(&server).await?,
+        };
         if connected.instructions.is_empty() {
             return Err(
                 "the home server sent no instructions; they are the agent's system prompt"
@@ -350,6 +353,18 @@ impl HomeBackend {
             turn_state,
         })
     }
+}
+
+/// The home process newt already runs, while it is alive. A stdio home keeps
+/// its state in its process, so newt reconnects the other servers around it
+/// instead of starting a new one; it reads its declaration when it starts.
+fn running_stdio_home(loaded: Option<&Arc<Loaded>>, url: &str) -> Option<crate::mcp::Home> {
+    if !url.starts_with(STDIO_SCHEME) {
+        return None;
+    }
+    loaded
+        .map(|loaded| loaded.toolset.home().clone())
+        .filter(|home| !home.is_closed())
 }
 
 /// The servers the home adds, with their tokens read from the environment.
