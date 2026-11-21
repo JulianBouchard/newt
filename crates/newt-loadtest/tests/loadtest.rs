@@ -10,7 +10,7 @@ use newt_loadtest::fake_model::{self, FakeModel, FakeOptions};
 use newt_loadtest::mock_app::{self, MockApp};
 use newt_loadtest::profile::{Profile, REFERENCE_TIMING};
 use newt_server::config::ServerConfig;
-use newt_server::context::{ContextProviderBackend, ProviderEndpoint};
+use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::http::{AppState, router};
 use newt_server::models::Routes;
 use newt_server::runner::{Runner, RunnerConfig};
@@ -43,7 +43,7 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let app_url = format!("http://{}", listener.local_addr().unwrap());
-    let app = MockApp::new(&app_url, SPEED, 12, 0.0, false, Profile::default());
+    let app = MockApp::new(SPEED, 12, 0.0, Profile::default());
     tokio::spawn({
         let router = mock_app::router(Arc::clone(&app));
         async move { axum::serve(listener, router).await.unwrap() }
@@ -66,17 +66,16 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
         .unwrap();
     let runner = Runner::new(
         Store::new(pool.clone()),
-        ContextProviderBackend::new(
+        HomeBackend::new(
             BTreeMap::from([(
                 "assistant".to_owned(),
-                ProviderEndpoint {
-                    base_url: format!("{app_url}/agent"),
+                HomeServer {
+                    url: format!("{app_url}/mcp"),
                     token: TOKEN.into(),
                 },
             )]),
             ["default".to_owned()],
-        )
-        .unwrap(),
+        ),
         Routes::from_config(&config).unwrap(),
         RunnerConfig {
             max_sessions: 32,

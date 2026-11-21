@@ -15,7 +15,8 @@ const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
                            [--cache-scope key|prefix|routed] [--machines 4]
                            [--dump-dir DIR] [--turn-marker TEXT] [--decision-log FILE] [--cache-log FILE] [--profile FILE]
-  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--lazy-pages false] [--profile FILE]
+  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--profile FILE]
+                           [--stdio true]   serve the agent over stdin and stdout instead
   newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
                     [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--think-max-ms THINK] [--ramp-s 0] [--timeout-s 300]
                     [--fake http://127.0.0.1:9100] [--mock http://127.0.0.1:9200]";
@@ -140,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_writer(std::io::stderr)
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some((command, rest)) = args.split_first() else {
@@ -169,16 +171,20 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         "mock-app" => {
-            let listen = flags.text("listen", "127.0.0.1:9200");
             let app = MockApp::new(
-                &format!("http://{listen}"),
                 flags.number("speed", 1.0)?,
                 flags.number("seed", 2)?,
                 flags.number("render-ms", 0.0)?,
-                flags.text("lazy-pages", "false") == "true",
                 profile(&flags)?,
             );
-            serve(&listen, mock_app::router(app)).await
+            if flags.text("stdio", "false") == "true" {
+                return mock_app::serve_stdio(app).await;
+            }
+            serve(
+                &flags.text("listen", "127.0.0.1:9200"),
+                mock_app::router(app),
+            )
+            .await
         }
         "run" => run_load(&flags).await,
         other => bail!("unknown command `{other}`\n{USAGE}"),

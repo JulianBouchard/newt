@@ -1,49 +1,49 @@
+//! The load test's agent: one home MCP server with a production-sized prompt
+//! and workspace, skills served over MCP, and tools with a real assistant's
+//! latencies and error rates.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::Json;
 use axum::extract::State;
-use axum::routing::{get, post};
+use axum::routing::get;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
-    ListToolsResult, MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    ListResourcesResult, ListSkillsResult, ListToolsResult, MetaObject, PaginatedRequestParams,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ServerCapabilities, ServerConfig, Skill, SkillFrontmatter, SkillResource,
+    SkillResources, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::profile::{Kind, Profile};
 use crate::sample::{Rng, Spread};
 
-const VERSION: &str = "loadtest-1";
 const PREFIX_BYTES: usize = 30_000;
 const PAGE_BYTES: usize = 1_500;
+const PAGE_SCHEME: &str = "mock://";
 
 #[derive(Debug)]
 pub struct MockApp {
     rng: Rng,
     speed: f64,
     render: Spread,
-    lazy_pages: bool,
-    public_url: String,
     instructions: String,
+    skills: Vec<(String, String)>,
     profile: Profile,
     pub tool_calls: AtomicU64,
     pub sends: AtomicU64,
+    pub resource_lists: AtomicU64,
+    pub resource_reads: AtomicU64,
 }
 
 impl MockApp {
-    pub fn new(
-        public_url: &str,
-        speed: f64,
-        rng_seed: u64,
-        render_ms: f64,
-        lazy_pages: bool,
-        profile: Profile,
-    ) -> Arc<Self> {
+    pub fn new(speed: f64, rng_seed: u64, render_ms: f64, profile: Profile) -> Arc<Self> {
         let rng = Rng::new(rng_seed);
         let mut instructions = String::from(
             "You are a customer assistant. Read the workspace, act with your tools, then end the turn.\n",
@@ -52,109 +52,111 @@ impl MockApp {
             instructions.push_str(&rng.words(12));
             instructions.push('\n');
         }
+        let skills = profile
+            .skills
+            .iter()
+            .map(|name| {
+                let file = format!(
+                    "---\nname: {name}\ndescription: How to handle {name} work.\n---\n\n{}\n",
+                    rng.words(400)
+                );
+                (name.clone(), file)
+            })
+            .collect();
         Arc::new(Self {
             rng,
             speed,
             render: Spread::new(render_ms, render_ms * 2.0),
-            lazy_pages,
-            public_url: public_url.trim_end_matches('/').to_owned(),
             instructions,
+            skills,
             profile,
             tool_calls: AtomicU64::new(0),
             sends: AtomicU64::new(0),
+            resource_lists: AtomicU64::new(0),
+            resource_reads: AtomicU64::new(0),
         })
     }
 
-    fn page(&self, path: &str) -> Value {
-        let mut content = format!("# {path}\n");
+    fn page(&self) -> String {
+        let mut content = String::from("# page\n");
         while content.len() < PAGE_BYTES {
             content.push_str(&self.rng.words(10));
             content.push('\n');
         }
-        let key: Vec<&str> = path.trim_end_matches(".md").split('/').collect();
-        json!({ "key": key, "path": path, "version": self.rng.next_u64().to_string(), "content": content })
+        content
     }
 
-    fn pages(&self) -> Vec<Value> {
-        self.profile
-            .pages
-            .iter()
-            .map(|path| self.page(path))
-            .collect()
+    /// The agent's settings, declared as the `newt` extension.
+    fn settings() -> JsonObject {
+        let Value::Object(settings) = json!({
+            "model": "default",
+            "first_call_effort": "low",
+            "effort": "medium",
+            "max_model_calls": 30,
+        }) else {
+            unreachable!("a JSON object literal")
+        };
+        settings
     }
 }
 
-#[derive(Deserialize)]
-struct PagesRequest {
-    keys: Vec<Vec<String>>,
+impl MockApp {
+    /// A page, freshly rendered, or a skill's file.
+    fn read(&self, request: ReadResourceRequestParams) -> Result<ReadResourceResponse, ErrorData> {
+        self.resource_reads.fetch_add(1, Ordering::Relaxed);
+        let text = if request.uri.starts_with(PAGE_SCHEME) {
+            self.page()
+        } else {
+            self.skills
+                .iter()
+                .find(|(name, _)| skill_uri(name) == request.uri)
+                .map(|(_, file)| file.clone())
+                .ok_or_else(|| ErrorData::invalid_params("no such resource", None))?
+        };
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(text, request.uri)]).into())
+    }
 }
 
+fn skill_uri(name: &str) -> String {
+    format!("skill://{name}/SKILL.md")
+}
+
+/// The agent at `/mcp`, and the counters at `/stats`.
 pub fn router(app: Arc<MockApp>) -> axum::Router {
-    let tools_app = Arc::clone(&app);
-    let mcp: StreamableHttpService<Tools, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(Tools(Arc::clone(&tools_app))),
+    let home_app = Arc::clone(&app);
+    let mcp: StreamableHttpService<Home, LocalSessionManager> = StreamableHttpService::new(
+        move || Ok(Home(Arc::clone(&home_app))),
         Arc::default(),
         StreamableHttpServerConfig::default(),
     );
     axum::Router::new()
-        .route("/agent/bootstrap", get(bootstrap))
-        .route("/agent/turn", post(turn))
-        .route("/agent/pages", post(pages))
         .route("/stats", get(stats))
         .nest_service("/mcp", mcp)
         .with_state(app)
 }
 
-async fn bootstrap(State(app): State<Arc<MockApp>>) -> Json<Value> {
-    Json(json!({
-        "version": VERSION,
-        "instructions": app.instructions,
-        "model": "default",
-        "first_call_effort": "low",
-        "effort": "medium",
-        "max_model_calls": 30,
-        "skills": app.profile.skills.iter().map(|name| json!({
-            "name": name,
-            "description": format!("How to handle {name} work."),
-            "content": app.rng.words(400),
-        })).collect::<Vec<_>>(),
-        "mcp_servers": [{ "name": "tools", "url": format!("{}/mcp", app.public_url), "auth": "agent_token" }],
-    }))
-}
-
-async fn turn(State(app): State<Arc<MockApp>>) -> Json<Value> {
-    if app.lazy_pages {
-        return Json(json!({ "version": VERSION }));
-    }
-    tokio::time::sleep(app.render.millis(&app.rng, app.speed)).await;
-    Json(json!({ "version": VERSION, "pages": app.pages() }))
-}
-
-async fn pages(State(app): State<Arc<MockApp>>, Json(request): Json<PagesRequest>) -> Json<Value> {
-    tokio::time::sleep(app.render.millis(&app.rng, app.speed)).await;
-    let wanted: Vec<Value> = app
-        .pages()
-        .into_iter()
-        .filter(|page| {
-            request.keys.iter().any(|prefix| {
-                page["key"].as_array().is_some_and(|key| {
-                    key.len() >= prefix.len() && key.iter().zip(prefix).all(|(a, b)| a == b)
-                })
-            })
-        })
-        .collect();
-    Json(json!({ "pages": wanted }))
+/// Serves the agent over stdin and stdout, for newt to run it with
+/// `mcp = "stdio:newt-loadtest mock-app --stdio"`.
+pub async fn serve_stdio(app: Arc<MockApp>) -> anyhow::Result<()> {
+    use rmcp::ServiceExt as _;
+    let running = Home(app)
+        .serve((tokio::io::stdin(), tokio::io::stdout()))
+        .await?;
+    running.waiting().await?;
+    Ok(())
 }
 
 async fn stats(State(app): State<Arc<MockApp>>) -> Json<Value> {
     Json(json!({
         "tool_calls": app.tool_calls.load(Ordering::Relaxed),
         "sends": app.sends.load(Ordering::Relaxed),
+        "resource_lists": app.resource_lists.load(Ordering::Relaxed),
+        "resource_reads": app.resource_reads.load(Ordering::Relaxed),
     }))
 }
 
 #[derive(Clone)]
-struct Tools(Arc<MockApp>);
+struct Home(Arc<MockApp>);
 
 fn meta(value: Value) -> MetaObject {
     let mut meta = MetaObject::new();
@@ -197,9 +199,71 @@ fn catalogue(profile: &Profile) -> Vec<Tool> {
         .collect()
 }
 
-impl ServerHandler for Tools {
+impl ServerHandler for Home {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        let mut capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .enable_skills()
+            .build();
+        capabilities
+            .extensions
+            .get_or_insert_with(Default::default)
+            .insert("newt".to_owned(), MockApp::settings());
+        ServerConfig::new(capabilities).with_instructions(self.0.instructions.clone())
+    }
+
+    /// Every session sees the same pages. Listing them costs the render time
+    /// once per turn, as rendering a real workspace would.
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        self.0.resource_lists.fetch_add(1, Ordering::Relaxed);
+        tokio::time::sleep(self.0.render.millis(&self.0.rng, self.0.speed)).await;
+        let resources = self
+            .0
+            .profile
+            .pages
+            .iter()
+            .map(|path| {
+                let key: Vec<&str> = path.trim_end_matches(".md").split('/').collect();
+                let mut meta = MetaObject::new();
+                meta.insert("newt/key".to_owned(), json!(key));
+                Resource::new(format!("{PAGE_SCHEME}{path}"), path.clone()).with_meta(meta)
+            })
+            .collect();
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + Send + '_ {
+        std::future::ready(self.0.read(request))
+    }
+
+    fn list_skills(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListSkillsResult, ErrorData>> + Send + '_ {
+        let skills = self
+            .0
+            .skills
+            .iter()
+            .map(|(name, file)| {
+                let uri = skill_uri(name);
+                Skill::new(
+                    uri.clone(),
+                    SkillFrontmatter::new(name.clone(), format!("How to handle {name} work.")),
+                    SkillResources::Files(vec![SkillResource::from_bytes(uri, file.as_bytes())]),
+                )
+            })
+            .collect();
+        std::future::ready(Ok(ListSkillsResult::with_all_items(skills)))
     }
 
     fn list_tools(
