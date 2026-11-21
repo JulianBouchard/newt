@@ -11,7 +11,7 @@ use newt_core::provider::{
     CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
 };
 use newt_demo::{Demo, app};
-use newt_server::context::{ContextProviderBackend, McpAgent, ProviderEndpoint};
+use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
 use serde_json::{Value, json};
@@ -99,12 +99,7 @@ async fn until_idle(store: &Store) {
     }
 }
 
-async fn say(
-    store: &Store,
-    runner: &Runner<ContextProviderBackend, Scripted>,
-    id: &str,
-    text: &str,
-) {
+async fn say(store: &Store, runner: &Runner<HomeBackend, Scripted>, id: &str, text: &str) {
     let event: InboundEvent = serde_json::from_value(json!({ "id": id, "text": text })).unwrap();
     store
         .accept_event("assistant", "ana", &event, false)
@@ -114,40 +109,33 @@ async fn say(
     until_idle(store).await;
 }
 
-#[sqlx::test(migrations = "../../migrations")]
-async fn the_demo_assistant_keeps_tasks_and_notes_and_replies(pool: PgPool) {
-    let model = converse(pool, |address| {
-        ContextProviderBackend::new(
-            BTreeMap::from([(
-                "assistant".to_owned(),
-                ProviderEndpoint {
-                    base_url: format!("http://{address}/assistant"),
-                    token: TOKEN.into(),
-                },
-            )]),
-            ["default".to_owned()],
-        )
-        .unwrap()
-    })
-    .await;
-    assert!(model.0[0].starts_with("You are a personal assistant"));
+fn backend(url: String) -> HomeBackend {
+    HomeBackend::new(
+        BTreeMap::from([(
+            "assistant".to_owned(),
+            HomeServer {
+                url,
+                token: TOKEN.into(),
+            },
+        )]),
+        ["default".to_owned()],
+    )
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn the_same_assistant_runs_from_its_mcp_server_alone(pool: PgPool) {
-    let model = converse(pool, |address| {
-        ContextProviderBackend::new(BTreeMap::new(), ["default".to_owned()])
-            .unwrap()
-            .with_mcp_agents(BTreeMap::from([(
-                "assistant".to_owned(),
-                McpAgent {
-                    url: format!("http://{address}/mcp"),
-                    model: "default".into(),
-                    token: TOKEN.into(),
-                },
-            )]))
-    })
-    .await;
+async fn the_demo_assistant_keeps_tasks_and_notes_and_replies(pool: PgPool) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let demo = Demo::new(TOKEN.into(), &format!("http://{address}"));
+    tokio::spawn({
+        let router = app(Arc::clone(&demo));
+        async move { axum::serve(listener, router).await.unwrap() }
+    });
+    let model = converse(pool, backend(format!("http://{address}/mcp"))).await;
+    assert_eq!(
+        demo.sent("ana"),
+        vec!["Added it to your list.", "Marked it done."]
+    );
     let system = &model.0[0];
     assert!(
         system.starts_with("You are a personal assistant"),
@@ -160,21 +148,17 @@ async fn the_same_assistant_runs_from_its_mcp_server_alone(pool: PgPool) {
     assert!(model.1.contains(&"load_skill".to_owned()));
 }
 
-/// Two turns with the demo app: add a task and a note and reply, then
-/// complete the task and reply. Checks what the person got and what the
-/// model read, and returns the model to check more.
-async fn converse(
-    pool: PgPool,
-    backend: impl FnOnce(std::net::SocketAddr) -> ContextProviderBackend,
-) -> (Vec<String>, Vec<String>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let demo = Demo::new(TOKEN.into(), &format!("http://{address}"));
-    tokio::spawn({
-        let router = app(Arc::clone(&demo));
-        async move { axum::serve(listener, router).await.unwrap() }
-    });
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_same_assistant_runs_as_a_child_process_over_stdio(pool: PgPool) {
+    let command = format!("stdio:{} --stdio", env!("CARGO_BIN_EXE_newt-demo"));
+    let model = converse(pool, backend(command)).await;
+    assert!(model.0[0].starts_with("You are a personal assistant"));
+}
 
+/// Two turns with the demo app: add a task and a note and reply, then
+/// complete the task and reply. Checks what the model read, and returns the
+/// system prompts and tool names it saw.
+async fn converse(pool: PgPool, backend: HomeBackend) -> (Vec<String>, Vec<String>) {
     let script = vec![
         vec![
             call("t1", "add_task", json!({ "text": "Book the dentist" })),
@@ -211,7 +195,7 @@ async fn converse(
     let store = Store::new(pool.clone());
     let runner = Runner::new(
         Store::new(pool),
-        backend(address),
+        backend,
         Scripted {
             script: Mutex::new(script.into()),
             ..Scripted::default()
@@ -230,10 +214,6 @@ async fn converse(
     .await;
     say(&store, &runner, "e2", "Booked it!").await;
 
-    assert_eq!(
-        demo.sent("ana"),
-        vec!["Added it to your list.", "Marked it done."]
-    );
     let reads = runner.model().reads.lock().unwrap().clone();
     assert_eq!(reads.len(), 2, "{reads:?}");
     assert!(

@@ -1,6 +1,5 @@
 #![expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
 
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use newt_core::message::ToolCall;
@@ -19,13 +18,12 @@ async fn connect() -> (std::sync::Arc<Demo>, Toolset) {
     let router = app(std::sync::Arc::clone(&demo));
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let toolset = Toolset::connect(
-        &[McpServer {
+        &McpServer {
             name: "demo".into(),
             url: format!("http://{address}/mcp"),
-            headers: BTreeMap::from([("authorization".to_owned(), format!("Bearer {TOKEN}"))]),
-            auth: McpAuth::None,
-        }],
-        "agent-token",
+            auth: McpAuth::Bearer(TOKEN.into()),
+        },
+        &[],
     )
     .await
     .unwrap();
