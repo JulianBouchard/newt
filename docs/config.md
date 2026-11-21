@@ -98,7 +98,7 @@ Anthropic requests also send `anthropic-version: 2023-06-01`. Connect timeout is
 
 ## `[models.<alias>]`
 
-A model alias is the name a bootstrap uses in its `model` field, and a `/turn` response in its `model` field to pick another model for one turn.
+A model alias is the name an agent's home server declares in its `model` setting, and a `newt/turn` result names in its `model` field to pick another model for one turn (`docs/protocol.md` 1.2, 1.3). The home picks the alias; `server.toml` decides which providers it means.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -112,10 +112,8 @@ An agent is the name in the event API path (`/v1/agents/{name}/...`).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `context_provider` | string | one of `context_provider` and `mcp` | Base URL of the agent's context provider; must start with `http://` or `https://`. See `docs/protocol.md`. |
-| `mcp` | string | one of `context_provider` and `mcp` | Streamable HTTP URL of the one MCP server the agent is made of: its instructions, tools, skills and resources (`docs/protocol.md` 2.7). Must start with `http://` or `https://`. |
-| `model` | string | required with `mcp`, not allowed with `context_provider` | A `[models]` alias. A context provider names its model in the bootstrap instead. |
-| `token_env` | string | required | Name of the environment variable that holds the agent's token. It must be set and non-empty. The same token authenticates callers of the event API, and newt sends it to the context provider, to MCP servers that ask for `auth: "agent_token"`, and to an `mcp` agent's server. |
+| `mcp` | string | required | The agent's home MCP server, which is the agent: its instructions, model and settings, tools, skills, workspace pages and the servers it adds (`docs/protocol.md` section 1). `https://…` or `http://…` for one reached over Streamable HTTP, or `stdio:<command>` for one newt runs itself and talks to over stdin and stdout. |
+| `token_env` | string | required | Name of the environment variable that holds the agent's token. It must be set and non-empty. The same token authenticates callers of the event API, and newt sends it to the home server over HTTP. It is never sent to the servers the home adds, nor over stdio. |
 | `live_meta` | bool | `false` | Put each event's `meta` on its `received` frame in the live feed (protocol 5.3), so an app following the feed can show who sent what before the turn commits. Off by default because the live feed then carries whatever your app put in `meta`. |
 
 ## `[tracing]`
@@ -159,12 +157,11 @@ max_concurrent = 6
 chain = ["openai", "anthropic"]
 
 [agents.assistant]
-context_provider = "http://localhost:4000/assistant"
+mcp = "http://localhost:4000/mcp"
 token_env = "ASSISTANT_TOKEN"
 
 [agents.tasks]
-mcp = "http://localhost:4000/tasks/mcp"
-model = "default"
+mcp = "stdio:node ./tasks-agent/server.js"
 token_env = "TASKS_TOKEN"
 
 [tracing]

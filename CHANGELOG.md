@@ -4,6 +4,24 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+This is a breaking release: newt 2.0. The HTTP context provider is gone, and an agent is now its home MCP server plus any servers the home adds.
+
+### Changed
+
+- **An agent is its home MCP server.** `[agents.<name>]` takes `mcp` (`https://…`, `http://…` or `stdio:<command>`), `token_env` and `live_meta`; `context_provider` and `model` are gone. The home's `instructions` are the system prompt, and the agent's settings move from `GET /bootstrap` into the `newt` extension the home declares on `server/discover`: the same fields and defaults (`model`, efforts, `max_output_tokens`, `max_model_calls`, `max_turn_tokens`, `recite`, `history_budget`, `turn_end`), without `version`, `skills` or `mcp_servers`. A change to the declaration takes effect on the next turn after newt reconnects.
+- **`POST /turn` becomes the `newt/turn` request**, sent to the home before each turn when it declares `turn: true`. Same params (`session`, `events`, `state`) and same result fields (`pinned`, `instructions`, `constraints`, `turn_state`, `model`, efforts, `reset`, `state`), without `version` and `pages`.
+- **`POST /turn_end` becomes the `newt/turn_end` request**, with the same payload and the same at-least-once delivery; an error result counts as a failed delivery.
+- **Pages come only from resources.** The home's resources are the root of the workspace, read in the background at the start of each turn as in 1.x MCP-only agents; `POST /pages` and pages in `/turn` are gone. A `resources/read` to a server that speaks newt carries `newt/session` and `newt/state`, and its result may carry `newt/state_patch`.
+- **Skills come only from MCP** (the skills extension). Inline bootstrap skills are gone. The home's skills are named `<agent>/<path>`.
+- **newt's protocol is the `newt` MCP extension.** Only servers that declare it, and the home, receive `newt/session`, `newt/state`, `newt/turn_state`, `newt/pages_read` and `newt/skills_loaded`, and have their tool and result `newt/*` fields applied. Any other server gets the call with `newt/idempotency_key` and `traceparent` only; its tools are `durable` and its `newt/*` fields are ignored.
+- `auth: "agent_token"` and static `headers` on servers are gone. The agent's token goes only to a home reached over HTTP; an added server's token comes from `auth_env`.
+
+### Added
+
+- **Servers the home adds.** `servers: [{ name, url, auth_env? }]` in the home's settings. An added server's tools are named `<name>__<tool>` and its resources become pages under `<name>/`, with page keys scoped to that server, so paths and tool names never depend on how many servers there are. All servers connect at once, each with its own 20 second limit; one that cannot be reached is left out, named to the model in the turn context, and tried again every 30 seconds while the rest of the agent runs.
+- **The stdio transport.** `stdio:<command>` for the home or any added server: newt starts the command, speaks MCP over its stdin and stdout, sends its stderr to newt's, stops it when the connection is dropped and starts it again when it exits. An agent and newt can ship as one container with no network between them; the same server code runs over HTTP.
+- `newt-demo --stdio` serves the demo agent over stdio, and the demo answers `newt/turn` with the time.
+
 ## [1.7.0] - 2026-11-16
 
 ### Added
