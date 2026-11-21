@@ -11,7 +11,7 @@ The built-in `remember` tool saves one durable fact per call ("Lives in Lisbon")
 
 ## Compaction
 
-When live history passes `history_budget` tokens (60,000 by default, set in the bootstrap), newt compacts right after a turn commits:
+When live history passes `history_budget` tokens (60,000 by default, set by the home server), newt compacts right after a turn commits:
 
 1. The agent's own model gets the same prompt plus one instruction.
 2. It saves anything not yet recorded.
@@ -37,7 +37,7 @@ Compaction is the one planned cache miss in a long session: it replaces the olde
 
 ## Starting over
 
-Compaction keeps a long conversation going. To end one instead, your context provider returns `"reset": true` from `/turn`: that turn runs as if the session had no history, and later compactions consider only what came after it. Raw history stays, as with a checkpoint. See [Start the conversation over](../context-provider/#start-the-conversation-over).
+Compaction keeps a long conversation going. To end one instead, your home server returns `"reset": true` from `newt/turn`: that turn runs as if the session had no history, and later compactions consider only what came after it. Raw history stays, as with a checkpoint. See [Start the conversation over](../home-server/#start-the-conversation-over).
 
 ## Next
 

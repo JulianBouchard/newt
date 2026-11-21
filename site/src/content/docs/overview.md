@@ -11,12 +11,12 @@ It is one Rust binary plus Postgres.
 
 | You bring | newt does |
 |---|---|
-| A **context provider**: three HTTP endpoints that return instructions and the customer's state as text pages | Builds every prompt, keeps it cacheable, refetches pages when they change |
-| **Tools** on an MCP server, each tagged with what it leaves behind | Runs the turn loop, decides what reaches history, sends outward calls exactly once |
+| A **home MCP server**: the agent's instructions, settings, tools, and the customer's state as resources | Builds every prompt, keeps it cacheable, reads pages again when they change |
+| **Tools** on that server and on any servers it adds, each tagged with what it leaves behind | Runs the turn loop, decides what reaches history, sends outward calls exactly once |
 | **Events**, posted when something happens | Queues, steers and schedules turns across any number of instances |
 | A **model route**: Anthropic, OpenAI, or any Chat Completions host | Streams, retries, falls back along a chain, and reports every cache miss |
 
-You can skip the context provider: an agent can be [nothing but an MCP server](../mcp-agents/).
+An agent is [its home server](../home-server/) plus any [servers it adds](../servers/). newt reaches each one over HTTP, or runs it itself over stdio.
 
 ## How the pieces connect
 
@@ -34,9 +34,10 @@ You can skip the context provider: an agent can be [nothing but an MCP server](.
          model calls       |     |       |     |   state, journal, wakeups
         +------------------+     |       |     +----------------------+
         v                        v       v                            v
-  Model providers      Context provider  MCP servers             Postgres
-  (Anthropic, OpenAI)  (bootstrap, turn, (tools with              (inbox, history,
-                        pages)            newt _meta)              journal, leases)
+  Model providers      Home MCP server   Added MCP servers       Postgres
+  (Anthropic, OpenAI)  (the agent:       (more tools and          (inbox, history,
+                        prompt, tools,    pages)                   journal, leases)
+                        pages)
 ```
 
 ## Why the context stays clean
@@ -62,17 +63,17 @@ It leaves out, on purpose:
 
 ## Status
 
-newt is stable from 1.0, and the [changelog](../changelog/) lists what each release added. Each release ships `newt` binaries for Linux (x86_64) and macOS (arm64) and a Docker image at `ghcr.io/julianbouchard/newt`. Building from source needs Rust 1.99. newt runs its own Postgres 18 or connects to yours.
+newt follows semantic versioning, and the [changelog](../changelog/) lists what each release added. 2.0 replaced the HTTP context provider with the home MCP server. Each release ships `newt` binaries for Linux (x86_64) and macOS (arm64) and a Docker image at `ghcr.io/julianbouchard/newt`. Building from source needs Rust 1.99. newt runs its own Postgres 18 or connects to yours.
 
 | Maturity | What |
 |---|---|
-| Stable | The turn loop and retention classes, steering, the crash-safe journal, fenced leases and several instances on one Postgres, the events API and live feed, deleting sessions and pruning old rows, the context provider, MCP tools, approvals through MCP `input_required`, MCP tasks, agents made of one MCP server, compaction, prompt cache keys, OTLP tracing, embedded Postgres |
-| Experimental | Skills over MCP (SEP-2640, a draft spec), replay and fork, the `openai-chat` protocol, the turn token budget, recitation (`recite` in the bootstrap, off by default) |
+| Stable | The turn loop and retention classes, steering, the crash-safe journal, fenced leases and several instances on one Postgres, the events API and live feed, deleting sessions and pruning old rows, the home server and the `newt` MCP extension, servers the home adds, the stdio transport, approvals through MCP `input_required`, MCP tasks, compaction, prompt cache keys, OTLP tracing, embedded Postgres |
+| Experimental | Skills over MCP (SEP-2640, a draft spec), replay and fork, the `openai-chat` protocol, the turn token budget, recitation (`recite` in the home's settings, off by default) |
 
-Experimental features work and are tested, including end to end against `newt-demo`, but the specs they follow or the shape of their settings may still change. [Stability](../stability/) lists what 1.x promises.
+Experimental features work and are tested, including end to end against `newt-demo`, but the specs they follow or the shape of their settings may still change. [Stability](../stability/) lists what each major version promises.
 
 ## Next
 
 - [Quickstart](../quickstart/): run the demo assistant with Docker and no API key.
 - [How a turn works](../how-a-turn-works/): the loop, step by step.
-- [Context provider](../context-provider/): the three endpoints your app serves.
+- [The home server](../home-server/): the MCP server that is your agent.

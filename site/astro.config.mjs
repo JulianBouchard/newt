@@ -51,18 +51,18 @@ export default defineConfig({
             "Every page is also served as Markdown at its path plus `.md`, for example `/quickstart/` at `/quickstart.md`.",
             "Start with Overview and Quickstart. Protocol and Configuration are the complete reference: when a guide and the Protocol differ, the Protocol is right.",
           ].join("\n\n"),
-          promote: ["index", "overview", "quickstart", "how-a-turn-works", "context-provider", "tools"],
+          promote: ["index", "overview", "quickstart", "how-a-turn-works", "home-server", "tools"],
           demote: ["changelog", "contributing", "running-tests", "benchmark", "security"],
           exclude: ["404"],
           customSets: [
             {
               label: "Build an app for newt",
-              description: "what an application implements: context provider, MCP tools, events",
-              paths: ["context-provider", "tools", "mcp-agents", "skills", "memory", "events", "protocol"],
+              description: "what an application implements: the home MCP server, added servers, tools, events",
+              paths: ["home-server", "servers", "tools", "skills", "memory", "events", "protocol"],
             },
             {
               label: "Run newt",
-              description: "configuration, tracing, replay, load testing and what 1.x keeps stable",
+              description: "configuration, tracing, replay, load testing and what each major version keeps stable",
               paths: ["configuration", "tracing", "replay", "load-testing", "benchmark", "stability", "security"],
             },
           ],
@@ -71,7 +71,7 @@ export default defineConfig({
       ],
       sidebar: [
         { label: "Start", items: ["overview", "quickstart", "how-a-turn-works", "design"] },
-        { label: "Build", items: ["context-provider", "tools", "mcp-agents", "skills", "memory", "events"] },
+        { label: "Build", items: ["home-server", "servers", "tools", "skills", "memory", "events"] },
         { label: "Run", items: ["configuration", "tracing", "replay", "load-testing", "benchmark"] },
         { label: "Reference", items: ["protocol", "stability", "changelog"] },
         { label: "Project", items: ["contributing", "running-tests", "security"] },
