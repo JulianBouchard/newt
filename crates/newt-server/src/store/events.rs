@@ -143,6 +143,9 @@ pub enum AcceptError {
 }
 
 #[cfg(test)]
+mod props;
+
+#[cfg(test)]
 mod regressions;
 
 #[cfg(test)]
