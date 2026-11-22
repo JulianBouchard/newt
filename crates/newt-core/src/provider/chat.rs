@@ -124,7 +124,7 @@ struct Delta {
     #[serde(default)]
     refusal: Option<String>,
     #[serde(default)]
-    tool_calls: Vec<CallDelta>,
+    tool_calls: Option<Vec<CallDelta>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,7 +257,7 @@ impl super::Decoder for Decoder {
                 self.refused = true;
                 self.text.push_str(&refusal);
             }
-            for delta in choice.delta.tool_calls {
+            for delta in choice.delta.tool_calls.unwrap_or_default() {
                 self.release_calls_before(delta.index, emit);
                 let call = self.calls.entry(delta.index).or_default();
                 if let Some(id) = delta.id {
