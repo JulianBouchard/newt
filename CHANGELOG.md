@@ -10,7 +10,7 @@ Chat streaming for the AI SDK and eve's React client, a new rule for ending turn
 
 ### Changed from 2.0
 
-- **A reply ends the turn.** A response with text and no tool calls ends the turn with that text as the reply, as in most agent loops, instead of a reminder and one more model call just for `end_turn`. `end_turn`'s `recorded` and `nothing_new` are optional. `require_end_turn: true` in the home's settings keeps the 2.0 rule. Protocol section 6.
+- **A reply ends the turn.** A response with text and no tool calls ends the turn with that text as the reply, as in most agent loops, instead of a reminder and one more model call just for `end_turn`. `end_turn`'s `recorded` and `nothing_new` are optional. `require_end_turn: true` in the agent core's settings keeps the 2.0 rule. Protocol section 6.
 - **One error shape.** Every 4xx and 5xx of the HTTP API, including the framework's own (unknown route, wrong method, body over 2 MiB), is `{"error": {"code", "message"}}` with stable codes (protocol section 5); `error` used to be a string. 429 and 503 carry `Retry-After`.
 - **A reused event id with different content gets 409.** The inbox row stores a sha256 of the event's `text` and `meta` (keys sorted; migration `0009`). The same id with the same content is still a `duplicate`; 2.0 silently answered a different one with the first event. Rows from before the migration have no hash and stay duplicates.
 - **At most 100 unconsumed events per session** (`max_pending_events`, per agent). `POST .../events` past it returns 429 with `Retry-After`; a repeat of an event already held is still a duplicate. The check and the insert are one statement under a per-session advisory lock (migration `0008`).

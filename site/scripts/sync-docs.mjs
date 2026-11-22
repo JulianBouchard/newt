@@ -11,7 +11,6 @@ const ASSETS_OUT = join(SITE, "src/assets/generated");
 const GITHUB = "https://github.com/JulianBouchard/newt";
 
 const REFERENCE_FILES = [
-  { slug: "design", file: "docs/design.md" },
   { slug: "protocol", file: "docs/protocol.md" },
   { slug: "configuration", file: "docs/config.md" },
   { slug: "benchmark", file: "docs/benchmark.md" },
@@ -115,10 +114,10 @@ function syncReferenceFile({ slug, file }) {
   const frontmatter = [`title: ${JSON.stringify(TITLE_BY_SLUG[slug])}`, `slug: ${slug}`];
   const description = firstSentence(body);
   if (description) frontmatter.push(`description: ${JSON.stringify(description)}`);
+  if (slug === "changelog") frontmatter.push("tableOfContents:", "  maxHeadingLevel: 2");
   const updated = lastCommitDate(file);
   if (updated) frontmatter.push(`lastUpdated: ${updated}`);
   frontmatter.push(`sourceFile: ${JSON.stringify(file)}`);
-  if (slug === "changelog") frontmatter.push("tableOfContents:", "  maxHeadingLevel: 2");
   writeFileSync(join(OUT, `${slug}.md`), `---\n${frontmatter.join("\n")}\n---\n\n${body.join("\n").trim()}\n`);
 }
 

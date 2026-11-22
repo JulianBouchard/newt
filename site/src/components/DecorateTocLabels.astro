@@ -8,7 +8,7 @@ function decorateLabel(text: string) {
   const table = text.match(/^\[(.+)\]$/);
   if (table) return `<span class="newt-toc-code"><span class="newt-toc-dim">[</span>${table[1]}<span class="newt-toc-dim">]</span></span>`;
   const numbered = text.match(/^(\d+(?:\.\d+)*\.?)\s+(.+)$/);
-  if (numbered) return `<span class="newt-toc-dim newt-toc-num">${numbered[1]}</span> ${decorateLabel(numbered[2])}`;
+  if (numbered) return `<span class="newt-toc-dim newt-toc-num">${numbered[1]}</span><span>${decorateLabel(numbered[2])}</span>`;
   if (/^(GET|POST|DELETE) /.test(text) || /^[a-z0-9]+(_[a-z0-9]+)+$/.test(text)) return `<span class="newt-toc-code">${text}</span>`;
   return text;
 }

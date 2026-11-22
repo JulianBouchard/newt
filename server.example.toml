@@ -28,8 +28,8 @@ max_concurrent = 6
 [models.default]
 chain = ["openai", "anthropic"]
 
-# An agent is its home MCP server: its instructions, model, tools, skills and
-# workspace pages all come from it. Reach it over HTTP, or let newt run it:
+# An agent is its agent core, an MCP server: its instructions, model, tools,
+# skills and pages all come from it. Reach it over HTTP, or let newt run it:
 # mcp = "stdio:node ./agent/server.js"
 [agents.assistant]
 mcp = "http://localhost:4000/mcp"

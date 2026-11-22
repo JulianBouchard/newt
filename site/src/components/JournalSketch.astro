@@ -1,0 +1,42 @@
+---
+import { JOURNAL_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(481);
+const { box, line, arrow } = sketch;
+
+box(40, 70, 260, 84);
+box(360, 70, 260, 84);
+box(680, 70, 200, 84, { stroke: ACCENT, strokeWidth: 2 });
+line(700, 84, 740, 124, { stroke: ACCENT, strokeWidth: 2.4 });
+line(740, 84, 700, 124, { stroke: ACCENT, strokeWidth: 2.4 });
+arrow([[302, 112], [356, 112]]);
+arrow([[622, 112], [676, 112]]);
+
+box(40, 250, 260, 84);
+box(360, 250, 260, 84);
+box(680, 250, 480, 84, { stroke: ACCENT, strokeWidth: 2 });
+arrow([[780, 158], [420, 200], [170, 246]], ACCENT);
+arrow([[302, 292], [356, 292]]);
+arrow([[622, 292], [676, 292]]);
+
+const labels: SketchLabel[] = [
+  { x: 60, y: 104, text: "1  intent written", size: 22, weight: 700 },
+  { x: 60, y: 136, text: "Postgres confirms it first", size: 18, tone: "muted" },
+  { x: 380, y: 104, text: "2  send_message", size: 22, weight: 700 },
+  { x: 380, y: 136, text: "key t7-c2", size: 18, tone: "muted" },
+  { x: 756, y: 112, text: "3  crash", size: 22, weight: 700, tone: "accent" },
+
+  { x: 60, y: 284, text: "4  another newt", size: 22, weight: 700 },
+  { x: 60, y: 316, text: "replays the turn", size: 18, tone: "muted" },
+  { x: 380, y: 284, text: "5  send_message", size: 22, weight: 700 },
+  { x: 380, y: 316, text: "same key t7-c2", size: 18, tone: "muted" },
+  { x: 700, y: 284, text: "6  your handler", size: 22, weight: 700, tone: "accent" },
+  { x: 700, y: 316, text: "seen t7-c2 already, returns the first result", size: 18, tone: "muted" },
+
+  { x: 600, y: 386, text: "the person still gets one message", size: 21, tone: "accent", anchor: "middle" },
+];
+---
+
+<SketchCanvas viewBox="0 50 1200 360" strokes={sketch.strokes} labels={labels} description={JOURNAL_DESCRIPTION} captionId="newt-journal-caption" />

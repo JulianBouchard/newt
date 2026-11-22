@@ -1,0 +1,28 @@
+---
+import { COMPACTION_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(461);
+const { box, line, arrow } = sketch;
+
+const kept = { fill: "var(--sk-fill-soft)", fillStyle: "hachure", hachureGap: 10, fillWeight: 1 };
+for (let index = 0; index < 12; index++) box(40 + index * 93, 90, 93, 56, index >= 9 ? kept : {});
+line(1000, 66, 1000, 170, { stroke: ACCENT, strokeWidth: 2 });
+arrow([[560, 156], [560, 252]], ACCENT);
+box(40, 270, 520, 90, { stroke: ACCENT, strokeWidth: 2 });
+for (let index = 0; index < 3; index++) box(580 + index * 93, 270, 93, 90, kept);
+
+const labels: SketchLabel[] = [
+  { x: 40, y: 70, text: "history, turn by turn", size: 21, tone: "muted" },
+  { x: 1012, y: 70, text: "history_budget", size: 20, tone: "accent" },
+  { x: 580, y: 212, text: "the agent writes a checkpoint", size: 21, tone: "accent" },
+  { x: 60, y: 306, text: "checkpoint", size: 26, weight: 700, tone: "accent" },
+  { x: 60, y: 340, text: "memory · open threads · commitments · decisions · tone", size: 18, tone: "muted" },
+  { x: 720, y: 392, text: "the latest turns, as they were", size: 19, tone: "muted", anchor: "middle" },
+  { x: 880, y: 306, text: ["drop a commitment", "and it's refused"], size: 20, tone: "accent" },
+  { x: 40, y: 440, text: "raw history stays in Postgres, the checkpoint is only where the prompt starts", size: 19, tone: "muted" },
+];
+---
+
+<SketchCanvas viewBox="0 40 1200 420" strokes={sketch.strokes} labels={labels} description={COMPACTION_DESCRIPTION} captionId="newt-compaction-caption" />

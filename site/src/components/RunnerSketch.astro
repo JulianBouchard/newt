@@ -1,0 +1,35 @@
+---
+import { RUNNER_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(501);
+const { box, arrow } = sketch;
+
+box(40, 160, 200, 90);
+box(440, 100, 320, 220);
+box(900, 80, 260, 100, { stroke: ACCENT, strokeWidth: 2 });
+box(900, 240, 260, 100);
+
+arrow([[244, 205], [436, 205]]);
+arrow([[764, 160], [896, 130]], ACCENT);
+arrow([[764, 270], [896, 290]]);
+
+const labels: SketchLabel[] = [
+  { x: 140, y: 214, text: "your app", size: 26, weight: 700, anchor: "middle" },
+  { x: 340, y: 190, text: "event", size: 20, anchor: "middle" },
+  { x: 600, y: 150, text: "Postgres", size: 28, weight: 700, anchor: "middle" },
+  { x: 600, y: 200, text: "inbox", size: 20, tone: "muted", anchor: "middle" },
+  { x: 600, y: 236, text: "history · journal", size: 20, tone: "muted", anchor: "middle" },
+  { x: 600, y: 272, text: "leases", size: 20, tone: "muted", anchor: "middle" },
+  { x: 830, y: 128, text: "NOTIFY", size: 18, tone: "accent", anchor: "middle" },
+  { x: 830, y: 306, text: "NOTIFY", size: 18, tone: "muted", anchor: "middle" },
+  { x: 920, y: 120, text: "newt A", size: 24, weight: 700, tone: "accent" },
+  { x: 920, y: 152, text: "holds the lease on ana", size: 18, tone: "muted" },
+  { x: 920, y: 280, text: "newt B", size: 24, weight: 700 },
+  { x: 920, y: 312, text: "waits, sweeps every second", size: 18, tone: "muted" },
+  { x: 600, y: 386, text: "any instance can run any session, one at a time", size: 21, tone: "accent", anchor: "middle" },
+];
+---
+
+<SketchCanvas viewBox="0 50 1200 360" strokes={sketch.strokes} labels={labels} description={RUNNER_DESCRIPTION} captionId="newt-runner-caption" />

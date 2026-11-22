@@ -1,0 +1,40 @@
+---
+import { RETENTION_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(421);
+const { box, line, arrow } = sketch;
+
+box(40, 60, 540, 340, {}, true);
+box(700, 60, 460, 340);
+arrow([[592, 230], [688, 230]], ACCENT);
+
+const rows = [
+  { text: "read_file tasks.md", tag: "ephemeral", dropped: true },
+  { text: "get_order(42)", tag: "ephemeral", dropped: true },
+  { text: "thinking it over", tag: "reasoning", dropped: true },
+  { text: "complete_task(7)", tag: "durable", dropped: false },
+  { text: "send_message(...)", tag: "outward", dropped: false },
+  { text: "Done, it's on your list.", tag: "reply", dropped: false },
+];
+const labels: SketchLabel[] = [
+  { x: 64, y: 104, text: "a turn, before it commits", size: 26, weight: 700 },
+  { x: 724, y: 104, text: "history keeps", size: 26, weight: 700 },
+  { x: 640, y: 214, text: "commit", size: 20, tone: "accent", anchor: "middle" },
+  { x: 724, y: 380, text: "what was done, not what was seen", size: 20, tone: "accent" },
+];
+rows.forEach((row, index) => {
+  const y = 156 + index * 42;
+  labels.push({ x: 70, y, text: row.text, size: 22, tone: row.dropped ? "muted" : "ink" });
+  labels.push({ x: 410, y, text: row.tag, size: 19, tone: row.tag === "outward" ? "accent" : "muted" });
+  if (row.dropped) line(64, y - 7, 330, y - 7, { stroke: ACCENT, roughness: 1.4 });
+});
+[
+  "complete_task: task 7 done",
+  "send_message: sent",
+  "Done, it's on your list.",
+].forEach((text, index) => labels.push({ x: 730, y: 156 + (index + 3) * 42 - 126, text, size: 22 }));
+---
+
+<SketchCanvas viewBox="0 40 1200 380" strokes={sketch.strokes} labels={labels} description={RETENTION_DESCRIPTION} captionId="newt-retention-caption" />

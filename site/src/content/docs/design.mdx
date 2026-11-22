@@ -1,0 +1,129 @@
+---
+title: "How newt works"
+description: Why newt works the way it does. The prompt as an append-only log, what a turn keeps, pages that stay current, compaction, sending things exactly once, and running on Postgres.
+---
+
+import PromptLayersSketch from "../../components/PromptLayersSketch.astro";
+import RetentionSketch from "../../components/RetentionSketch.astro";
+import WorkspaceSketch from "../../components/WorkspaceSketch.astro";
+import CompactionSketch from "../../components/CompactionSketch.astro";
+import JournalSketch from "../../components/JournalSketch.astro";
+import RunnerSketch from "../../components/RunnerSketch.astro";
+
+This is the why behind newt. Each section ends with where to find it in the code, so you can check the claims yourself.
+
+An agent that talks to one person for weeks piles up context. Most runtimes just let the prompt grow, and that costs you twice. Old tool results sit in the prompt and the model acts on them as if they were current. And every time something earlier in the prompt changes, the provider's prompt cache is gone and you pay for the whole prompt again. newt treats the prompt like a database treats its log: only ever append to it, and rebuild the current view from the source of truth.
+
+## Why most of every prompt comes from the cache
+
+Every model call is built from three parts, always in this order:
+
+- **The fixed part**: the [agent core's](../agent-core/) instructions, the session's `pinned` text, the skills index and the tool list. It only changes when your servers change.
+- **History**: the session's past turns, starting from the latest [checkpoint](#what-happens-when-history-gets-long) if there is one.
+- **This turn**: the turn's guidance, the new events, and everything the model and tools do during the turn.
+
+<PromptLayersSketch />
+
+Inside a turn, each model call adds to the previous one and nothing earlier changes. When the turn commits, newt filters what it did, appends that to history, and leaves everything before it alone. So the next turn's prompt is the last one plus something new at the end. Prompt caches match on exact prefixes, which means everything up to that new part is a cache hit.
+
+That's also why guidance goes in different places depending on how often it changes:
+
+| Text | Where it sits | What it costs |
+|---|---|---|
+| The agent core's `instructions` | The fixed part, for every session | One cache miss when you change them |
+| `pinned` from `newt/turn` | The fixed part, for this session | Nothing while it stays the same, one miss when it changes |
+| `instructions` and `constraints` from `newt/turn` | This turn only | Nothing, and it never reaches history |
+
+There are two planned cache misses: changing the agent's instructions or tools, and [compaction](#what-happens-when-history-gets-long), which swaps out the older part of history once each time it passes the budget.
+
+To keep this honest, every model call records a fingerprint of each part, with one hash per tool and per history message. `newt-report` compares them call to call and names what broke the cache when a call misses (see [See what each turn did](../tracing/)). For Anthropic, newt puts cache breakpoints on the system block, the last tool, the last history message and the last message. For OpenAI it sends a `prompt_cache_key`.
+
+### Reminding the model what it's answering
+
+On a long turn the model can lose track of what it's answering. With `recite` on, newt adds a short `<goal>` note quoting the turn's events from the fifth model call on, and every fourth after that. It sits in this turn's part, so it never touches the cache. It's off by default because it didn't pay off: across 50 pairs of long turns every turn passed with and without it, and it cost 1 to 12% more input tokens (`examples/recitation_eval.rs`).
+
+Code: `crates/newt-core/src/prompt.rs`, `provider/anthropic.rs`, `provider/openai.rs`.
+
+## What a turn keeps in history
+
+During a turn the model reads pages, looks things up, thinks, writes and sends. Most of that is only useful in the moment, and keeping it would make history grow and go stale. So each tool says what should survive it:
+
+- `ephemeral` tools are reads. The call and the result are dropped when the turn commits.
+- `durable` tools write to your own system. History keeps the call and a short summary of the result.
+- `outward` tools reach outside your system, like sending a message or charging a card. They're kept like `durable` ones and also get [sent exactly once](#how-a-message-never-gets-sent-twice).
+
+The model's replies are kept and its reasoning is dropped.
+
+<RetentionSketch />
+
+Dropping reads is only safe because the agent can always read the same thing again, and it'll be current when it does. That's the next section. If the agent wants to hold on to a fact for good, it saves it with the built-in `remember` tool.
+
+How to tag your tools is on [Write tools](../tools/).
+
+Code: `crates/newt-core/src/commit.rs`, `tools.rs`.
+
+## How pages stay up to date
+
+The agent's workspace is a set of text pages your servers render: their MCP resources. The agent reads them with `read_file`, `glob` and `grep`. Each page has a key, like a React Query key.
+
+When a tool changes something, it says which keys it changed. Those pages go stale, and the next read fetches them again from your server. So the agent never acts on a copy newt already knows is old. If a tool already has the new content, it can hand the page back and skip the extra fetch.
+
+<WorkspaceSketch />
+
+Pages load in the background while the first model call runs, so a slow page only delays the first read. Pages the agent already read get refreshed in the background after a tool call, so the next read is quick.
+
+Tools also get told which pages the agent read this turn, and which version. A tool can use that to refuse to act on a page that changed after the agent looked at it.
+
+Code: `crates/newt-core/src/workspace.rs`, `crates/newt-server/src/mcp/pages.rs`.
+
+## What happens when history gets long
+
+History can't grow forever. When it passes `history_budget` (60,000 tokens by default), newt compacts it right after a turn commits.
+
+Compaction is a normal turn, run by the agent's own model with the same prompt plus one instruction. The agent first saves anything it hasn't saved yet, then writes a checkpoint: its memory, open threads, commitments, decisions and tone. Nothing goes out while it compacts, outward tools are refused.
+
+<CompactionSketch />
+
+The risk with any summary is quietly losing a promise. So newt refuses a checkpoint that drops a commitment from the last one, unless the checkpoint marks it resolved. It also refuses an empty checkpoint, or one longer than a quarter of the budget. The agent gets the refusal back and tries again.
+
+After that, prompts start with the checkpoint, then the latest whole turns that fit in a quarter of the budget. Nothing is deleted, the checkpoint just moves where the prompt starts. If compaction fails, newt waits (ten minutes, doubling, at most a day) and the session keeps running on its long history in the meantime.
+
+Code: `crates/newt-server/src/compaction.rs`, `checkpoints.rs`, `crates/newt-core/src/checkpoint.rs`.
+
+## How a message never gets sent twice
+
+A turn can send a message and then crash before it commits. If the session just runs the turn again, the person gets the message twice. newt prevents that with a journal per turn in Postgres.
+
+The journal records the turn as it goes: each model response, each tool result, any event that joined mid-turn, and an intent entry before each outward call. When newt picks up a crashed turn, it replays it. Recorded model responses are used instead of asking the model again, and recorded tool results instead of calling the tools again. A call with no recorded result gets made again.
+
+That last part is the risky one, so outward calls get extra care:
+
+- The intent entry is written, and confirmed by Postgres, before the call. If that write fails, the call isn't made.
+- Every call carries an idempotency key built from the session, turn and call. The replay uses the same ids, so it sends the same key.
+- Your handler stores the key along with the effect, and when it sees a key twice it returns the first result and does nothing else. newt can't see inside your system, so this part is on you, and newt won't load an outward tool that doesn't say it does it.
+- Outward calls run last in a step, one at a time.
+
+<JournalSketch />
+
+Only the intent entry waits for Postgres to confirm. Everything else is written without waiting, because losing it only means asking the model again or repeating a safe call. So the journal costs you one wait before each outward call, and nothing on the rest of the turn.
+
+This doesn't make the model deterministic. Replay just avoids asking it again.
+
+How to write the handler is on [Write tools](../tools/#send-messages-and-payments-only-once).
+
+Code: `crates/newt-core/src/journal.rs`, `crates/newt-server/src/journal_store.rs`.
+
+## Running several instances
+
+newt is one binary plus Postgres. Everything about a session lives in Postgres: its inbox of new events, history, checkpoints and the journal. So any instance can run any session, and you can run as many as you like.
+
+<RunnerSketch />
+
+- **Leases.** An instance claims a session with a 30 second lease and renews it every 10 seconds while the turn runs. If the lease moves to another instance, the old one's commit is thrown away, so two instances never both commit a turn.
+- **Wake-ups.** Accepting an event is one SQL statement that stores it and sends a Postgres `NOTIFY`, and every instance listens. The same statement turns the event away when the session already holds `max_pending_events` new ones, counted under a lock per session so two posts at once can't both slip past. It also keeps a hash of the event, so a reused id with different content gets a 409 instead of passing for a retry. `NOTIFY` can get lost, so each instance also sweeps every second for sessions with new events that nobody holds. That covers crashed instances too, since their leases run out.
+- **Slots for live chats.** An instance runs at most `max_sessions` turns at once and keeps `reserved_interactive` of them for turns with an interactive event, so a burst of background work can't make a live chat wait. At most `max_waiting` sessions queue for a slot. Past that a wake-up is dropped, and the sweep picks the session up a second later.
+- **Retries.** A turn that panics lets go of its lease right away and retries like any failed turn, instead of waiting out the lease. A turn that fails before it did anything is retried with backoff and given up after five tries. One that already did something commits what it did, and the rest is retried.
+- **Cancel.** Any instance can take `POST .../cancel`. It flags the running turn on the session row and sends a `NOTIFY`. The instance running the turn stops it, or notices at its next lease renewal if the notification got lost. A cancelled turn that hadn't done anything yet gives up its events instead of retrying them.
+- **Messages mid-turn.** An event that arrives while a turn runs joins it between model calls (see [Send events from your app](../events/)).
+
+Code: `migrations/0001_init.sql`, `crates/newt-server/src/sessions/`, `runner/`, `cancel.rs`, `live.rs`, `steering.rs`.

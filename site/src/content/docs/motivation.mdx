@@ -5,19 +5,19 @@ description: What started newt. Agents rewritten for every framework, products s
 
 import UnifiedModelSketch from "../../components/UnifiedModelSketch.astro";
 
-I started newt while building customer-facing agents for a product. The same problems kept coming back, and none of the runtimes I tried treated them as the main problem.
+I started newt while building customer-facing agents for a product. The same problems kept coming up, and none of the runtimes I tried really cared about them.
 
 ## Every framework wants its own agent
 
-Each agent framework and hosted runtime has its own way to define an agent: its own tool format, its own prompt and state conventions, its own idea of where context comes from. Moving an agent to another runtime means rewriting it, and trying a runtime means committing to it first.
+Every agent framework and hosted runtime has its own way to define an agent. Its own tool format, its own way to handle prompts and state, its own idea of where context comes from. Moving an agent to another runtime means rewriting it, and you can't really try one without committing to it first.
 
-MCP already describes the parts of an agent in a way no vendor owns: instructions, tools, resources and skills. So in newt the agent is an MCP server, written with any MCP SDK, and newt only runs it. To try another runtime, point it at the same server. To test the agent, open it in any MCP client.
+MCP already describes the parts of an agent, instructions, tools, resources and skills, and no vendor owns it. So in newt the agent is just an MCP server, written with any MCP SDK, and newt runs it. Want to try another runtime? Point it at the same server. Want to test the agent? Open it in any MCP client.
 
 ## A product is one API, not three
 
-Putting an agent into a product today usually means building the same thing several times: the backend API, the frontend, an MCP server for other people's agents, and the agent itself. They are built separately and drift apart. The UI shows a field the agent cannot read; the agent changes something the UI never notices.
+Putting an agent into a product today usually means building the same thing several times. The backend API, the frontend, an MCP server for other people's agents, and the agent itself. They get built separately and drift apart. The UI shows a field the agent can't read, or the agent changes something the UI never notices.
 
-They should be one thing: **one core API that does the work**, exposed in three tiers by who may call it.
+They should be one thing, **one core API that does the work**, opened up in three tiers depending on who's calling.
 
 | Tier | Who calls it |
 |---|---|
@@ -25,13 +25,13 @@ They should be one thing: **one core API that does the work**, exposed in three 
 | **Authenticated** | A logged-in user, acting on their own data |
 | **Private** | A logged-in admin, or your own backend |
 
-Each tier is wrapped twice: as routes for your frontend, and as an MCP server for agents. The public and authenticated MCP servers are for other people's agents; an authenticated one acts as the logged-in user, the way the frontend does. The private MCP server holds the internal context and operations that only your own agent should have, and it is that agent's [home](../home-server/).
+Each tier is wrapped twice, as routes for your frontend and as an MCP server for agents. The public and authenticated MCP servers are for other people's agents, and the authenticated one acts as the logged-in user, just like the frontend does. The private MCP server has the internal context and operations only your own agent should have, and it's that agent's [core](../agent-core/).
 
-A frontend already has these tiers. An agent is one more client of the same API, at the tier it is allowed.
+Your frontend already has these tiers. An agent is just one more client of the same API, at whatever tier it's allowed.
 
 ## One way to say what changed
 
-Frontends solved stale data with query keys: a mutation says which keys it changed, and React Query refetches those queries in the background. newt's workspace works the same way. Every page has a key, and a tool's result says which keys it changed.
+Frontends solved stale data with query keys. A mutation says which keys it changed, and React Query refetches those queries in the background. newt's pages work the same way. Every page has a key, and a tool says which keys it changed.
 
 Put the two together:
 
@@ -39,12 +39,8 @@ Put the two together:
 2. Both reach the same API, which does the work and returns the keys it changed: `invalidate ['tasks']`.
 3. The UI refetches the tasks in the background. The agent's `tasks.md` page goes stale, so its next read gets the new list.
 
-The UI and the agent always read the same data, kept current the same way. This is what I want agentic UI to mean: the app and the agent as two clients of one API, with no chat box bolted onto the side.
+The UI and the agent always read the same data, and it stays current the same way for both. That's what I want agentic UI to mean. The app and the agent are two clients of one API, not a chat box bolted onto the side.
 
 <UnifiedModelSketch />
 
-## The other reasons
-
-- **Context that does not rot.** Most runtimes let the prompt grow until stale tool results crowd it and every edit breaks the prompt cache. In newt reads are ephemeral, history keeps what the agent did, and each turn's prompt is the last one plus a suffix. See [How a turn works](../how-a-turn-works/).
-- **A workspace that stays current.** The agent reads your data as pages that go stale the moment something changes them, so it never acts on a copy it knows is old. See [the home server](../home-server/#resources-are-the-workspace).
-- **Tools are the only way to write.** The agent changes your production system only through the tools you give it. A tool that acts outside your system, such as sending a message or charging a card, is written to a journal first, so a crash cannot make it happen twice. See [Tools over MCP](../tools/#make-outward-calls-exactly-once).
+The rest of newt, like keeping the prompt clean for months and never sending a message twice, is on [How newt works](../design/).
