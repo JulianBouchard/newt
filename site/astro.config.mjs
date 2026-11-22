@@ -51,14 +51,14 @@ export default defineConfig({
             "Every page is also served as Markdown at its path plus `.md`, for example `/quickstart/` at `/quickstart.md`.",
             "Start with Overview and Quickstart. Protocol and Configuration are the complete reference: when a guide and the Protocol differ, the Protocol is right.",
           ].join("\n\n"),
-          promote: ["index", "overview", "motivation", "quickstart", "how-a-turn-works", "home-server", "tools"],
-          demote: ["changelog", "contributing", "running-tests", "benchmark", "security"],
+          promote: ["index", "overview", "motivation", "quickstart", "how-a-turn-works", "agent-core", "tools"],
+          demote: ["changelog", "contributing", "benchmark", "security"],
           exclude: ["404"],
           customSets: [
             {
               label: "Build an app for newt",
-              description: "what an application implements: the home MCP server, added servers, tools, events",
-              paths: ["home-server", "servers", "tools", "skills", "memory", "events", "protocol"],
+              description: "what an application builds: the agent core, extra servers, tools, events",
+              paths: ["agent-core", "extra-servers", "tools", "skills", "events", "protocol"],
             },
             {
               label: "Run newt",
@@ -71,10 +71,10 @@ export default defineConfig({
       ],
       sidebar: [
         { label: "Start", items: ["overview", "motivation", "quickstart", "how-a-turn-works", "design"] },
-        { label: "Build", items: ["home-server", "servers", "tools", "skills", "memory", "events"] },
+        { label: "Build", items: ["agent-core", "extra-servers", "tools", "skills", "events"] },
         { label: "Run", items: ["configuration", "tracing", "replay", "load-testing", "benchmark"] },
         { label: "Reference", items: ["protocol", "stability", "changelog"] },
-        { label: "Project", items: ["contributing", "running-tests", "security"] },
+        { label: "Project", items: ["contributing", "security"] },
       ],
     }),
   ],

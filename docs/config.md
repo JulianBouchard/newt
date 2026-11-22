@@ -98,7 +98,7 @@ Anthropic requests also send `anthropic-version: 2023-06-01`. Connect timeout is
 
 ## `[models.<alias>]`
 
-A model alias is the name an agent's home server declares in its `model` setting, and a `newt/turn` result names in its `model` field to pick another model for one turn (`docs/protocol.md` 1.2, 1.3). The home picks the alias; `server.toml` decides which providers it means.
+A model alias is the name an agent core declares in its `model` setting, and a `newt/turn` result names in its `model` field to pick another model for one turn (`docs/protocol.md` 1.2, 1.3). The agent core picks the alias; `server.toml` decides which providers it means.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -112,8 +112,8 @@ An agent is the name in the event API path (`/v1/agents/{name}/...`).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `mcp` | string | required | The agent's home MCP server, which is the agent: its instructions, model and settings, tools, skills, workspace pages and the servers it adds (`docs/protocol.md` section 1). `https://…` or `http://…` for one reached over Streamable HTTP, or `stdio:<command>` for one newt runs itself and talks to over stdin and stdout. |
-| `token_env` | string | required | Name of the environment variable that holds the agent's token. It must be set and non-empty. The same token authenticates callers of the event API, and newt sends it to the home server over HTTP. It is never sent to the servers the home adds, nor over stdio. |
+| `mcp` | string | required | The agent core, the MCP server that is the agent: its instructions, model and settings, tools, skills, pages and extra servers (`docs/protocol.md` section 1). `https://…` or `http://…` for one reached over Streamable HTTP, or `stdio:<command>` for one newt runs itself and talks to over stdin and stdout. |
+| `token_env` | string | required | Name of the environment variable that holds the agent's token. It must be set and non-empty. The same token authenticates callers of the event API, and newt sends it to the agent core over HTTP. It is never sent to extra servers, nor over stdio. |
 | `live_meta` | bool | `false` | Put each event's `meta` on its `received` frame in the live feed (protocol 5.3), so an app following the feed can show who sent what before the turn commits. Off by default because the live feed then carries whatever your app put in `meta`. |
 
 ## `[tracing]`
