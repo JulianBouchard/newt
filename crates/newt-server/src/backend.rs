@@ -142,6 +142,7 @@ pub struct Prepared<H> {
     pub max_model_calls: u32,
     pub max_turn_tokens: Option<u64>,
     pub recite: bool,
+    pub reply_ends_turn: bool,
     pub history_budget: u32,
     pub state: SessionState,
     /// What `/turn` chose for this turn, resolved against the bootstrap.
@@ -209,6 +210,7 @@ impl Backend for StaticBackend {
             max_model_calls: 8,
             max_turn_tokens: None,
             recite: false,
+            reply_ends_turn: false,
             history_budget: 60_000,
             state: SessionState::starting_from(request.state.clone()),
             choice: None,

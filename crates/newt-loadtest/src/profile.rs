@@ -158,6 +158,11 @@ pub struct ModelTiming {
     pub tool_calls_per_step: Spread,
     pub tool_calls_per_turn: Spread,
     pub prefill_ms_per_1k_uncached: f64,
+    /// The wait between the last output item and `response.completed`. Against
+    /// gpt-6.1-terra in production on 2026-11-16, a response with one small tool
+    /// call ended 548 ms (p50) and 753 ms (p90) after the call started streaming;
+    /// this is that time less the arguments themselves, an estimate.
+    pub completion_tail_ms: Spread,
     /// How soon after a request its prompt can be read from the cache. Against
     /// `OpenAI` on 2026-11-12 the next request hit the cache every time it
     /// started 1.1 s or more after the first.
@@ -172,6 +177,7 @@ pub const REFERENCE_TIMING: ModelTiming = ModelTiming {
     tool_calls_per_step: Spread::new(3.0, 6.0),
     tool_calls_per_turn: Spread::new(16.0, 26.0),
     prefill_ms_per_1k_uncached: 40.0,
+    completion_tail_ms: Spread::new(300.0, 500.0),
     cache_readable_after: Duration::from_secs(1),
 };
 

@@ -1,0 +1,13 @@
+{
+  "name": "newt-ai-sdk-chat",
+  "private": true,
+  "type": "module",
+  "description": "Checks newt's /chat endpoint with the Vercel AI SDK's own transport and stream reader",
+  "scripts": {
+    "check": "node check.mjs"
+  },
+  "dependencies": {
+    "ai": "7.0.159",
+    "zod": "4.4.3"
+  }
+}

@@ -1,0 +1,39 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_2","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","id":"fc_a","call_id":"call_send","name":"send_message","arguments":"","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":2,"output_index":1,"item":{"type":"function_call","id":"fc_b","call_id":"call_save","name":"save_note","arguments":"","status":"in_progress"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":3,"item_id":"fc_a","output_index":0,"delta":"{\"text\":\""}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":4,"item_id":"fc_a","output_index":0,"delta":"On it, "}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":5,"item_id":"fc_b","output_index":1,"delta":"{\"note\":"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":6,"item_id":"fc_a","output_index":0,"delta":"checking now."}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":7,"item_id":"fc_b","output_index":1,"delta":"\"asked about remote\"}"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":8,"item_id":"fc_a","output_index":0,"delta":"\"}"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":9,"item_id":"fc_unknown","output_index":2,"delta":"stray"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":10,"output_index":0,"item":{"type":"function_call","id":"fc_a","call_id":"call_send","name":"send_message","arguments":"{\"text\":\"On it, checking now.\"}","status":"completed"}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":11,"output_index":1,"item":{"type":"function_call","id":"fc_b","call_id":"call_save","name":"save_note","arguments":"{\"note\":\"asked about remote\"}","status":"completed"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":12,"response":{"id":"resp_2","status":"completed","usage":{"input_tokens":100,"output_tokens":30,"total_tokens":130}}}
+

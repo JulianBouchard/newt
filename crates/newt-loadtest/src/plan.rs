@@ -10,6 +10,7 @@ const COMPACTING: &str = "Newt is compacting";
 
 pub(crate) struct Turn {
     pub(crate) done_calls: usize,
+    pub(crate) replied: bool,
     pub(crate) last_user: String,
     pub(crate) compacting: bool,
 }
@@ -52,6 +53,10 @@ pub(crate) fn read_turn(input: &[Value], marker: Option<&str>) -> Turn {
             .iter()
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call_output"))
             .count(),
+        replied: input.get(start..).unwrap_or_default().iter().any(|item| {
+            item.get("role").and_then(Value::as_str) == Some("assistant")
+                && !user_text(item).is_empty()
+        }),
         last_user: last_user
             .and_then(|index| input.get(index))
             .map(user_text)
@@ -125,20 +130,59 @@ pub(crate) fn pick_tools(
     calls
 }
 
-pub(crate) fn finish(tools: &HashMap<String, Value>, compacting: bool) -> Vec<Call> {
-    if compacting && tools.contains_key("checkpoint") {
-        return vec![Call {
-            name: "checkpoint".into(),
-            arguments: json!({ "memory": ["load test"], "open_threads": [], "commitments": [], "decisions": [], "tone": "short" }),
-        }];
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Finish {
+    EndOnly,
+    #[default]
+    ReplyThenEnd,
+    ReplyWithEnd,
+}
+
+pub(crate) struct Ending {
+    pub(crate) calls: Vec<Call>,
+    pub(crate) reply: bool,
+}
+
+pub(crate) fn finish(tools: &HashMap<String, Value>, turn: &Turn, mode: Finish) -> Ending {
+    if turn.compacting && tools.contains_key("checkpoint") {
+        return Ending {
+            calls: vec![Call {
+                name: "checkpoint".into(),
+                arguments: json!({ "memory": ["load test"], "open_threads": [], "commitments": [], "decisions": [], "tone": "short" }),
+            }],
+            reply: false,
+        };
     }
-    if tools.contains_key("end_turn") {
-        return vec![Call {
+    if !tools.contains_key("end_turn") {
+        return Ending {
+            calls: Vec::new(),
+            reply: true,
+        };
+    }
+    let end = || {
+        vec![Call {
             name: "end_turn".into(),
             arguments: json!({ "nothing_new": "load test turn" }),
-        }];
+        }]
+    };
+    match mode {
+        Finish::EndOnly => Ending {
+            calls: end(),
+            reply: false,
+        },
+        Finish::ReplyWithEnd => Ending {
+            calls: end(),
+            reply: true,
+        },
+        Finish::ReplyThenEnd if turn.replied => Ending {
+            calls: end(),
+            reply: false,
+        },
+        Finish::ReplyThenEnd => Ending {
+            calls: Vec::new(),
+            reply: true,
+        },
     }
-    Vec::new()
 }
 
 #[cfg(test)]

@@ -46,6 +46,8 @@ Optional. The JSONL event file, used for local runs, sims and `newt-report`.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `max_sessions` | integer, at least 1 | `64` | Sessions this process runs turns for at once. Others wait. |
+| `reserved_interactive` | integer, less than `max_sessions` | a quarter of `max_sessions`, at least 1 (0 when `max_sessions` is 1) | Slots only interactive turns may use. Turns whose events are all `background` priority (protocol 5.1) share the other `max_sessions - reserved_interactive` slots (at least one), so a burst of background work never fills the process and leaves a live chat waiting. An interactive turn can use every slot. |
+| `max_waiting` | integer, at least 1 | `4 * max_sessions` | Woken sessions that may wait for a slot at once. A wake past it is dropped and the session stays in its inbox until the next sweep (every second) finds it again, oldest first, so a burst of notifications cannot pile up unbounded tasks. Counted in `newt_wakes_dropped_total` (protocol 5.10). |
 | `cache_key_buckets` | integer, at least 1, or `"auto"` | `"auto"` | How many prompt cache keys the sessions of one agent share. See below. |
 
 ### `cache_key_buckets`
@@ -115,6 +117,8 @@ An agent is the name in the event API path (`/v1/agents/{name}/...`).
 | `mcp` | string | required | The agent's home MCP server, which is the agent: its instructions, model and settings, tools, skills, workspace pages and the servers it adds (`docs/protocol.md` section 1). `https://…` or `http://…` for one reached over Streamable HTTP, or `stdio:<command>` for one newt runs itself and talks to over stdin and stdout. |
 | `token_env` | string | required | Name of the environment variable that holds the agent's token. It must be set and non-empty. The same token authenticates callers of the event API, and newt sends it to the home server over HTTP. It is never sent to the servers the home adds, nor over stdio. |
 | `live_meta` | bool | `false` | Put each event's `meta` on its `received` frame in the live feed (protocol 5.3), so an app following the feed can show who sent what before the turn commits. Off by default because the live feed then carries whatever your app put in `meta`. |
+| `live_stream` | bool | `false` | Stream the model's output on the live feed (protocol 5.3): the answer text as `text_delta` frames and each tool call's arguments as `tool_input_delta` frames, plus the full `tool_input` of every call and slim `model_call_started` / `model_call_finished` frames that mark each model call. A chat UI can show the answer, or a `send_message` tool's `text`, as it is written instead of when the turn ends. It also enables `POST .../chat` (protocol 5.7). Reasoning is never streamed. Off by default because the live feed then carries message text and tool arguments. |
+| `max_pending_events` | integer, at least 1 | `100` | Unconsumed events one session of this agent may hold. `POST .../events` past it answers 429 with `Retry-After` (protocol 5.1) until a turn consumes some; a repeat of an event already held is still answered as a duplicate. |
 
 ## `[tracing]`
 

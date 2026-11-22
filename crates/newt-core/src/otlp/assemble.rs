@@ -181,6 +181,10 @@ impl Assembler {
             | EventKind::TurnSteered { .. }
             | EventKind::ToolStarted { .. }
             | EventKind::ToolProgress { .. }
+            | EventKind::TextDelta { .. }
+            | EventKind::ToolInputDelta { .. }
+            | EventKind::ToolInput { .. }
+            | EventKind::ToolOutput { .. }
             | EventKind::ModelCallReplayed { .. }
             | EventKind::CompactionCompleted { .. }
             | EventKind::EventAccepted { .. }
@@ -244,6 +248,10 @@ pub(super) fn event_turn(kind: &EventKind) -> Option<(String, String)> {
         | EventKind::TurnFailed { session, turn, .. } => Some((session.clone(), turn.clone())),
         EventKind::ServerReady { .. }
         | EventKind::ToolProgress { .. }
+        | EventKind::TextDelta { .. }
+        | EventKind::ToolInputDelta { .. }
+        | EventKind::ToolInput { .. }
+        | EventKind::ToolOutput { .. }
         | EventKind::TurnSteered { .. }
         | EventKind::ModelCallReplayed { .. }
         | EventKind::CompactionCompleted { .. }

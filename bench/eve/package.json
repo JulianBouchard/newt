@@ -1,0 +1,17 @@
+{
+  "name": "newt-bench-eve",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "eve build",
+    "start": "eve start"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^4.0.91",
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "@workflow/world-postgres": "5.0.5",
+    "ai": "^7.0.156",
+    "eve": "0.83.3",
+    "zod": "4.4.3"
+  }
+}

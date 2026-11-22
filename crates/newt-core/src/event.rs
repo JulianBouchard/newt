@@ -108,11 +108,40 @@ pub enum EventKind {
         call: u32,
         error: String,
     },
+    TextDelta {
+        session: String,
+        turn: String,
+        text: String,
+    },
     ToolStarted {
         session: String,
         turn: String,
         call_id: String,
         name: String,
+    },
+    ToolInputDelta {
+        session: String,
+        turn: String,
+        call_id: String,
+        name: String,
+        delta: String,
+    },
+    ToolInput {
+        session: String,
+        turn: String,
+        call_id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// A tool call's result as the model will see it, cut to [`TOOL_OUTPUT_LIVE_CHARS`].
+    /// Live only, for agents with `live_stream`.
+    ToolOutput {
+        session: String,
+        turn: String,
+        call_id: String,
+        name: String,
+        output: String,
+        is_error: bool,
     },
     ToolProgress {
         session: String,
@@ -141,6 +170,8 @@ pub enum EventKind {
         turn: String,
         error: String,
         committed_messages: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<FailureReason>,
     },
     CompactionCompleted {
         session: String,
@@ -189,6 +220,39 @@ pub enum EventKind {
         sweep_ms: u64,
         woken: usize,
     },
+}
+
+impl EventKind {
+    /// Whether the event exists only for the live feed: never journaled,
+    /// never in the JSONL file or OTLP.
+    #[must_use]
+    pub fn is_live_only(&self) -> bool {
+        matches!(
+            self,
+            Self::TextDelta { .. }
+                | Self::ToolInputDelta { .. }
+                | Self::ToolInput { .. }
+                | Self::ToolOutput { .. }
+        )
+    }
+}
+
+/// Why a turn failed, when the cause is not an error to retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureReason {
+    /// The turn was cancelled, by a caller or by shutdown.
+    Cancelled,
+}
+
+/// How much of a tool result a `tool_output` live frame carries.
+pub const TOOL_OUTPUT_LIVE_CHARS: usize = 4_000;
+
+/// `text` cut to at most `limit` characters, on a character boundary.
+pub fn live_excerpt(text: &str, limit: usize) -> String {
+    text.char_indices()
+        .nth(limit)
+        .map_or_else(|| text.to_owned(), |(end, _)| text[..end].to_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

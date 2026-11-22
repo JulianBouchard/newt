@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -101,7 +103,9 @@ enum Event {
     #[serde(rename = "response.output_item.added")]
     ItemAdded { item: AddedItem },
     #[serde(rename = "response.output_text.delta")]
-    TextDelta,
+    TextDelta { delta: String },
+    #[serde(rename = "response.function_call_arguments.delta")]
+    ArgumentsDelta { item_id: String, delta: String },
     #[serde(rename = "response.output_item.done")]
     ItemDone { item: Value },
     #[serde(rename = "response.completed")]
@@ -138,6 +142,8 @@ struct ErrorDetail {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AddedItem {
     FunctionCall {
+        #[serde(default)]
+        id: Option<String>,
         call_id: String,
         name: String,
     },
@@ -229,6 +235,7 @@ pub(super) struct Decoder {
     stop: Option<StopReason>,
     refused: bool,
     response_id: Option<String>,
+    call_ids: HashMap<String, String>,
 }
 
 impl Decoder {
@@ -302,10 +309,30 @@ impl super::Decoder for Decoder {
     fn handle(&mut self, event: &SseEvent, emit: &mut Emitter<'_>) -> Result<bool, ProviderError> {
         match decode::<Event>(event)? {
             Event::ItemAdded {
-                item: AddedItem::FunctionCall { call_id, name },
-            } => emit.tool_started(&call_id, &name),
-            Event::TextDelta => emit.output(),
-            Event::ItemDone { item } => self.collect(event, item)?,
+                item: AddedItem::FunctionCall { id, call_id, name },
+            } => {
+                emit.tool_started(&call_id, &name);
+                if let Some(item_id) = id {
+                    self.call_ids.insert(item_id, call_id);
+                }
+            }
+            Event::TextDelta { delta } => emit.text(&delta),
+            Event::ArgumentsDelta { item_id, delta } => {
+                if let Some(call_id) = self.call_ids.get(&item_id)
+                    && !delta.is_empty()
+                {
+                    emit.tool_input_delta(call_id, &delta);
+                }
+            }
+            Event::ItemDone { item } => {
+                let before = self.parts.len();
+                self.collect(event, item)?;
+                if self.parts.len() > before
+                    && let Some(Part::ToolCall(call)) = self.parts.last()
+                {
+                    emit.tool_ready(call);
+                }
+            }
             Event::Completed { response } | Event::Incomplete { response } => {
                 self.complete(response);
                 return Ok(true);

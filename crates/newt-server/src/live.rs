@@ -17,15 +17,17 @@ use sqlx::postgres::PgListener;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
-use crate::store::{INBOX_CHANNEL, LIVE_CHANNEL};
+use crate::store::{CANCEL_CHANNEL, INBOX_CHANNEL, LIVE_CHANNEL};
 
 const INBOX_BUFFER: usize = 4096;
+const CANCEL_BUFFER: usize = 256;
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Channel {
     Live,
     Inbox,
+    Cancel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +41,7 @@ type Key = (Channel, String);
 #[derive(Debug)]
 struct Hub {
     inbox: broadcast::Sender<String>,
+    cancel: broadcast::Sender<String>,
     watched: Mutex<HashMap<Key, watch::Sender<()>>>,
 }
 
@@ -62,6 +65,7 @@ impl Default for Topics {
         Self {
             hub: Arc::new(Hub {
                 inbox: broadcast::channel(INBOX_BUFFER).0,
+                cancel: broadcast::channel(CANCEL_BUFFER).0,
                 watched: Mutex::new(HashMap::new()),
             }),
         }
@@ -77,10 +81,18 @@ impl Topics {
         {
             sender.send_replace(());
         }
-        if notification.channel == Channel::Inbox
-            && self.hub.inbox.send(notification.topic).is_err()
-        {
-            tracing::trace!("inbox notification with no wake loop");
+        match notification.channel {
+            Channel::Inbox => {
+                if self.hub.inbox.send(notification.topic).is_err() {
+                    tracing::trace!("inbox notification with no wake loop");
+                }
+            }
+            Channel::Cancel => {
+                if self.hub.cancel.send(notification.topic).is_err() {
+                    tracing::trace!("cancel notification with no cancel loop");
+                }
+            }
+            Channel::Live => {}
         }
     }
 
@@ -94,6 +106,12 @@ impl Topics {
     /// Every inbox topic notified from now on, for the runner's wake loop.
     pub fn inbox(&self) -> broadcast::Receiver<String> {
         self.hub.inbox.subscribe()
+    }
+
+    /// Every session a turn cancel was requested for from now on, for the
+    /// runner's cancel loop.
+    pub fn cancels(&self) -> broadcast::Receiver<String> {
+        self.hub.cancel.subscribe()
     }
 
     /// Wakes on every notification for one topic published from now on.
@@ -178,17 +196,19 @@ pub async fn spawn_listener(pool: PgPool) -> Result<(Topics, JoinHandle<()>), sq
 
 async fn subscribe(pool: &PgPool) -> Result<PgListener, sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
-    listener.listen_all([LIVE_CHANNEL, INBOX_CHANNEL]).await?;
+    listener
+        .listen_all([LIVE_CHANNEL, INBOX_CHANNEL, CANCEL_CHANNEL])
+        .await?;
     Ok(listener)
 }
 
 async fn forward(listener: &mut PgListener, publisher: &Topics) -> Result<(), sqlx::Error> {
     loop {
         let notification = listener.recv().await?;
-        let channel = if notification.channel() == INBOX_CHANNEL {
-            Channel::Inbox
-        } else {
-            Channel::Live
+        let channel = match notification.channel() {
+            INBOX_CHANNEL => Channel::Inbox,
+            CANCEL_CHANNEL => Channel::Cancel,
+            _ => Channel::Live,
         };
         publisher.publish(Notification {
             channel,
@@ -251,6 +271,16 @@ mod tests {
         assert_eq!(topics.hub.watched().len(), 1);
         drop(second);
         assert!(topics.hub.watched().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_cancel_loop_hears_every_cancel_topic_and_no_other() {
+        let topics = Topics::default();
+        let mut cancels = topics.cancels();
+        notify(&topics, Channel::Inbox, "a/ana");
+        notify(&topics, Channel::Cancel, "a/bo");
+        assert_eq!(cancels.recv().await.ok().as_deref(), Some("a/bo"));
+        assert!(cancels.try_recv().is_err());
     }
 
     #[tokio::test]

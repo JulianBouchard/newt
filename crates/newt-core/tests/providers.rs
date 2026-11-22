@@ -160,13 +160,46 @@ async fn anthropic_stream_decodes_thinking_text_tool_call_and_cache_usage() {
         events,
         vec![
             StreamEvent::OutputStarted,
+            StreamEvent::TextDelta("Checking ".into()),
+            StreamEvent::TextDelta("your profile.".into()),
             StreamEvent::ToolCallStarted {
                 id: "toolu_1".into(),
                 name: "read_file".into()
             },
+            StreamEvent::ToolInputDelta {
+                id: "toolu_1".into(),
+                delta: "{\"paths\": [\"pro".into()
+            },
+            StreamEvent::ToolInputDelta {
+                id: "toolu_1".into(),
+                delta: "file.md\"]}".into()
+            },
         ]
     );
     assert!(response.timing.first_tool_ms.is_some());
+}
+
+#[tokio::test]
+async fn openai_stream_passes_answer_text_through_and_not_reasoning() {
+    let fixture = include_str!("fixtures/openai_text.sse");
+    let (base, _) = serve("/responses", StatusCode::OK, Body::from(fixture)).await;
+    let client = ProviderClient::new(Protocol::OpenaiResponses, base, "key").unwrap();
+
+    let (result, events) = stream_once(&client, &CancellationToken::new()).await;
+    let response = result.unwrap();
+
+    assert_eq!(
+        events,
+        vec![
+            StreamEvent::OutputStarted,
+            StreamEvent::TextDelta("Checking ".into()),
+            StreamEvent::TextDelta("your profile.".into()),
+        ]
+    );
+    assert_eq!(
+        response.message.parts,
+        vec![Part::text("Checking your profile.")]
+    );
 }
 
 #[tokio::test]
@@ -234,6 +267,15 @@ async fn openai_stream_keeps_reasoning_items_and_reports_cached_tokens() {
                 id: "call_1".into(),
                 name: "read_file".into()
             },
+            StreamEvent::ToolInputDelta {
+                id: "call_1".into(),
+                delta: "{\"paths\":[\"profile.md\"]}".into()
+            },
+            StreamEvent::ToolCallReady(ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: json!({ "paths": ["profile.md"] }),
+            }),
         ]
     );
 
@@ -360,13 +402,27 @@ async fn openai_chat_stream_assembles_text_and_split_tool_calls_and_reports_cach
         events,
         vec![
             StreamEvent::OutputStarted,
+            StreamEvent::TextDelta("Checking ".into()),
+            StreamEvent::TextDelta("the profile.".into()),
             StreamEvent::ToolCallStarted {
                 id: "call_1".into(),
                 name: "read_file".into()
             },
+            StreamEvent::ToolInputDelta {
+                id: "call_1".into(),
+                delta: "{\"paths\": [\"prof".into()
+            },
+            StreamEvent::ToolInputDelta {
+                id: "call_1".into(),
+                delta: "ile.md\"]}".into()
+            },
             StreamEvent::ToolCallStarted {
                 id: "call_2".into(),
                 name: "end_turn".into()
+            },
+            StreamEvent::ToolInputDelta {
+                id: "call_2".into(),
+                delta: "{}".into()
             },
         ]
     );
@@ -391,6 +447,55 @@ async fn openai_chat_stream_assembles_text_and_split_tool_calls_and_reports_cach
     );
     assert_eq!(body["messages"][4]["content"], Value::Null);
     assert_eq!(body["messages"][5]["tool_call_id"], "toolu_0");
+}
+
+#[tokio::test]
+async fn openai_argument_deltas_reach_their_call_by_item_id_before_the_call_is_ready() {
+    let fixture = include_str!("fixtures/openai_tool_use_streamed.sse");
+    let (base, _) = serve("/responses", StatusCode::OK, Body::from(fixture)).await;
+    let client = ProviderClient::new(Protocol::OpenaiResponses, base, "key").unwrap();
+
+    let (result, events) = stream_once(&client, &CancellationToken::new()).await;
+    result.unwrap();
+
+    let deltas = |call: &str| -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ToolInputDelta { id, delta } if id == call => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(deltas("call_send"), r#"{"text":"On it, checking now."}"#);
+    assert_eq!(deltas("call_save"), r#"{"note":"asked about remote"}"#);
+    let position = |wanted: &StreamEvent| events.iter().position(|event| event == wanted).unwrap();
+    let last_send_delta = events
+        .iter()
+        .rposition(
+            |event| matches!(event, StreamEvent::ToolInputDelta { id, .. } if id == "call_send"),
+        )
+        .unwrap();
+    let send_ready = events
+        .iter()
+        .position(
+            |event| matches!(event, StreamEvent::ToolCallReady(call) if call.id == "call_send"),
+        )
+        .unwrap();
+    assert!(last_send_delta < send_ready);
+    assert!(
+        position(&StreamEvent::ToolCallStarted {
+            id: "call_send".into(),
+            name: "send_message".into()
+        }) < last_send_delta
+    );
+    let sent = events
+        .iter()
+        .filter(
+            |event| matches!(event, StreamEvent::ToolInputDelta { id, .. } if id == "call_send"),
+        )
+        .count();
+    assert_eq!(sent, 4);
 }
 
 #[tokio::test]

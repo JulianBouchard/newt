@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use futures_util::FutureExt;
 use newt_core::event::{Event, EventKind, WakeSource};
+use newt_core::prompt::Lane;
 use newt_core::provider::Model;
 use newt_core::sink::EventSink;
 use tokio::sync::{Semaphore, broadcast};
@@ -14,7 +15,9 @@ use tokio_util::task::TaskTracker;
 
 use crate::backend::Backend;
 use crate::cache_keys::{Buckets, CacheKeys};
+use crate::counters::Counter;
 use crate::live::Topics;
+use crate::metrics::Metrics;
 use crate::retention::Retention;
 use crate::store::Store;
 
@@ -33,6 +36,12 @@ pub struct RunnerConfig {
     pub backoff_base: Duration,
     pub max_attempts: i32,
     pub max_sessions: usize,
+    /// Slots only interactive turns may use: background turns share the
+    /// other `max_sessions - reserved_interactive`, and at least one.
+    pub reserved_interactive: usize,
+    /// Woken sessions that may wait for a slot at once. A wake past it is
+    /// dropped and the session stays in the inbox for the next sweep.
+    pub max_waiting: usize,
     pub cache_key_buckets: Buckets,
     pub retention: Retention,
 }
@@ -46,10 +55,26 @@ impl Default for RunnerConfig {
             backoff_base: Duration::from_secs(2),
             max_attempts: 5,
             max_sessions: 16,
+            reserved_interactive: default_reserved_interactive(16),
+            max_waiting: default_max_waiting(16),
             cache_key_buckets: Buckets::Fixed(1),
             retention: Retention::default(),
         }
     }
+}
+
+/// A quarter of the slots, and at least one, but never all of them.
+#[must_use]
+pub fn default_reserved_interactive(max_sessions: usize) -> usize {
+    (max_sessions / 4)
+        .max(1)
+        .min(max_sessions.saturating_sub(1))
+}
+
+/// Four waiting sessions per slot.
+#[must_use]
+pub fn default_max_waiting(max_sessions: usize) -> usize {
+    max_sessions.saturating_mul(4).max(1)
 }
 
 type Session = (String, String);
@@ -84,12 +109,15 @@ pub(crate) struct Inner<B, M> {
     pub(crate) cache_keys: CacheKeys,
     pub(crate) instrumentation: Option<Arc<dyn EventSink>>,
     pub(crate) notifications: Topics,
+    pub(crate) live_stream: HashSet<String>,
     in_flight: Mutex<HashSet<Session>>,
     sessions: Semaphore,
+    background: Semaphore,
     tasks: TaskTracker,
     pub(crate) stopping: CancellationToken,
     pub(crate) turns: CancellationToken,
     pub(crate) turn_ends: tokio::sync::Notify,
+    pub(crate) metrics: Arc<Metrics>,
 }
 
 pub(crate) fn elapsed_ms(started: std::time::Instant) -> u64 {
@@ -122,6 +150,13 @@ impl<B, M> Drop for InFlight<'_, B, M> {
     }
 }
 
+fn background_slots(config: RunnerConfig) -> usize {
+    config
+        .max_sessions
+        .saturating_sub(config.reserved_interactive)
+        .max(1)
+}
+
 impl<B: Backend, M: Model + 'static> Runner<B, M> {
     pub fn new(
         store: Store,
@@ -147,14 +182,30 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 cache_keys: CacheKeys::new(config.cache_key_buckets),
                 instrumentation,
                 notifications,
+                live_stream: HashSet::new(),
                 in_flight: Mutex::new(HashSet::new()),
                 sessions: Semaphore::new(config.max_sessions.max(1)),
+                background: Semaphore::new(background_slots(config)),
                 tasks: TaskTracker::new(),
                 stopping: CancellationToken::new(),
                 turns: CancellationToken::new(),
                 turn_ends: tokio::sync::Notify::new(),
+                metrics: Arc::new(Metrics::new(config.max_sessions.max(1))),
             }),
         }
+    }
+
+    #[must_use]
+    pub fn with_live_stream(mut self, agents: HashSet<String>) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.live_stream = agents;
+        }
+        self
+    }
+
+    /// The load figures this runner keeps, for `/healthz` and `/metrics`.
+    pub fn metrics(&self) -> Arc<Metrics> {
+        Arc::clone(&self.inner.metrics)
     }
 
     pub fn owner(&self) -> &str {
@@ -181,6 +232,12 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         if !self.inner.running().insert(session.clone()) {
             return false;
         }
+        if self.inner.metrics.load().waiting >= self.inner.config.max_waiting {
+            self.inner.running().remove(&session);
+            self.inner.metrics.count(Counter::WakesDropped);
+            return false;
+        }
+        let waiting = self.inner.metrics.start_waiting();
         self.inner.emit(EventKind::SessionWoken {
             session: format!("{agent}/{key}"),
             source,
@@ -191,9 +248,24 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 inner: &inner,
                 session: session.clone(),
             };
+            let lane = match inner.store.pending_lane(&session.0, &session.1).await {
+                Ok(lane) => lane,
+                Err(error) => {
+                    tracing::error!(%error, agent = %session.0, key = %session.1, "could not read the session's lane");
+                    return;
+                }
+            };
+            let _background = match lane {
+                Lane::Background => match inner.background.acquire().await {
+                    Ok(permit) => Some(permit),
+                    Err(_) => return,
+                },
+                Lane::Interactive => None,
+            };
             let Ok(_permit) = inner.sessions.acquire().await else {
                 return;
             };
+            let _running = waiting.got_slot();
             let run = crate::turn_runner::run_session(&inner, &session.0, &session.1);
             match AssertUnwindSafe(run).catch_unwind().await {
                 Ok(Ok(())) => {}
@@ -201,7 +273,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                     tracing::error!(%error, agent = %session.0, key = %session.1, "session run failed");
                 }
                 Err(_) => {
-                    tracing::error!(agent = %session.0, key = %session.1, "session task panicked; its lease will expire");
+                    tracing::error!(agent = %session.0, key = %session.1, "session task panicked outside a turn; its lease will expire");
                 }
             }
         });
@@ -213,10 +285,11 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         let wakes = self.clone().wake_on_notify(Arc::clone(&nudge));
         let sweeps = self.clone().sweep_periodically(nudge);
         let heartbeats = self.clone().heartbeat_periodically();
+        let cancels = self.clone().cancel_on_notify();
         let prunes = self.clone().prune_periodically();
         let turn_ends = self.clone().deliver_turn_ends_periodically();
         tokio::spawn(async move {
-            tokio::join!(wakes, sweeps, heartbeats, prunes, turn_ends);
+            tokio::join!(wakes, sweeps, heartbeats, cancels, prunes, turn_ends);
         })
     }
 
@@ -235,6 +308,46 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
             }
+        }
+    }
+
+    async fn cancel_on_notify(self) {
+        let mut topics = self.inner.notifications.cancels();
+        loop {
+            tokio::select! {
+                () = self.inner.stopping.cancelled() => return,
+                topic = topics.recv() => match topic {
+                    Ok(topic) => {
+                        if let Some((agent, key)) = topic.split_once('/') {
+                            self.cancel_requested(agent, key).await;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        tracing::warn!("cancel notifications lagged; the next heartbeat finds the requests");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                },
+            }
+        }
+    }
+
+    async fn cancel_requested(&self, agent: &str, key: &str) {
+        if !self.inner.metrics.is_tracking(agent, key) {
+            return;
+        }
+        match self
+            .inner
+            .store
+            .requested_cancel(&self.inner.owner, agent, key)
+            .await
+        {
+            Ok(Some(turn)) => {
+                if self.inner.metrics.cancel_turn(agent, key, &turn) {
+                    tracing::info!(agent, key, %turn, "cancelling the turn on request");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => tracing::error!(%error, agent, key, "could not read a cancel request"),
         }
     }
 
@@ -358,13 +471,20 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         if running.is_empty() {
             return;
         }
-        if let Err(error) = self
+        match self
             .inner
             .store
             .heartbeat(&self.inner.owner, self.inner.config.lease_ttl, running)
             .await
         {
-            tracing::error!(%error, "lease heartbeat failed");
+            Ok(requests) => {
+                for (agent, key, turn) in requests {
+                    if self.inner.metrics.cancel_turn(&agent, &key, &turn) {
+                        tracing::info!(%agent, %key, %turn, "cancelling the turn on a request found at the heartbeat");
+                    }
+                }
+            }
+            Err(error) => tracing::error!(%error, "lease heartbeat failed"),
         }
     }
 

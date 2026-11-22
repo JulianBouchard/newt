@@ -1,0 +1,374 @@
+[
+ {
+  "seq": 1,
+  "frame": {
+   "event_id": "m-1",
+   "inbox_id": 1,
+   "meta": {
+    "eve": {
+     "message": "load message 1-1: any news on the role?"
+    }
+   },
+   "type": "received"
+  }
+ },
+ {
+  "seq": 2,
+  "frame": {
+   "at": "2026-11-21T23:12:13.265749Z",
+   "compaction": false,
+   "events": 1,
+   "history_messages": 0,
+   "model": "default",
+   "reset": false,
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "turn_started"
+  }
+ },
+ {
+  "seq": 3,
+  "frame": {
+   "at": "2026-11-21T23:12:13.265921Z",
+   "call": 0,
+   "model": "default",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "model_call_started"
+  }
+ },
+ {
+  "seq": 4,
+  "frame": {
+   "at": "2026-11-21T23:12:13.803394Z",
+   "call_id": "call_0000000000000001",
+   "name": "load_skill",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_started"
+  }
+ },
+ {
+  "seq": 5,
+  "frame": {
+   "at": "2026-11-21T23:12:13.80973Z",
+   "call_id": "call_0000000000000001",
+   "delta": "{\"n",
+   "name": "load_skill",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input_delta"
+  }
+ },
+ {
+  "seq": 6,
+  "frame": {
+   "at": "2026-11-21T23:12:13.846142Z",
+   "call_id": "call_0000000000000001",
+   "delta": "ame\":\"writing\"}",
+   "name": "load_skill",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input_delta"
+  }
+ },
+ {
+  "seq": 7,
+  "frame": {
+   "at": "2026-11-21T23:12:13.846151Z",
+   "call_id": "call_0000000000000001",
+   "input": {
+    "name": "writing"
+   },
+   "name": "load_skill",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input"
+  }
+ },
+ {
+  "seq": 8,
+  "frame": {
+   "at": "2026-11-21T23:12:13.930243Z",
+   "call": 0,
+   "session": "bench/record-1",
+   "stop": "tool_use",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "model_call_finished"
+  }
+ },
+ {
+  "seq": 9,
+  "frame": {
+   "at": "2026-11-21T23:12:13.930291Z",
+   "call_id": "call_0000000000000001",
+   "is_error": false,
+   "ms": 0,
+   "name": "load_skill",
+   "retention": "ephemeral",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_finished"
+  }
+ },
+ {
+  "seq": 10,
+  "frame": {
+   "at": "2026-11-21T23:12:13.930314Z",
+   "call": 1,
+   "model": "default",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "model_call_started"
+  }
+ },
+ {
+  "seq": 11,
+  "frame": {
+   "at": "2026-11-21T23:12:14.142128Z",
+   "call_id": "call_0000000000000004",
+   "name": "read_file",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_started"
+  }
+ },
+ {
+  "seq": 12,
+  "frame": {
+   "at": "2026-11-21T23:12:14.151467Z",
+   "call_id": "call_0000000000000004",
+   "delta": "{\"pa",
+   "name": "read_file",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input_delta"
+  }
+ },
+ {
+  "seq": 13,
+  "frame": {
+   "at": "2026-11-21T23:12:14.186762Z",
+   "call_id": "call_0000000000000004",
+   "delta": "ths\":[\"memory.md\"]}",
+   "name": "read_file",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input_delta"
+  }
+ },
+ {
+  "seq": 14,
+  "frame": {
+   "at": "2026-11-21T23:12:14.186768Z",
+   "call_id": "call_0000000000000004",
+   "input": {
+    "paths": [
+     "memory.md"
+    ]
+   },
+   "name": "read_file",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input"
+  }
+ },
+ {
+  "seq": 194,
+  "frame": {
+   "at": "2026-11-21T23:12:21.529759Z",
+   "call": 15,
+   "model": "default",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "model_call_started"
+  }
+ },
+ {
+  "seq": 195,
+  "frame": {
+   "at": "2026-11-21T23:12:21.852423Z",
+   "session": "bench/record-1",
+   "text": "Berlin ",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "text_delta"
+  }
+ },
+ {
+  "seq": 196,
+  "frame": {
+   "at": "2026-11-21T23:12:21.905247Z",
+   "session": "bench/record-1",
+   "text": "interview ledger yes sounds Thursday interview remote hiring interview Lisbon startup good remote ",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "text_delta"
+  }
+ },
+ {
+  "seq": 197,
+  "frame": {
+   "at": "2026-11-21T23:12:21.956916Z",
+   "session": "bench/record-1",
+   "text": "fit salary Thursday Lisbon Thursday rust yes offer backend fit fit yes role ",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "text_delta"
+  }
+ },
+ {
+  "seq": 198,
+  "frame": {
+   "at": "2026-11-21T23:12:22.010747Z",
+   "session": "bench/record-1",
+   "text": "good founder good interview manager offer remote equity yes thanks team next fit startup ",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "text_delta"
+  }
+ },
+ {
+  "seq": 199,
+  "frame": {
+   "at": "2026-11-21T23:12:22.061069Z",
+   "session": "bench/record-1",
+   "text": "Berlin remote offer Lisbon founder intro startup startup salary equity interview interview series ",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "text_delta"
+  }
+ },
+ {
+  "seq": 200,
+  "frame": {
+   "at": "2026-11-21T23:12:22.114025Z",
+   "session": "bench/record-1",
+   "text": "week series fit stack fit remote founder Lisbon intro stack Thursday rust rust ",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "text_delta"
+  }
+ },
+ {
+  "seq": 201,
+  "frame": {
+   "at": "2026-11-21T23:12:22.164416Z",
+   "session": "bench/record-1",
+   "text": "call yes backend role backend equity thanks rust Thursday Thursday fit fit backend ",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "text_delta"
+  }
+ },
+ {
+  "seq": 202,
+  "frame": {
+   "at": "2026-11-21T23:12:22.215222Z",
+   "session": "bench/record-1",
+   "text": "interview startup interview Berlin good backend Thursday backend fit interview week remote hiring ",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "text_delta"
+  }
+ },
+ {
+  "seq": 233,
+  "frame": {
+   "at": "2026-11-21T23:12:23.807621Z",
+   "call": 15,
+   "session": "bench/record-1",
+   "stop": "end_turn",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "model_call_finished"
+  }
+ },
+ {
+  "seq": 234,
+  "frame": {
+   "at": "2026-11-21T23:12:23.807869Z",
+   "call": 16,
+   "model": "default",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "model_call_started"
+  }
+ },
+ {
+  "seq": 235,
+  "frame": {
+   "at": "2026-11-21T23:12:24.135972Z",
+   "call_id": "call_0000000000000052",
+   "name": "end_turn",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_started"
+  }
+ },
+ {
+  "seq": 236,
+  "frame": {
+   "at": "2026-11-21T23:12:24.153072Z",
+   "call_id": "call_0000000000000052",
+   "delta": "{\"noth",
+   "name": "end_turn",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input_delta"
+  }
+ },
+ {
+  "seq": 237,
+  "frame": {
+   "at": "2026-11-21T23:12:24.188343Z",
+   "call_id": "call_0000000000000052",
+   "delta": "ing_new\":\"load test turn\"}",
+   "name": "end_turn",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input_delta"
+  }
+ },
+ {
+  "seq": 238,
+  "frame": {
+   "at": "2026-11-21T23:12:24.188347Z",
+   "call_id": "call_0000000000000052",
+   "input": {
+    "nothing_new": "load test turn"
+   },
+   "name": "end_turn",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_input"
+  }
+ },
+ {
+  "seq": 239,
+  "frame": {
+   "at": "2026-11-21T23:12:24.31831Z",
+   "call": 16,
+   "session": "bench/record-1",
+   "stop": "tool_use",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "model_call_finished"
+  }
+ },
+ {
+  "seq": 240,
+  "frame": {
+   "at": "2026-11-21T23:12:24.31834Z",
+   "call_id": "call_0000000000000052",
+   "is_error": false,
+   "ms": 0,
+   "name": "end_turn",
+   "retention": "ephemeral",
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "tool_finished"
+  }
+ },
+ {
+  "seq": 241,
+  "frame": {
+   "at": "2026-11-21T23:12:24.318359Z",
+   "committed_messages": 8,
+   "model_calls": 17,
+   "session": "bench/record-1",
+   "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
+   "type": "turn_completed"
+  }
+ }
+]

@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use newt_loadtest::cache::CacheScope;
-use newt_loadtest::driver::{LoadPlan, NewtTarget, run};
+use newt_loadtest::driver::{LoadPlan, NewtTarget, Target, run};
+use newt_loadtest::eve::EveTarget;
 use newt_loadtest::fake_model::{self, FakeModel, FakeOptions};
 use newt_loadtest::mock_app::{self, MockApp};
 use newt_loadtest::profile::{Profile, REFERENCE_TIMING};
@@ -14,12 +15,13 @@ use tracing_subscriber::EnvFilter;
 const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
                            [--cache-scope key|prefix|routed] [--machines 4]
-                           [--dump-dir DIR] [--turn-marker TEXT] [--decision-log FILE] [--cache-log FILE] [--profile FILE]
-  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--profile FILE]
+                           [--dump-dir DIR] [--turn-marker TEXT] [--finish reply-then-end|reply-with-end|end-only] [--decision-log FILE] [--cache-log FILE] [--interval-log FILE] [--replay TURNS.jsonl] [--profile FILE]
+  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--reply-ends-turn false] [--prompt-bytes 30000] [--interval-log FILE] [--profile FILE]
                            [--stdio true]   serve the agent over stdin and stdout instead
-  newt-loadtest run --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
+  newt-loadtest run [--runtime newt|eve] --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
                     [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--think-max-ms THINK] [--ramp-s 0] [--timeout-s 300]
-                    [--fake http://127.0.0.1:9100] [--mock http://127.0.0.1:9200]";
+                    [--fake http://127.0.0.1:9100] [--mock http://127.0.0.1:9200] [--speed 1] [--turns-log FILE]
+  newt-loadtest decompose --turns FILE --intervals FILE,FILE --speed S [--replay TURNS.jsonl]";
 
 struct Flags(HashMap<String, String>);
 
@@ -101,13 +103,19 @@ async fn stats(http: &reqwest::Client, base: Option<&String>) -> Value {
 
 async fn run_load(flags: &Flags) -> anyhow::Result<()> {
     let token_env = flags.text("token-env", "LOADTEST_TOKEN");
-    let target = NewtTarget {
-        base: flags
-            .text("base", "http://127.0.0.1:7878")
-            .trim_end_matches('/')
-            .to_owned(),
-        agent: flags.text("agent", "assistant"),
-        token: std::env::var(&token_env).with_context(|| format!("set {token_env}"))?,
+    let base = flags
+        .text("base", "http://127.0.0.1:7878")
+        .trim_end_matches('/')
+        .to_owned();
+    let token = std::env::var(&token_env).with_context(|| format!("set {token_env}"))?;
+    let target = match flags.text("runtime", "newt").as_str() {
+        "newt" => Target::Newt(NewtTarget {
+            base,
+            agent: flags.text("agent", "assistant"),
+            token,
+        }),
+        "eve" => Target::Eve(EveTarget::new(base, token)),
+        other => bail!("--runtime must be newt or eve, not `{other}`"),
     };
     let plan = LoadPlan {
         sessions: flags.number("sessions", 20)?,
@@ -117,6 +125,7 @@ async fn run_load(flags: &Flags) -> anyhow::Result<()> {
         think_max: Duration::from_millis(flags.number("think-max-ms", 0)?),
         ramp: Duration::from_secs(flags.number("ramp-s", 0)?),
         timeout: Duration::from_secs(flags.number("timeout-s", 300)?),
+        speed: flags.number("speed", 1.0)?,
     };
     let fake = flags.0.get("fake");
     let mock = flags.0.get("mock");
@@ -132,6 +141,9 @@ async fn run_load(flags: &Flags) -> anyhow::Result<()> {
         (&app_before, &app_after),
     );
     std::io::stdout().lock().write_all(report.as_bytes())?;
+    if let Some(path) = flags.0.get("turns-log") {
+        newt_loadtest::decompose::write_turns(path, &samples)?;
+    }
     Ok(())
 }
 
@@ -161,6 +173,16 @@ async fn main() -> anyhow::Result<()> {
                     turn_marker: flags.0.get("turn-marker").cloned(),
                     decision_log: flags.0.get("decision-log").map(std::path::PathBuf::from),
                     cache_log: flags.0.get("cache-log").map(std::path::PathBuf::from),
+                    finish: match flags.text("finish", "reply-then-end").as_str() {
+                        "end-only" => fake_model::Finish::EndOnly,
+                        "reply-then-end" => fake_model::Finish::ReplyThenEnd,
+                        "reply-with-end" => fake_model::Finish::ReplyWithEnd,
+                        other => bail!(
+                            "--finish must be end-only, reply-then-end or reply-with-end, not `{other}`"
+                        ),
+                    },
+                    interval_log: flags.0.get("interval-log").map(std::path::PathBuf::from),
+                    replay: flags.0.get("replay").map(std::path::PathBuf::from),
                     profile: profile(&flags)?,
                 },
             )?;
@@ -175,7 +197,12 @@ async fn main() -> anyhow::Result<()> {
                 flags.number("speed", 1.0)?,
                 flags.number("seed", 2)?,
                 flags.number("render-ms", 0.0)?,
+                flags.text("reply-ends-turn", "false") == "true",
+                flags.number("prompt-bytes", 30_000)?,
                 profile(&flags)?,
+                newt_loadtest::intervals::IntervalLog::open(
+                    flags.0.get("interval-log").map(std::path::Path::new),
+                )?,
             );
             if flags.text("stdio", "false") == "true" {
                 return mock_app::serve_stdio(app).await;
@@ -187,6 +214,27 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         "run" => run_load(&flags).await,
+        "decompose" => {
+            let intervals: Vec<String> = flags
+                .text("intervals", "")
+                .split(',')
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let replay = flags
+                .0
+                .get("replay")
+                .map(|path| newt_loadtest::replay::Replay::load(path))
+                .transpose()?;
+            let report = newt_loadtest::decompose::render(
+                &flags.text("turns", ""),
+                &intervals,
+                flags.number("speed", 1.0)?,
+                replay.as_ref(),
+            )?;
+            std::io::stdout().lock().write_all(report.as_bytes())?;
+            Ok(())
+        }
         other => bail!("unknown command `{other}`\n{USAGE}"),
     }
 }

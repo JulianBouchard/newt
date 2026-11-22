@@ -23,6 +23,7 @@ use newt_server::{db, live};
 const EVENT_BUFFER: usize = 1024;
 
 #[tokio::main]
+#[expect(clippy::too_many_lines, reason = "startup reads top to bottom")]
 async fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     tracing_subscriber::fmt()
@@ -88,22 +89,27 @@ async fn main() -> anyhow::Result<()> {
         Routes::from_config(&config)?,
         RunnerConfig {
             max_sessions: config.runner.max_sessions,
+            reserved_interactive: config.runner.reserved_interactive(),
+            max_waiting: config.runner.max_waiting(),
             cache_key_buckets: config.runner.cache_key_buckets,
             retention: config.retention.retention(),
             ..RunnerConfig::default()
         },
         instrumentation,
         live_topics.clone(),
-    );
+    )
+    .with_live_stream(access.live_stream.clone());
     let loops = runner.spawn_loops();
     let shutdown = CancellationToken::new();
     let state = AppState {
-        store: Store::new(pool),
+        store: Store::new(pool).with_max_pending(access.max_pending),
         tokens: Arc::new(access.tokens),
         live: live_topics,
         shutdown: shutdown.clone(),
         instrumentation: http_instrumentation,
         live_meta: Arc::new(access.live_meta),
+        live_stream: Arc::new(access.live_stream),
+        metrics: runner.metrics(),
     };
 
     let stopping = runner.clone();
@@ -173,6 +179,8 @@ struct AgentAccess {
     tokens: HashMap<String, String>,
     homes: BTreeMap<String, HomeServer>,
     live_meta: HashSet<String>,
+    live_stream: HashSet<String>,
+    max_pending: HashMap<String, usize>,
 }
 
 fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
@@ -180,6 +188,8 @@ fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
         tokens: HashMap::new(),
         homes: BTreeMap::new(),
         live_meta: HashSet::new(),
+        live_stream: HashSet::new(),
+        max_pending: HashMap::new(),
     };
     for (name, agent) in &config.agents {
         let token = std::env::var(&agent.token_env)
@@ -197,6 +207,12 @@ fn agent_access(config: &ServerConfig) -> anyhow::Result<AgentAccess> {
         if agent.live_meta {
             access.live_meta.insert(name.clone());
         }
+        if agent.live_stream {
+            access.live_stream.insert(name.clone());
+        }
+        access
+            .max_pending
+            .insert(name.clone(), agent.max_pending_events);
         access.tokens.insert(name.clone(), token);
     }
     Ok(access)

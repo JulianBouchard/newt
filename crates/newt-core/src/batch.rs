@@ -33,7 +33,43 @@ pub(crate) struct Batch {
 
 const TOOL_CONCURRENCY: usize = 5;
 
-type Timed = (ToolOutput, u64);
+pub(crate) type Timed = (ToolOutput, u64);
+
+/// Outputs of calls that started while the model was still streaming, by call id.
+pub(crate) type Early = HashMap<String, Timed>;
+
+/// Starts a call before its model response has finished streaming, if running it
+/// early is safe: a workspace read, or a host tool whose retention is `ephemeral`.
+/// Writes and sends wait for the whole response, so a crash before the response is
+/// journaled can never repeat them.
+pub(crate) fn start_early<'a, M, H: ToolHost, S, J>(
+    call: ToolCall,
+    context: &'a TurnContext<'a>,
+    deps: &'a TurnDeps<'a, M, H, S, J>,
+) -> Option<futures_util::future::BoxFuture<'a, (String, Timed)>>
+where
+    M: Sync,
+    S: Sync,
+    J: Sync,
+{
+    if call.invalid_arguments().is_some() {
+        return None;
+    }
+    if crate::tools::is_workspace_tool(&call.name) {
+        return Some(Box::pin(async move {
+            let output = timed_read(context, &call).await;
+            (call.id, output)
+        }));
+    }
+    if context.retention.get(&call.name) != Some(&Retention::Ephemeral) {
+        return None;
+    }
+    let call_context = call_context(context, &call);
+    Some(Box::pin(async move {
+        let output = timed_call(deps.host, &call, &call_context, context, deps.sink).await;
+        (call.id, output)
+    }))
+}
 
 /// Which slots run where: done already, workspace reads, served skill loads
 /// (with the skill's index), concurrent host calls, and outward calls in order.
@@ -76,6 +112,7 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     context: &TurnContext<'_>,
     deps: &TurnDeps<'_, M, H, S, J>,
     replay: &Replay,
+    early: &mut Early,
 ) -> Batch {
     let expanded = expand(model_calls, context.retention);
     let tool_calls = expanded.calls.as_slice();
@@ -95,6 +132,8 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         outward,
     } = Lanes::of(plans);
 
+    let workspace_reads = take_early::<J>(tool_calls, workspace_reads, &mut slots, early, None);
+    let concurrent = take_early(tool_calls, concurrent, &mut slots, early, Some(journal));
     let contexts: Vec<CallContext> = concurrent
         .iter()
         .map(|&slot| call_context(context, &tool_calls[slot]))
@@ -168,6 +207,31 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     batch
 }
 
+/// Fills the slots of calls that already ran while the model was streaming and
+/// returns the ones still to run. Host calls are journaled as they would be after
+/// running; workspace reads are not journaled.
+fn take_early<J: Journal>(
+    tool_calls: &[ToolCall],
+    lane: Vec<usize>,
+    slots: &mut [Option<Timed>],
+    early: &mut Early,
+    journal: Option<&J>,
+) -> Vec<usize> {
+    lane.into_iter()
+        .filter(|&slot| {
+            let call = &tool_calls[slot];
+            let Some(output) = early.remove(&call.id) else {
+                return true;
+            };
+            if let Some(journal) = journal {
+                record_output(journal, call, &output.0);
+            }
+            slots[slot] = Some(output);
+            false
+        })
+        .collect()
+}
+
 fn finish_batch(
     expanded: &Expanded,
     outputs: Vec<(ToolOutput, u64)>,
@@ -188,6 +252,17 @@ fn finish_batch(
             )
     });
     for (call, (output, ms)) in tool_calls.iter().zip(outputs) {
+        sink.emit(Event::now(EventKind::ToolOutput {
+            session: context.ids.session.to_owned(),
+            turn: context.ids.turn.to_owned(),
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            output: crate::event::live_excerpt(
+                &output.content,
+                crate::event::TOOL_OUTPUT_LIVE_CHARS,
+            ),
+            is_error: output.is_error,
+        }));
         sink.emit(Event::now(EventKind::ToolFinished {
             session: context.ids.session.to_owned(),
             turn: context.ids.turn.to_owned(),

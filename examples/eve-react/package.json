@@ -1,0 +1,13 @@
+{
+  "name": "newt-eve-react",
+  "private": true,
+  "type": "module",
+  "description": "Serves the HTTP API that eve's useEveAgent hook talks to, backed by a newt agent's live feed",
+  "scripts": {
+    "test": "node --test translate.test.ts",
+    "check": "node check.mjs"
+  },
+  "dependencies": {
+    "eve": "0.83.3"
+  }
+}

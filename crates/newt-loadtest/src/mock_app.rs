@@ -24,7 +24,6 @@ use serde_json::{Value, json};
 use crate::profile::{Kind, Profile};
 use crate::sample::{Rng, Spread};
 
-const PREFIX_BYTES: usize = 30_000;
 const PAGE_BYTES: usize = 1_500;
 const PAGE_SCHEME: &str = "mock://";
 
@@ -33,6 +32,9 @@ pub struct MockApp {
     rng: Rng,
     speed: f64,
     render: Spread,
+    reply_ends_turn: bool,
+    intervals: crate::intervals::IntervalLog,
+    turns: std::sync::Mutex<std::collections::HashMap<String, usize>>,
     instructions: String,
     skills: Vec<(String, String)>,
     profile: Profile,
@@ -43,12 +45,20 @@ pub struct MockApp {
 }
 
 impl MockApp {
-    pub fn new(speed: f64, rng_seed: u64, render_ms: f64, profile: Profile) -> Arc<Self> {
+    pub fn new(
+        speed: f64,
+        rng_seed: u64,
+        render_ms: f64,
+        reply_ends_turn: bool,
+        prompt_bytes: usize,
+        profile: Profile,
+        intervals: crate::intervals::IntervalLog,
+    ) -> Arc<Self> {
         let rng = Rng::new(rng_seed);
         let mut instructions = String::from(
             "You are a customer assistant. Read the workspace, act with your tools, then end the turn.\n",
         );
-        while instructions.len() < PREFIX_BYTES {
+        while instructions.len() < prompt_bytes {
             instructions.push_str(&rng.words(12));
             instructions.push('\n');
         }
@@ -67,6 +77,9 @@ impl MockApp {
             rng,
             speed,
             render: Spread::new(render_ms, render_ms * 2.0),
+            reply_ends_turn,
+            intervals,
+            turns: std::sync::Mutex::new(std::collections::HashMap::new()),
             instructions,
             skills,
             profile,
@@ -87,8 +100,8 @@ impl MockApp {
     }
 
     /// The agent's settings, declared as the `newt` extension.
-    fn settings() -> JsonObject {
-        let Value::Object(settings) = json!({
+    fn settings(&self) -> JsonObject {
+        let Value::Object(mut settings) = json!({
             "model": "default",
             "first_call_effort": "low",
             "effort": "medium",
@@ -96,7 +109,23 @@ impl MockApp {
         }) else {
             unreachable!("a JSON object literal")
         };
+        if self.reply_ends_turn {
+            settings.insert("reply_ends_turn".to_owned(), json!(true));
+        }
         settings
+    }
+
+    /// The turn a session's page listing belongs to. newt lists pages once at the start of
+    /// each turn and the driver's session keys end in the session's index, so the nth
+    /// listing for a key is that session's turn n, tagged as the fake model tags its calls.
+    fn turn_of_listing(&self, session: Option<&str>) -> Option<u64> {
+        let session = session?;
+        let index = session.rsplit('-').next()?;
+        let mut turns = self.turns.lock().ok()?;
+        let count = turns.entry(session.to_owned()).or_insert(0);
+        let tag = crate::plan::seed_of(&format!("{index}-{count}"));
+        *count += 1;
+        Some(tag)
     }
 }
 
@@ -210,7 +239,7 @@ impl ServerHandler for Home {
         capabilities
             .extensions
             .get_or_insert_with(Default::default)
-            .insert("newt".to_owned(), MockApp::settings());
+            .insert("newt".to_owned(), self.0.settings());
         ServerConfig::new(capabilities).with_instructions(self.0.instructions.clone())
     }
 
@@ -233,10 +262,17 @@ impl ServerHandler for Home {
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
         self.0.resource_lists.fetch_add(1, Ordering::Relaxed);
-        tokio::time::sleep(self.0.render.millis(&self.0.rng, self.0.speed)).await;
+        let wait = self.0.render.millis(&self.0.rng, self.0.speed);
+        let session = context.meta.get("newt/session").and_then(Value::as_str);
+        if let Some(tag) = self.0.turn_of_listing(session) {
+            self.0
+                .intervals
+                .record(tag, "render", std::time::SystemTime::now(), wait);
+        }
+        tokio::time::sleep(wait).await;
         let resources = self
             .0
             .profile
@@ -302,8 +338,26 @@ impl ServerHandler for Home {
             let Some(profile) = app.profile.find(&request.name).cloned() else {
                 return Ok(CallToolResult::error(vec![ContentBlock::text("unknown tool")]).into());
             };
-            tokio::time::sleep(profile.latency.millis(&app.rng, app.speed)).await;
-            if app.rng.chance(profile.error_rate) {
+            let rng = Rng::new(crate::plan::seed_of(&format!(
+                "{}{}",
+                request.name,
+                request
+                    .arguments
+                    .as_ref()
+                    .map(|args| Value::Object(args.clone()))
+                    .unwrap_or_default()
+            )));
+            let replayed = crate::intervals::latency_of(request.arguments.as_ref());
+            let latency = replayed.map_or_else(
+                || profile.latency.millis(&rng, app.speed),
+                |recorded| recorded.div_f64(app.speed.max(0.001)),
+            );
+            if let Some(turn) = crate::intervals::turn_of(request.arguments.as_ref()) {
+                app.intervals
+                    .record(turn, "tool", std::time::SystemTime::now(), latency);
+            }
+            tokio::time::sleep(latency).await;
+            if replayed.is_none() && rng.chance(profile.error_rate) {
                 return Ok(CallToolResult::error(vec![ContentBlock::text("mock refusal")]).into());
             }
             if profile.kind == Kind::Send {

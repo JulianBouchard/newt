@@ -105,6 +105,7 @@ impl Backend for Provider {
             max_model_calls: 6,
             max_turn_tokens: None,
             recite: false,
+            reply_ends_turn: false,
             history_budget: 60_000,
             state: SessionState::starting_from(request.state.clone()),
             choice,

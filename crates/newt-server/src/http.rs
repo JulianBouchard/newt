@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -18,17 +18,25 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
+use self::error::{ApiError, json_errors};
+use crate::cancel::CancelRequest;
+use crate::counters::Counter;
 use crate::live::{Channel, Topics, Watch};
+use crate::metrics::Metrics;
 use crate::retention::Deleted;
-use crate::store::{InboundEvent, LiveEvent, Store, live_topic};
+use crate::store::{AcceptError, Accepted, InboundEvent, LiveEvent, Store, live_topic};
 
+mod chat;
+mod error;
 mod fork;
+mod ui_stream;
 
 const EVENT_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
 const LIVE_PAGE: i64 = 100;
 const LIVE_POLL: Duration = Duration::from_secs(5);
 const MAX_NAME_BYTES: usize = 200;
+const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -39,6 +47,10 @@ pub struct AppState {
     pub instrumentation: Option<Arc<dyn EventSink>>,
     /// Agents whose live `received` frames carry the event's `meta`.
     pub live_meta: Arc<HashSet<String>>,
+    /// Agents that stream text and tool input on the live feed, which `/chat` needs.
+    pub live_stream: Arc<HashSet<String>>,
+    /// The runner's load, reported by `/healthz`.
+    pub metrics: Arc<Metrics>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -54,11 +66,17 @@ impl std::fmt::Debug for AppState {
 pub fn router(state: AppState) -> axum::Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics))
         .route(
             "/v1/agents/{agent}/sessions/{key}",
             get(session_status).delete(delete_session),
         )
         .route("/v1/agents/{agent}/sessions/{key}/events", post(post_event))
+        .route(
+            "/v1/agents/{agent}/sessions/{key}/cancel",
+            post(cancel_turn),
+        )
+        .route("/v1/agents/{agent}/sessions/{key}/chat", post(chat::chat))
         .route("/v1/agents/{agent}/sessions/{key}/live", get(live))
         .route(
             "/v1/agents/{agent}/sessions/{key}/history",
@@ -66,38 +84,8 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route("/v1/agents/{agent}/sessions/{key}/fork", post(fork::fork))
         .layer(DefaultBodyLimit::max(EVENT_BODY_LIMIT))
+        .layer(axum::middleware::from_fn(json_errors))
         .with_state(state)
-}
-
-#[derive(Debug)]
-enum ApiError {
-    Unauthorized,
-    NotFound,
-    Invalid(&'static str),
-    Conflict(&'static str),
-    Internal(sqlx::Error),
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "missing or wrong token"),
-            Self::NotFound => (StatusCode::NOT_FOUND, "no such session"),
-            Self::Invalid(message) => (StatusCode::BAD_REQUEST, message),
-            Self::Conflict(message) => (StatusCode::CONFLICT, message),
-            Self::Internal(error) => {
-                tracing::error!(%error, "request failed");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-            }
-        };
-        (status, Json(json!({ "error": message }))).into_response()
-    }
-}
-
-impl From<sqlx::Error> for ApiError {
-    fn from(error: sqlx::Error) -> Self {
-        Self::Internal(error)
-    }
 }
 
 fn same_token(expected: &str, presented: &str) -> bool {
@@ -134,14 +122,42 @@ fn authorize(
     Ok(())
 }
 
-async fn healthz(State(state): State<AppState>) -> StatusCode {
-    match sqlx::query("select 1").execute(state.store.pool()).await {
-        Ok(_) => StatusCode::OK,
+async fn healthz(State(state): State<AppState>) -> Response {
+    let ready = match sqlx::query("select 1").execute(state.store.pool()).await {
+        Ok(_) => true,
         Err(error) => {
             tracing::error!(%error, "health check could not reach postgres");
-            StatusCode::SERVICE_UNAVAILABLE
+            false
         }
+    };
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let load = state.metrics.load();
+    let body = json!({
+        "ready": ready,
+        "running": load.running,
+        "waiting": load.waiting,
+        "max_sessions": load.max_sessions,
+        "oldest_wait_ms": load.oldest_wait_ms,
+    });
+    let mut response = (status, Json(body)).into_response();
+    if !ready {
+        response
+            .headers_mut()
+            .insert("retry-after", HeaderValue::from_static("2"));
     }
+    response
+}
+
+async fn metrics(State(state): State<AppState>) -> Response {
+    (
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        state.metrics.render(),
+    )
+        .into_response()
 }
 
 async fn post_event(
@@ -153,6 +169,16 @@ async fn post_event(
     authorize(&state, &agent, &key, &headers)?;
     let event: InboundEvent =
         serde_json::from_slice(&body).map_err(|_| ApiError::Invalid("invalid event body"))?;
+    let accepted = accept_event(&state, &agent, &key, &event).await?;
+    Ok((StatusCode::ACCEPTED, Json(accepted)).into_response())
+}
+
+async fn accept_event(
+    state: &AppState,
+    agent: &str,
+    key: &str,
+    event: &InboundEvent,
+) -> Result<Accepted, ApiError> {
     if event.id.trim().is_empty() || event.id.len() > MAX_NAME_BYTES {
         return Err(ApiError::Invalid("event id must be 1 to 200 bytes"));
     }
@@ -162,8 +188,26 @@ async fn post_event(
     let started = std::time::Instant::now();
     let accepted = state
         .store
-        .accept_event(&agent, &key, &event, state.live_meta.contains(&agent))
-        .await?;
+        .accept_event(
+            agent,
+            key,
+            event,
+            crate::store::LiveDetail {
+                meta: state.live_meta.contains(agent),
+                text: state.live_stream.contains(agent),
+            },
+        )
+        .await
+        .inspect_err(|error| match error {
+            AcceptError::Full { .. } => state.metrics.count(Counter::EventsLimited),
+            AcceptError::Conflict => state.metrics.count(Counter::EventsConflicted),
+            AcceptError::Database(_) => {}
+        })?;
+    state.metrics.count(if accepted.duplicate {
+        Counter::EventsDuplicate
+    } else {
+        Counter::EventsAccepted
+    });
     if let Some(sink) = &state.instrumentation
         && !accepted.duplicate
     {
@@ -174,7 +218,39 @@ async fn post_event(
             pool_wait_ms: accepted.pool_wait_ms,
         }));
     }
-    Ok((StatusCode::ACCEPTED, Json(accepted)).into_response())
+    Ok(accepted)
+}
+
+async fn cancel_turn(
+    State(state): State<AppState>,
+    Path((agent, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    authorize(&state, &agent, &key, &headers)?;
+    let request: CancelBody = if body.is_empty() {
+        CancelBody::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|_| ApiError::Invalid("the body must be {} or {\"turn\": \"<turn id>\"}"))?
+    };
+    match state
+        .store
+        .request_cancel(&agent, &key, request.turn.as_deref())
+        .await?
+    {
+        CancelRequest::SessionNotFound => Err(ApiError::SessionNotFound),
+        CancelRequest::NotRunning => Err(ApiError::TurnNotRunning),
+        CancelRequest::Requested(turn) => {
+            Ok((StatusCode::ACCEPTED, Json(json!({ "turn": turn }))).into_response())
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelBody {
+    turn: Option<String>,
 }
 
 async fn session_status(
@@ -200,9 +276,10 @@ async fn delete_session(
     match state.store.delete_session(&agent, &key).await? {
         Deleted::Deleted => Ok(StatusCode::NO_CONTENT),
         Deleted::NotFound => Err(ApiError::NotFound),
-        Deleted::Running => Err(ApiError::Conflict(
-            "the session is running a turn; try again when it is idle",
-        )),
+        Deleted::Running => Err(ApiError::Conflict {
+            code: "session_running",
+            message: "the session is running a turn; try again when it is idle",
+        }),
     }
 }
 
@@ -222,16 +299,20 @@ async fn live(
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse().ok());
+    let cursor = query.cursor.max(resume_from).unwrap_or(0);
+    let gap = state.store.live_gap(&agent, &key, cursor).await?;
     let feed = LiveFeed {
         receiver: state.live.watch(Channel::Live, live_topic(&agent, &key)),
         store: state.store,
         agent,
         key,
-        cursor: query.cursor.max(resume_from).unwrap_or(0),
+        cursor,
         buffer: VecDeque::new(),
         shutdown: state.shutdown,
+        gap,
     };
-    Ok(Sse::new(stream::unfold(feed, LiveFeed::next)).keep_alive(KeepAlive::default()))
+    Ok(Sse::new(stream::unfold(feed, LiveFeed::next))
+        .keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
 }
 
 struct LiveFeed {
@@ -242,20 +323,31 @@ struct LiveFeed {
     receiver: Watch,
     buffer: VecDeque<LiveEvent>,
     shutdown: CancellationToken,
+    gap: Option<(i64, i64)>,
 }
 
 impl LiveFeed {
     async fn next(mut self) -> Option<(Result<SseEvent, Infallible>, Self)> {
+        if let Some((from, to)) = self.gap.take() {
+            let frame = SseEvent::default()
+                .data(json!({ "type": "gap", "from": from, "to": to }).to_string());
+            return Some((Ok(frame), self));
+        }
+        let event = self.next_event().await?;
+        let sse = SseEvent::default()
+            .id(event.seq.to_string())
+            .data(event.event.to_string());
+        Some((Ok(sse), self))
+    }
+
+    async fn next_event(&mut self) -> Option<LiveEvent> {
         loop {
             if self.shutdown.is_cancelled() {
                 return None;
             }
             if let Some(event) = self.buffer.pop_front() {
                 self.cursor = event.seq;
-                let sse = SseEvent::default()
-                    .id(event.seq.to_string())
-                    .data(event.event.to_string());
-                return Some((Ok(sse), self));
+                return Some(event);
             }
             match self
                 .store

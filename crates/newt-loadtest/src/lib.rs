@@ -5,11 +5,15 @@
 mod args;
 mod audit;
 pub mod cache;
+pub mod decompose;
 pub mod driver;
+pub mod eve;
 pub mod fake_model;
+pub mod intervals;
 pub mod mock_app;
-mod plan;
+pub(crate) mod plan;
 pub mod profile;
+pub mod replay;
 pub mod report;
 pub mod sample;
 mod stream;

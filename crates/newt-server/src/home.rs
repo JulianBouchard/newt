@@ -36,6 +36,10 @@ impl std::fmt::Debug for HomeServer {
 }
 
 /// The agent's settings: the `newt` object in the home's declared extensions.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a field of the declared settings object, decoded as it is written"
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -52,6 +56,9 @@ pub struct Settings {
     pub max_turn_tokens: Option<u64>,
     #[serde(default)]
     pub recite: bool,
+    /// A reply with no tool calls ends the turn, without a separate `end_turn` call.
+    #[serde(default)]
+    pub reply_ends_turn: bool,
     #[serde(default = "default_history_budget")]
     pub history_budget: u32,
     /// Ask the home with `newt/turn` before each turn.
@@ -364,6 +371,7 @@ impl HomeBackend {
             max_model_calls: settings.max_model_calls,
             max_turn_tokens: settings.max_turn_tokens,
             recite: settings.recite,
+            reply_ends_turn: settings.reply_ends_turn,
             history_budget: settings.history_budget,
             choice: turn.choice(settings),
             turn_end: settings.turn_end,

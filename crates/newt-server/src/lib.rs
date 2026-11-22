@@ -8,9 +8,11 @@
 pub mod backend;
 pub mod cache_card;
 pub mod cache_keys;
+pub mod cancel;
 pub mod checkpoints;
 mod compaction;
 pub mod config;
+pub mod counters;
 pub mod db;
 #[cfg(feature = "embedded-postgres")]
 pub mod embedded;
@@ -21,6 +23,7 @@ pub mod journal;
 pub mod journal_store;
 pub mod live;
 pub mod mcp;
+pub mod metrics;
 pub mod models;
 pub mod profile;
 pub mod replay;
@@ -30,5 +33,6 @@ pub mod sessions;
 pub mod sinks;
 pub mod steering;
 pub mod store;
+pub mod testing;
 mod turn_runner;
 pub mod turn_start;

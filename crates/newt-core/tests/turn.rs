@@ -186,9 +186,23 @@ struct Run {
 }
 
 async fn run(script: Vec<Message>, max_model_calls: u32, tools: &[ToolDef]) -> Run {
-    run_with(script, max_model_calls, tools, None, None, None, true).await
+    run_with(
+        script,
+        max_model_calls,
+        tools,
+        None,
+        None,
+        None,
+        true,
+        false,
+    )
+    .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each case varies a different turn input; a builder would hide which"
+)]
 async fn run_with(
     script: Vec<Message>,
     max_model_calls: u32,
@@ -197,6 +211,7 @@ async fn run_with(
     compaction: Option<&[String]>,
     max_turn_tokens: Option<u64>,
     recite: bool,
+    reply_ends_turn: bool,
 ) -> Run {
     let model = ScriptedModel::new(script);
     let host = RecordingHost::default();
@@ -236,6 +251,7 @@ async fn run_with(
             max_model_calls,
             max_turn_tokens,
             recite,
+            reply_ends_turn,
             lane: Lane::Interactive,
             reset: false,
             compaction: compaction.map(|open_commitments| Compaction {
@@ -410,6 +426,39 @@ async fn the_reply_is_the_text_of_the_message_that_ends_the_turn() {
         let outcome = run(script, 8, &external_tools()).await.outcome.unwrap();
         assert_eq!(outcome.reply.as_deref(), expected, "{case}");
     }
+}
+
+#[tokio::test]
+async fn with_reply_ends_turn_a_plain_answer_ends_the_turn_in_one_call() {
+    let script = vec![assistant(vec![Part::text(" All set. ")])];
+    let run = run_with(script, 8, &external_tools(), None, None, None, false, true).await;
+    let outcome = run.outcome.unwrap();
+
+    assert_eq!(outcome.reply.as_deref(), Some("All set."));
+    assert_eq!(run.model.seen.lock().unwrap().len(), 1);
+    assert_eq!(
+        outcome.committed,
+        vec![
+            Message::user_text("Only remote roles please."),
+            assistant(vec![Part::text(" All set. ")]),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn with_reply_ends_turn_tool_calls_still_continue_the_turn() {
+    let script = vec![
+        assistant(vec![
+            Part::text("Saving that."),
+            call("n1", "save_note", json!({ "text": "remote only" })),
+        ]),
+        assistant(vec![Part::text("Done.")]),
+    ];
+    let run = run_with(script, 8, &external_tools(), None, None, None, false, true).await;
+    let outcome = run.outcome.unwrap();
+
+    assert_eq!(outcome.reply.as_deref(), Some("Done."));
+    assert_eq!(run.model.seen.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -597,6 +646,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             max_model_calls: 1,
             max_turn_tokens: None,
             recite: true,
+            reply_ends_turn: false,
             lane: Lane::Interactive,
             reset: false,
             compaction: None,
@@ -861,6 +911,7 @@ async fn turn_context_reaches_the_model_first_and_is_never_committed() {
         None,
         None,
         true,
+        false,
     )
     .await;
     let outcome = run.outcome.unwrap();
@@ -909,7 +960,17 @@ async fn compaction_flushes_refuses_sends_and_ends_on_a_checkpoint_that_keeps_co
         assistant(vec![checkpoint(json!([]))]),
         assistant(vec![checkpoint(json!(["Send Maria the Acme brief"]))]),
     ];
-    let run = run_with(script, 6, &external_tools(), None, Some(&open), None, true).await;
+    let run = run_with(
+        script,
+        6,
+        &external_tools(),
+        None,
+        Some(&open),
+        None,
+        true,
+        false,
+    )
+    .await;
     assert!(
         run.host.calls.lock().unwrap().is_empty(),
         "nothing is sent while compacting"
@@ -978,6 +1039,7 @@ async fn a_turn_past_its_token_budget_is_told_to_end_then_fails_if_it_does_not()
         None,
         Some(0),
         true,
+        false,
     )
     .await;
     assert!(
@@ -1004,7 +1066,7 @@ async fn a_turn_past_its_token_budget_is_told_to_end_then_fails_if_it_does_not()
         "end_turn",
         json!({ "nothing_new": "out of budget" }),
     )])];
-    let run = run_with(ends, 6, &external_tools(), None, None, Some(0), true).await;
+    let run = run_with(ends, 6, &external_tools(), None, None, Some(0), true, false).await;
     let outcome = run.outcome.unwrap();
     assert!(outcome.committed.iter().all(|message| {
         !note_texts(std::slice::from_ref(message))
@@ -1062,7 +1124,7 @@ async fn a_long_turn_without_recitation_gets_no_goal_note() {
         "end_turn",
         json!({ "nothing_new": "just reading" }),
     )]));
-    let run = run_with(script, 8, &external_tools(), None, None, None, false).await;
+    let run = run_with(script, 8, &external_tools(), None, None, None, false, false).await;
     assert!(run.outcome.is_ok());
     let seen = run.model.seen.lock().unwrap();
     assert!(seen.iter().all(|request| {

@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use crate::audit::Audit;
 use crate::cache::{CacheRules, CacheScope, Lookup, PrefixCache, Router, prompt_bytes};
+pub use crate::plan::Finish;
 use crate::plan::{Call, Turn, finish, pick_tools, read_turn, seed_of};
 use crate::profile::{ModelTiming, Profile};
 use crate::sample::Rng;
@@ -63,6 +64,10 @@ pub struct FakeModel {
     audit: Audit,
     dump_dir: Option<std::path::PathBuf>,
     turn_marker: Option<String>,
+    finish: Finish,
+    replay: Option<crate::replay::Replay>,
+    replay_progress: std::sync::Mutex<HashMap<u64, usize>>,
+    intervals: crate::intervals::IntervalLog,
     profile: Profile,
     pub stats: Stats,
 }
@@ -77,10 +82,15 @@ pub struct FakeOptions {
     pub turn_marker: Option<String>,
     pub decision_log: Option<std::path::PathBuf>,
     pub cache_log: Option<std::path::PathBuf>,
+    pub finish: Finish,
+    pub interval_log: Option<std::path::PathBuf>,
+    pub replay: Option<std::path::PathBuf>,
     pub profile: Profile,
 }
 
 const DUMP_LIMIT: u64 = 400;
+/// What the load driver's messages start with, so a harness reminder mid-turn is never read as a new turn.
+const DRIVER_MARKER: &str = "load message";
 
 impl FakeModel {
     pub fn new(timing: ModelTiming, options: FakeOptions) -> std::io::Result<Arc<Self>> {
@@ -93,8 +103,15 @@ impl FakeModel {
             turn_marker,
             decision_log,
             cache_log,
+            finish,
+            interval_log,
+            replay,
             profile,
         } = options;
+        let replay = replay
+            .map(|path| crate::replay::Replay::load(&path.to_string_lossy()))
+            .transpose()
+            .map_err(std::io::Error::other)?;
         let machines = match cache_scope {
             CacheScope::Routed { machines } => machines,
             CacheScope::Key | CacheScope::Prefix => 1,
@@ -113,7 +130,11 @@ impl FakeModel {
             router: Router::new(machines),
             audit: Audit::new(decision_log.as_deref(), cache_log.as_deref())?,
             dump_dir,
-            turn_marker,
+            turn_marker: turn_marker.or_else(|| Some(DRIVER_MARKER.to_owned())),
+            finish,
+            replay,
+            replay_progress: std::sync::Mutex::new(HashMap::new()),
+            intervals: crate::intervals::IntervalLog::open(interval_log.as_deref())?,
             profile,
             stats: Stats::default(),
         }))
@@ -226,6 +247,10 @@ fn look_up(model: &FakeModel, body: &Value, prompt: &[u8]) -> Lookup {
     lookup
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one handler walks the whole scripted reply"
+)]
 async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -> Response {
     model.stats.calls.fetch_add(1, Ordering::Relaxed);
     let timing = model.timing;
@@ -239,36 +264,69 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
             / 1000.0
             / model.speed.max(0.001),
     );
-    tokio::time::sleep(timing.headers_ms.millis(&model.rng, model.speed) + prefill).await;
-    if model.rng.chance(model.failure_rate) {
-        model.stats.failures.fetch_add(1, Ordering::Relaxed);
-        return (StatusCode::SERVICE_UNAVAILABLE, "fake overload").into_response();
-    }
     let input = body
         .get("input")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let tools = tool_schemas(&body);
-    model.audit.observe_outputs(&input);
     let turn = read_turn(&input, model.turn_marker.as_deref());
-    let target = timing
-        .tool_calls_per_turn
-        .count(&Rng::new(seed_of(&turn.last_user)));
-    let calls = if turn.compacting || turn.done_calls >= target {
-        finish(&tools, turn.compacting)
+    let rng = call_rng(&turn.last_user, turn.done_calls);
+    let arrived = std::time::SystemTime::now();
+    let tag = crate::intervals::turn_key(&turn.last_user);
+    let tools = tool_schemas(&body);
+    let replayed = replay_step(&model, tag, &turn, &tools, &rng);
+    let wait = match &replayed {
+        Some(step) => {
+            Duration::from_secs_f64(step.first_token_ms / 1000.0 / model.speed.max(0.001))
+        }
+        None => timing.headers_ms.millis(&rng, model.speed) + prefill,
+    };
+    tokio::time::sleep(wait).await;
+    if model.rng.chance(model.failure_rate) {
+        if let Some(tag) = tag {
+            model.intervals.record(tag, "model", arrived, wait);
+        }
+        model.stats.failures.fetch_add(1, Ordering::Relaxed);
+        return (StatusCode::SERVICE_UNAVAILABLE, "fake overload").into_response();
+    }
+    model.audit.observe_outputs(&input);
+    let in_replay = model.replay.is_some();
+    let target = match &replayed {
+        Some(step) => turn.done_calls + step.calls.len(),
+        None if in_replay => turn.done_calls,
+        None => timing
+            .tool_calls_per_turn
+            .count(&Rng::new(seed_of(&turn.last_user))),
+    };
+    let stream_ms = replayed.as_ref().map(|step| step.stream_ms);
+    let schedule = replayed.as_ref().map(|step| crate::stream::Schedule {
+        call_ready_ms: step
+            .ready_ms
+            .iter()
+            .map(|ready| (ready - step.first_token_ms).max(0.0))
+            .collect(),
+        end_ms: step.stream_ms,
+    });
+    let (mut calls, reply) = if let Some(step) = replayed.filter(|step| !step.reply) {
+        (step.calls, false)
+    } else if turn.compacting || turn.done_calls >= target {
+        let ending = finish(&tools, &turn, model.finish);
+        (ending.calls, ending.reply)
     } else {
         let step = timing
             .tool_calls_per_step
-            .count(&model.rng)
+            .count(&rng)
             .min(target - turn.done_calls);
-        pick_tools(&model.profile, &model.rng, &tools, step.max(1))
+        (pick_tools(&model.profile, &rng, &tools, step.max(1)), false)
     };
     audit_reply(&model, &body, &tools, &turn, target, &calls);
+    if let Some(tag) = tag {
+        for call in &mut calls {
+            crate::intervals::tag_arguments(&mut call.arguments, tag);
+        }
+    }
     let (input_tokens, cached) = (lookup.input_tokens, lookup.cached_tokens);
-    let text = calls
-        .is_empty()
-        .then(|| model.rng.words(timing.text_tokens.count(&model.rng)));
+    let text = reply.then(|| rng.words(timing.text_tokens.count(&rng)));
     let calls = calls_json(&model, &calls);
     model.audit.emitted(&calls, turn.done_calls, target);
     let events = crate::stream::response_events(
@@ -279,6 +337,12 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
             text,
             input_tokens,
             cached,
+            tail_tokens: if in_replay {
+                0
+            } else {
+                tail_tokens(&timing, &rng)
+            },
+            schedule,
         },
     );
     model
@@ -293,9 +357,23 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         .stats
         .tool_calls
         .fetch_add(u64::try_from(calls.len()).unwrap_or(0), Ordering::Relaxed);
-    let thinking = timing.thinking_ms.millis(&model.rng, model.speed);
-    let per_token =
-        Duration::from_secs_f64(1.0 / timing.tokens_per_second / model.speed.max(0.001));
+    let (thinking, per_token) = match stream_ms {
+        Some(_) => (
+            Duration::ZERO,
+            Duration::from_secs_f64(1e-6 / model.speed.max(0.001)),
+        ),
+        None => (
+            timing.thinking_ms.millis(&rng, model.speed),
+            Duration::from_secs_f64(1.0 / timing.tokens_per_second / model.speed.max(0.001)),
+        ),
+    };
+    if let Some(tag) = tag {
+        let tokens: usize = events.iter().map(|(tokens, _)| *tokens).sum();
+        let streaming = per_token * u32::try_from(tokens).unwrap_or(u32::MAX);
+        model
+            .intervals
+            .record(tag, "model", arrived, wait + thinking + streaming);
+    }
     let paced = stream::unfold(
         (events.into_iter(), true),
         move |(mut rest, first)| async move {
@@ -310,6 +388,42 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         },
     );
     Sse::new(paced).into_response()
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a sampled wait of a few hundred milliseconds as a small token count"
+)]
+fn tail_tokens(timing: &ModelTiming, rng: &Rng) -> usize {
+    let tail_ms = rng.lognormal(timing.completion_tail_ms.p50, timing.completion_tail_ms.p90);
+    (tail_ms / 1000.0 * timing.tokens_per_second)
+        .round()
+        .max(0.0) as usize
+}
+
+fn replay_step(
+    model: &FakeModel,
+    tag: Option<u64>,
+    turn: &Turn,
+    tools: &HashMap<String, Value>,
+    rng: &Rng,
+) -> Option<crate::replay::Planned> {
+    let replay = model.replay.as_ref()?;
+    if turn.replied || turn.compacting {
+        return None;
+    }
+    let key = tag?;
+    let mut progress = model.replay_progress.lock().ok()?;
+    let index = progress.entry(key).or_insert(0);
+    let planned = replay.plan(key, *index, tools, &model.profile, rng)?;
+    *index += 1;
+    Some(planned)
+}
+
+fn call_rng(last_user: &str, done_calls: usize) -> Rng {
+    let step = u64::try_from(done_calls).unwrap_or(u64::MAX);
+    Rng::new(seed_of(last_user) ^ step.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
 fn audit_reply(

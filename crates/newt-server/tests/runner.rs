@@ -83,6 +83,8 @@ fn fast() -> RunnerConfig {
         backoff_base: Duration::from_millis(10),
         max_attempts: 3,
         max_sessions: 8,
+        reserved_interactive: 2,
+        max_waiting: 64,
         cache_key_buckets: newt_server::cache_keys::Buckets::Fixed(1),
         retention: newt_server::retention::Retention::default(),
     }
@@ -171,6 +173,8 @@ async fn a_posted_event_runs_a_turn_and_commits_it(pool: PgPool) {
         shutdown: CancellationToken::new(),
         instrumentation: None,
         live_meta: Arc::default(),
+        live_stream: Arc::default(),
+        metrics: Arc::default(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

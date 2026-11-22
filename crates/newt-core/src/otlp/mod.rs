@@ -125,6 +125,9 @@ impl OtlpSink {
 
 impl EventSink for OtlpSink {
     fn emit(&self, event: Event) {
+        if event.kind.is_live_only() {
+            return;
+        }
         if self.sender.try_send(event).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }

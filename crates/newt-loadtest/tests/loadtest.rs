@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use newt_loadtest::driver::{LoadPlan, NewtTarget, run};
+use newt_loadtest::driver::{LoadPlan, NewtTarget, Target, run};
 use newt_loadtest::fake_model::{self, FakeModel, FakeOptions};
 use newt_loadtest::mock_app::{self, MockApp};
 use newt_loadtest::profile::{Profile, REFERENCE_TIMING};
@@ -43,7 +43,15 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let app_url = format!("http://{}", listener.local_addr().unwrap());
-    let app = MockApp::new(SPEED, 12, 0.0, Profile::default());
+    let app = MockApp::new(
+        SPEED,
+        12,
+        0.0,
+        false,
+        30_000,
+        Profile::default(),
+        newt_loadtest::intervals::IntervalLog::default(),
+    );
     tokio::spawn({
         let router = mock_app::router(Arc::clone(&app));
         async move { axum::serve(listener, router).await.unwrap() }
@@ -92,15 +100,17 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
         shutdown: CancellationToken::new(),
         instrumentation: None,
         live_meta: Arc::default(),
+        live_stream: Arc::default(),
+        metrics: Arc::default(),
     }))
     .await;
 
     let (samples, _) = run(
-        NewtTarget {
+        Target::Newt(NewtTarget {
             base: newt_url,
             agent: "assistant".into(),
             token: TOKEN.into(),
-        },
+        }),
         LoadPlan {
             sessions: 6,
             turns: 2,
@@ -109,6 +119,7 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
             think_max: Duration::ZERO,
             ramp: Duration::ZERO,
             timeout: Duration::from_secs(60),
+            speed: 1.0,
         },
         "t",
     )

@@ -286,10 +286,13 @@ impl super::Decoder for Decoder {
             }
             Event::ContentBlockDelta { index, delta } => match (self.block(index)?, delta) {
                 (Block::Text(text), Delta::Text { text: more }) => {
-                    emit.output();
+                    emit.text(&more);
                     text.push_str(&more);
                 }
-                (Block::Tool { arguments, .. }, Delta::InputJson { partial_json }) => {
+                (Block::Tool { id, arguments, .. }, Delta::InputJson { partial_json }) => {
+                    if !partial_json.is_empty() {
+                        emit.tool_input_delta(id, &partial_json);
+                    }
                     arguments.push_str(&partial_json);
                 }
                 (Block::Thinking { thinking, .. }, Delta::Thinking { thinking: more }) => {

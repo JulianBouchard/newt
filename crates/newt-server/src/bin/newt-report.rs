@@ -137,6 +137,10 @@ fn apply(turns: &mut Vec<TurnReport>, event: Event) {
     match event.kind {
         EventKind::ServerReady { .. }
         | EventKind::ToolProgress { .. }
+        | EventKind::TextDelta { .. }
+        | EventKind::ToolInputDelta { .. }
+        | EventKind::ToolInput { .. }
+        | EventKind::ToolOutput { .. }
         | EventKind::TurnSteered { .. }
         | EventKind::ModelCallReplayed { .. }
         | EventKind::EventAccepted { .. }

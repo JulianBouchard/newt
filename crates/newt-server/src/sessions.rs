@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use newt_core::message::Message;
+use newt_core::prompt::Lane;
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::{PgConnection, PgPool};
@@ -123,6 +124,28 @@ impl Store {
         })
     }
 
+    /// The lane a woken session's turn will run in: interactive when any of
+    /// its unconsumed events is, or when it has none.
+    pub fn pending_lane(&self, agent: &str, key: &str) -> Owned<Lane> {
+        let pool = self.pool().clone();
+        let (agent, key) = (agent.to_owned(), key.to_owned());
+        Box::pin(async move {
+            let interactive: Option<bool> = sqlx::query_scalar(
+                "select bool_or(priority = 0) from inbox \
+                 where agent = $1 and key = $2 and consumed_at is null",
+            )
+            .bind(&agent)
+            .bind(&key)
+            .fetch_one(&pool)
+            .await?;
+            Ok(if interactive == Some(false) {
+                Lane::Background
+            } else {
+                Lane::Interactive
+            })
+        })
+    }
+
     pub fn release(&self, lease: &Lease) -> Owned<()> {
         let pool = self.pool().clone();
         let lease = lease.clone();
@@ -205,7 +228,8 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
             sqlx::query(
-                "update sessions set failed_attempts = 0, retry_after = null \
+                "update sessions set failed_attempts = 0, retry_after = null, \
+                   cancel_turn = null, cancel_requested_at = null \
                  where agent = $1 and key = $2",
             )
             .bind(&lease.agent)
@@ -217,28 +241,34 @@ impl Store {
         })
     }
 
+    /// Renews the leases of the running sessions and returns the ones with a
+    /// cancel requested: their agent, key and the turn it names.
     pub fn heartbeat(
         &self,
         owner: &str,
         ttl: Duration,
         running: Vec<(String, String)>,
-    ) -> Owned<u64> {
+    ) -> Owned<Vec<(String, String, String)>> {
         let pool = self.pool().clone();
         let owner = owner.to_owned();
         let (agents, keys): (Vec<String>, Vec<String>) = running.into_iter().unzip();
         Box::pin(async move {
-            let result = sqlx::query(
+            let renewed: Vec<(String, String, Option<String>)> = sqlx::query_as(
                 "update sessions set lease_expires_at = now() + make_interval(secs => $2) \
                  where lease_owner = $1 \
-                   and (agent, key) in (select * from unnest($3::text[], $4::text[]))",
+                   and (agent, key) in (select * from unnest($3::text[], $4::text[])) \
+                 returning agent, key, cancel_turn",
             )
             .bind(&owner)
             .bind(seconds(ttl))
             .bind(&agents)
             .bind(&keys)
-            .execute(&pool)
+            .fetch_all(&pool)
             .await?;
-            Ok(result.rows_affected())
+            Ok(renewed
+                .into_iter()
+                .filter_map(|(agent, key, turn)| turn.map(|turn| (agent, key, turn)))
+                .collect())
         })
     }
 
@@ -330,7 +360,8 @@ pub(crate) async fn insert_history(
 const COMMIT_TURN: &str = "with bumped as ( \
        update sessions set next_history_seq = next_history_seq + $8, failed_attempts = 0, \
          retry_after = null, lease_expires_at = now() + make_interval(secs => $10), \
-         provider_state = coalesce($11, provider_state) \
+         provider_state = coalesce($11, provider_state), \
+         cancel_turn = null, cancel_requested_at = null \
        where agent = $1 and key = $2 and lease_owner = $3 and lease_epoch = $4 \
        returning next_history_seq - $8 as first_seq), \
      added as ( \

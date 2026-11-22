@@ -385,6 +385,7 @@ async fn write_then_read_with(
             max_model_calls: 6,
             max_turn_tokens: None,
             recite: true,
+            reply_ends_turn: false,
             lane: Lane::Interactive,
             reset: false,
             compaction: None,

@@ -20,7 +20,14 @@ pub fn arguments_for(
                     &profile.file_path_prefix,
                 )
             } else {
-                json!({ "name": skill })
+                let offered = property(schema, "name")
+                    .and_then(|name| name.get("enum"))
+                    .and_then(Value::as_array)
+                    .filter(|names| !names.is_empty());
+                offered.map_or_else(
+                    || json!({ "name": skill }),
+                    |names| json!({ "name": names[rng.below(names.len())] }),
+                )
             }
         }
         ("read_file", _) => read_one(

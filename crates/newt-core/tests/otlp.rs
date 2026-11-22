@@ -303,6 +303,7 @@ async fn without_content_capture_errors_and_session_keys_stay_private() {
         turn: "t1".into(),
         error: "provider said: my phone is 555 0100".into(),
         committed_messages: 0,
+        reason: None,
     }));
     let exports = export_events(Profile::Langfuse, false, events).await;
     let body = exports[0].1.to_string();

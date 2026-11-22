@@ -1,3 +1,6 @@
+use std::panic::AssertUnwindSafe;
+
+use futures_util::FutureExt;
 use newt_core::event::EventKind;
 use newt_core::journal::{Journal, JournalEntry, TurnChoice};
 use newt_core::message::Message;
@@ -8,6 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::backend::{Backend, Prepared, SessionState, TurnEvent, TurnRequest, TurnState};
+use crate::counters::Counter;
 use crate::journal::TurnJournal;
 use crate::live::{Channel, Watch};
 use crate::runner::{Inner, elapsed_ms};
@@ -155,15 +159,30 @@ pub(crate) async fn run_session<B: Backend, M: Model>(
     let Some(lease) = claimed else {
         return Ok(());
     };
-    let result = session_loop(inner, &lease, changes).await;
+    let result = match AssertUnwindSafe(session_loop(inner, &lease, changes))
+        .catch_unwind()
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("the session task panicked")),
+    };
     if let Err(error) = &result {
         tracing::error!(%error, agent, key, "session failed, releasing its lease");
-        inner
-            .store
-            .release_with_backoff(&lease, inner.config.backoff_base.as_secs_f64())
-            .await?;
+        retry_later(inner, &lease).await?;
     }
     result
+}
+
+async fn retry_later<B: Backend, M: Model>(
+    inner: &Inner<B, M>,
+    lease: &Lease,
+) -> anyhow::Result<i32> {
+    let attempts = inner
+        .store
+        .release_with_backoff(lease, inner.config.backoff_base.as_secs_f64())
+        .await?;
+    inner.metrics.count(Counter::Retries);
+    Ok(attempts)
 }
 
 async fn session_loop<B: Backend, M: Model>(
@@ -252,6 +271,10 @@ async fn run_one_turn<B: Backend, M: Model>(
         changes,
     );
     let turn_cancel = inner.turns.child_token();
+    let _cancellable =
+        inner
+            .metrics
+            .track_turn(&lease.agent, &lease.key, &plan.turn_id, turn_cancel.clone());
     let (journal, journal_writer) = TurnJournal::spawn(
         inner.store.clone(),
         lease.clone(),
@@ -267,11 +290,13 @@ async fn run_one_turn<B: Backend, M: Model>(
         inner.notifications.clone(),
         lease.agent.clone(),
         lease.key.clone(),
+        inner.live_stream.contains(&lease.agent),
     );
     let session = format!("{}/{}", lease.agent, lease.key);
     let cache_key = inner.cache_keys.key(&lease.agent, &lease.key);
     let count_model_call = || inner.cache_keys.record_call(&lease.agent, &cache_key);
 
+    inner.metrics.count(Counter::TurnsStarted);
     let result = run_turn(
         &TurnDeps {
             model: &inner.model,
@@ -306,6 +331,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             max_model_calls: prepared.max_model_calls,
             max_turn_tokens: prepared.max_turn_tokens,
             recite: prepared.recite,
+            reply_ends_turn: prepared.reply_ends_turn,
             lane,
             reset,
             compaction: None,
@@ -414,10 +440,7 @@ async fn ready_turn<B: Backend, M: Model>(
         Ok(prepared) => prepared,
         Err(error) => {
             tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn preparation failed");
-            inner
-                .store
-                .release_with_backoff(lease, inner.config.backoff_base.as_secs_f64())
-                .await?;
+            retry_later(inner, lease).await?;
             return Ok(None);
         }
     };
@@ -481,7 +504,13 @@ async fn finish_turn<B: Backend, M: Model>(
             None,
         ),
     };
-    if matches!(failure, Some(TurnError::Provider(ProviderError::Cancelled))) {
+    let cancelled = matches!(failure, Some(TurnError::Provider(ProviderError::Cancelled)));
+    inner.metrics.count(match &failure {
+        None => Counter::TurnsCompleted,
+        Some(_) if cancelled => Counter::TurnsCancelled,
+        Some(_) => Counter::TurnsFailed,
+    });
+    if cancelled && inner.turns.is_cancelled() {
         inner.store.release(lease).await?;
         return Ok(false);
     }
@@ -512,6 +541,7 @@ async fn finish_turn<B: Backend, M: Model>(
                 }
             }
             Err(CommitError::Fenced) => {
+                inner.metrics.count(Counter::CommitsFenced);
                 tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before commit, turn discarded");
                 return Ok(false);
             }
@@ -522,18 +552,22 @@ async fn finish_turn<B: Backend, M: Model>(
         return Ok(true);
     };
     tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn failed");
-    let attempts = inner
-        .store
-        .release_with_backoff(lease, inner.config.backoff_base.as_secs_f64())
-        .await?;
-    if !effects && attempts >= inner.config.max_attempts {
-        tracing::error!(attempts, agent = %lease.agent, key = %lease.key, "giving up on the turn, dead-lettering its events");
+    let attempts = retry_later(inner, lease).await?;
+    if !effects && (cancelled || attempts >= inner.config.max_attempts) {
+        tracing::error!(attempts, cancelled, agent = %lease.agent, key = %lease.key, "giving up on the turn, dead-lettering its events");
+        inner
+            .metrics
+            .count_many(Counter::DeadLetters, consumed.len());
         inner
             .store
             .dead_letter(
                 lease,
                 consumed,
-                error.to_string(),
+                if cancelled {
+                    "cancelled".to_owned()
+                } else {
+                    error.to_string()
+                },
                 ending.payload(&turn_id, Outcome::DeadLettered, None)?,
             )
             .await?;

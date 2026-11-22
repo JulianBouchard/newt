@@ -69,6 +69,7 @@ The home declares the agent in `capabilities.extensions.newt` of its `server/dis
 | `max_model_calls` | integer | no | 8 | Model calls per turn. The turn fails if it uses them all without ending. Must be at least 1. |
 | `max_turn_tokens` | integer | no | none | Input plus output tokens one turn may spend across its model calls. Past it, the model is told to send what it has and call `end_turn`; if its next call does not end the turn, the turn fails. |
 | `recite` | boolean | no | `false` | Recitation: on long turns, from the fifth model call and every fourth after, append a `<goal>` note quoting the turn's events. Lives in scratch only. Experimental. |
+| `reply_ends_turn` | boolean | no | `false` | A model response with text and no tool calls ends the turn, and its text is the reply. Saves the extra model call that would otherwise only call `end_turn`. The agent should save anything worth keeping before it answers. Compaction turns still need `checkpoint`. |
 | `history_budget` | integer | no | 60000 | Tokens of live history before compaction. Must be at least 1000. |
 | `turn` | boolean | no | `false` | Send `newt/turn` before each turn (1.3). |
 | `turn_end` | boolean | no | `false` | Send `newt/turn_end` after each committed turn (1.6). |
@@ -436,14 +437,41 @@ Authentication is the same bearer token. Agent and session key are in the path.
 | Method and path | Purpose |
 |---|---|
 | `POST /v1/agents/{agent}/sessions/{key}/events` | Add an event to the session. |
+| `POST /v1/agents/{agent}/sessions/{key}/cancel` | Cancel the session's running turn (5.9). |
+| `POST /v1/agents/{agent}/sessions/{key}/chat` | Add a chat message and stream its turn as an AI SDK UI message stream (5.7). |
 | `GET /v1/agents/{agent}/sessions/{key}` | Session status. |
 | `GET /v1/agents/{agent}/sessions/{key}/live` | Server-sent events for the session. |
 | `GET /v1/agents/{agent}/sessions/{key}/history` | The session's history. |
 | `POST /v1/agents/{agent}/sessions/{key}/fork` | A new session that starts with this one's history. |
 | `DELETE /v1/agents/{agent}/sessions/{key}` | Delete the session and everything stored for it. |
-| `GET /healthz` | 200 when Postgres answers, 503 otherwise. No auth. |
+| `GET /healthz` | Load and readiness (5.8). No auth. |
+| `GET /metrics` | Counters and gauges in Prometheus text format (5.10). No auth. |
 
-Errors are `{ "error": "<message>" }` with status 400 (bad body or key), 401 (missing or wrong token, or unknown agent), 404 (no such session), 409 (conflict, see each endpoint) or 500.
+Every error of this API, from a handler or from the framework (unknown route, wrong method, body too large), has one JSON shape:
+
+```json
+{ "error": { "code": "inbox_full", "message": "the session holds too many unconsumed events; retry shortly" } }
+```
+
+`code` is stable and meant for programs; `message` is for people and may change. 429 and 503 carry a `Retry-After` header in seconds. The codes:
+
+| Status | `code` | When |
+|---|---|---|
+| 400 | `invalid_request` | Bad body, id, text or session key. |
+| 401 | `unauthorized` | Missing or wrong token, or unknown agent. |
+| 404 | `not_found` | No such session or route. |
+| 404 | `session_not_found` | `cancel` for a session that does not exist (5.9). |
+| 405 | `method_not_allowed` | Wrong method for the path. |
+| 409 | `event_id_conflict` | An event id reused with different content (5.1). |
+| 409 | `turn_not_running` | `cancel` when no turn is running, or the `turn` given is not the running one (5.9). |
+| 409 | `session_running` | `DELETE` on a session that is running a turn. |
+| 409 | `session_exists` | `fork` onto a session that already exists. |
+| 409 | `live_frames_gone` | `chat` accepted the message but its live frames were already deleted. |
+| 413 | `payload_too_large` | Body over 2 MiB. |
+| 415 | `unsupported_media_type` | |
+| 429 | `inbox_full` | The session holds `max_pending_events` unconsumed events (5.1). |
+| 500 | `internal` | Details are in the server log only. |
+| 503 | | `GET /healthz` when Postgres does not answer (5.8); its body is the health body, not this shape. |
 
 ### 5.1 `POST .../events`
 
@@ -453,7 +481,7 @@ Errors are `{ "error": "<message>" }` with status 400 (bad body or key), 401 (mi
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `id` | string | yes | | Your id for the event, 1 to 200 bytes. A repeat of the same `id` in the same session is accepted and not queued again, for as long as newt keeps the consumed event (`[retention] inbox_days`, 30 days by default). |
+| `id` | string | yes | | Your id for the event, 1 to 200 bytes. A repeat of the same `id` with the same content in the same session is accepted and not queued again, for as long as newt keeps the consumed event (`[retention] inbox_days`, 30 days by default). A repeat with different content is refused with 409 (below). |
 | `text` | string | yes | | What the agent reads. Must not be empty after trimming. |
 | `kind` | `"message"` or `"signal"` | no | `"message"` | Stored. Nothing else reads it. |
 | `policy` | `"steer"`, `"queue"` or `"collect"` | no | `"steer"` | `steer`: if a turn is running, the event joins it between model calls, and interrupts a model call that has not started producing output. `queue` and `collect`: the event waits for the next turn. Only `steer` is treated differently in code. |
@@ -466,6 +494,8 @@ Unknown fields are rejected. Response, status 202:
 { "inbox_id": 41, "duplicate": false }
 ```
 
+A session holds at most `[agents.<name>] max_pending_events` unconsumed events (100 by default). An event that would go past it is not stored and the answer is 429 with a `Retry-After` header (seconds) and the JSON error body; send it again after a pause, with the same `id`. A repeat of an `id` the session already holds (same content) is not counted again and still answers 202 with `"duplicate": true`, even when the session is full. An `id` that was accepted before with different content is refused with 409 and the error `an event with this id and different content was already accepted`, and nothing is stored: the first event stands. "Content" is a sha256 over the event's `text` and `meta` (object keys sorted, so key order does not matter); `kind`, `policy` and `priority` are not part of it, and neither is anything else, as an event has no other body fields. Events accepted before newt stored hashes (migration `0009`) are always treated as the same content. The count and the insert happen in one statement under a per-session lock, so concurrent posts cannot go past the cap.
+
 ### 5.2 `GET .../sessions/{key}`
 
 ```json
@@ -476,7 +506,15 @@ Unknown fields are rejected. Response, status 202:
 
 ### 5.3 `GET .../live`
 
-A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. Frames older than `[retention] live_days` (7 days by default) are deleted, so a resume from further back starts at the oldest frame kept. The server also sends keep-alives. The `type` field is one of `received` (`event_id`, `inbox_id`, and the event's `meta` when the agent sets `live_meta`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed`. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. `turn_started` also carries `model` (the alias the turn's model calls use) and `reset` (whether the turn runs on a reset history, 1.3.1), and its `history_messages` counts the messages the model sees. Payloads hold names, counts and timings, and error text on failure; they do not hold message text.
+A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. Frames older than `[retention] live_days` (7 days by default) are deleted; a resume from further back gets a `gap` frame first (below) and then starts at the oldest frame kept. The server sends an SSE comment line (`:`) as a keep-alive every 15 seconds when nothing else was sent, so a proxy with an idle timeout above that keeps the connection open. A client should treat 30 seconds of silence as a dead connection and reconnect with its last `id`.
+
+When the cursor (`?cursor=` or `Last-Event-ID`) is older than the oldest frame still kept, the stream starts with one `gap` frame before anything else: `data: {"type":"gap","from":2,"to":3}`, the first and last sequence numbers that were deleted and can no longer be read. It has no `id:`, so it does not move the client's cursor; the next frame carries the first id still available. A fresh stream (no cursor, or 0) never starts with a gap, and neither does a cursor that is current. A client that needs the lost frames' effects can read `GET .../history` (5.4). The `type` field is one of `received` (`event_id`, `inbox_id`, the event's `meta` when the agent sets `live_meta`, and its `text` when the agent sets `live_stream`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed` (`error`, and `reason: "cancelled"` when the turn was cancelled, 5.9). An agent with `live_stream = true` also gets `text_delta` (`text`), `tool_input_delta` (`call_id`, `name`, `delta`), `tool_input` (`call_id`, `name`, `input`), `tool_output` (`call_id`, `name`, `output`, `is_error`), `model_call_started` (`call`, `model`) and `model_call_finished` (`call`, `stop`); see below. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. `turn_started` also carries `model` (the alias the turn's model calls use) and `reset` (whether the turn runs on a reset history, 1.4.1), and its `history_messages` counts the messages the model sees. Payloads hold names, counts and timings, and error text on failure; they do not hold message text or tool arguments, except the frames `live_stream` adds.
+
+`text_delta` frames carry a chunk of the answer the model is writing, in order: concatenated, the chunks of one model call equal the text that call adds to history. Newt batches them, sending at most about every 50 ms or at a line or sentence end, and always before the model call ends, so every `text_delta` of a turn comes before its `turn_completed`. They are live-only: never journaled, never in history, never in the JSONL event file or OTLP, and removed with the rest of the live feed after `live_days`. Reasoning text is never sent. A model call replayed from the journal after a crash sends no text frames.
+
+`tool_input_delta` frames carry a chunk of the arguments of the tool call `call_id` as the model writes them, in order and batched the same way: concatenated, the chunks of one call are the JSON text of its arguments, which can be partial JSON until the call is complete. They always come after the call's `tool_started` and before its `tool_input`. `tool_input` carries the call's complete, parsed `input` once the model has finished writing it, before the tool runs and so before its `tool_finished`. Together with `text_delta` they let an app that answers through a tool (a `send_message` whose `text` argument is the reply) show the reply as it is written. `tool_output` carries the call's result as the model will see it, cut to its first 4,000 characters, just before its `tool_finished`. All of these are live-only like `text_delta`, and are sent only to agents with `live_stream = true`; `tool_started` and `tool_finished` are sent to every agent.
+
+`model_call_started` and `model_call_finished` mark the start and end of each model call of the turn, so a client can tell the steps of a turn apart. They carry no prompt or output, and are sent only under `live_stream`.
 
 ```
 id: 1
@@ -521,3 +559,92 @@ Newt creates the session with a copy of the history and checkpoints up to the cu
 ### 5.6 `DELETE .../sessions/{key}`
 
 Deletes the session with its pending events, history, checkpoints, journal and live feed. Use it when a customer leaves or asks for their data to be erased; newt never deletes history on its own. Status 204 on success, 404 if there is no such session, 409 while a runner holds the session's lease (a turn is running or about to). Retry a 409 after the turn ends. An event sent after the delete starts a new, empty session under the same key.
+
+### 5.7 `POST .../chat`
+
+An endpoint for chat UIs built on the Vercel AI SDK: point `DefaultChatTransport` of `useChat` at it (`api: ".../v1/agents/{agent}/sessions/{key}/chat"`, with the agent's bearer token in `headers`). It needs the agent's `live_stream = true` and answers 400 without it.
+
+The body is the one the transport sends: `{ "id": "...", "messages": [UIMessage], "trigger": "...", ... }`. Newt takes the last message with role `user`, joins its `text` parts with a blank line, and accepts it exactly like `POST .../events` with the message's `id` as the event id and the default policy (`steer`), so the same token, validation and deduplication apply: posting the same message `id` again does not add an event, and replays the stream of the turn that answered it. Everything else in the body is ignored, because the session's history is newt's, not the browser's. 400 if there is no user message with text.
+
+The response is a `text/event-stream` with the header `x-vercel-ai-ui-message-stream: v1`. Every frame is `data: {json}`, and the stream ends with `data: [DONE]`. The chunks are the AI SDK's UI message stream chunks, mapped from the live feed frames of the turn that consumes the message (5.3):
+
+| Live frame | Chunks |
+|---|---|
+| start of the stream | `start` |
+| `model_call_started` | `start-step` (closing the previous step first) |
+| `text_delta` | `text-start` when no text block is open, then `text-delta` (`id`, `delta`) |
+| `tool_started` | `text-end` for an open text block, then `tool-input-start` (`toolCallId`, `toolName`) |
+| `tool_input_delta` | `tool-input-delta` (`toolCallId`, `inputTextDelta`) |
+| `tool_input` | `tool-input-available` (`toolCallId`, `toolName`, `input`) |
+| `model_call_finished` | `text-end` if open, then `finish-step` |
+| `tool_finished` | `tool-output-available` (`toolCallId`, `output: { ms }`), or `tool-output-error` (`toolCallId`, `errorText`) when the call failed |
+| `turn_completed` | `finish` |
+| `turn_failed` | `error` (`errorText`), then `finish` |
+
+One step is one model call. Tool results are not on the live feed, so `output` carries only how long the tool took, and the error text is generic.
+
+The stream follows the turn that consumes the message. A message that arrives while a turn is running is steered into it (`policy: steer`), and the stream joins that running turn from its `turn_steered` frame: text and tool calls the turn produced before then are not repeated. If the running turn ends before it picks the message up, the message starts the next turn, and the stream follows that one. A second message sent while the first is still streaming opens a second stream on the same turn, and both end when it does.
+
+### 5.8 `GET /healthz`
+
+No auth. Answers 200 while a `select 1` on Postgres succeeds and 503 (with `Retry-After`) when it fails, with the same JSON body either way:
+
+```json
+{ "ready": true, "running": 3, "waiting": 1, "max_sessions": 64, "oldest_wait_ms": 120 }
+```
+
+| Field | Meaning |
+|---|---|
+| `ready` | `true` when the database check passed. |
+| `running` | Turns running on this instance, each holding one of the `max_sessions` slots. |
+| `waiting` | Sessions that were woken and are waiting for a slot. |
+| `max_sessions` | The `[runner] max_sessions` this instance runs with. |
+| `oldest_wait_ms` | How long the longest-waiting session has waited, 0 when none is. |
+
+The figures are this instance's own. A load balancer can use the status for liveness and `waiting` or `oldest_wait_ms` to shed load before callers see slow starts.
+
+### 5.9 `POST .../cancel`
+
+Cancels the turn the session is running right now, on whichever instance runs it: send the request to any instance. Same auth as the rest of the API.
+
+```json
+{ "turn": "0198f2a4-..." }
+```
+
+The body is optional and `turn` is optional. Without it, the request cancels whatever turn is running. With it, the request cancels only that turn: a client that saw `turn_started` for turn X and cancels X can never cancel the turn that follows it. The turn id is the `turn` field of the live feed's frames (5.3). Unknown fields are rejected.
+
+| Status | `code` | Meaning |
+|---|---|---|
+| 202 `{ "turn": "<turn id>" }` | | The request is recorded for that turn and every instance was told. The turn stops at its next check, the live feed gets `turn_failed` with `"reason": "cancelled"`, and the lease is released. The answer does not wait for the turn to stop. A repeat for the same turn answers 202 again and still cancels the turn once. |
+| 404 | `session_not_found` | No such session. |
+| 409 | `turn_not_running` | No turn holds the session's lease right now (it is idle, between turns, or its owner died and the lease expired), or `turn` was given and is not the running turn. Nothing is recorded. |
+
+How it works: the request writes `cancel_turn` (the turn id) and `cancel_requested_at` on the session row and sends a Postgres notification on the `newt_cancel` channel. Every instance listens on that channel. The instance that runs the turn reads the flag, checks that the turn id is the one it is running under its current lease, and cancels the turn's token at once. A notification is not durable, so the owner also finds the flag at its next lease heartbeat, which returns it in the same statement that renews the lease (every `lease_ttl / 3`, 10 s by default): a request is acted on within one heartbeat even when the notification was lost, and no model call reads the database for it. The flag is cleared when the turn ends, however it ends (committed, dead-lettered), and the owner acts only when the flag's turn id is the turn it runs, so a stale flag never cancels a later turn.
+
+What happens to the events the turn held follows the failure rules (design: retries), with cancel counted as a failure that is not retried:
+
+- No outward effect happened yet: the turn's events are dead-lettered at once with the reason `cancelled`. They are consumed, so the session does not run them again, and the turn's journal is dropped. The next event starts a new turn.
+- An outward call already ran: the turn commits what it did, like any failed turn with effects, and its events are consumed.
+
+This differs from shutdown, which cancels turns through the same token but leaves their events unconsumed so another instance resumes them from the journal.
+
+A turn stops when the model call in progress is interrupted or at the next batch of tool calls (calls still pending in a batch are skipped); a tool call already running is not interrupted. A turn that crashed and has not been resumed yet holds no live lease, so cancelling it answers 409; its events are not cancelled by this endpoint.
+
+### 5.10 `GET /metrics`
+
+Prometheus text format (`text/plain; version=0.0.4`). No auth, like `/healthz`: the output holds counts and timings only, never agent names, session keys or event content, but keep the port off the public internet. Everything is per instance and resets when the process restarts; sum across instances in the scraper.
+
+| Series | Type | Meaning |
+|---|---|---|
+| `newt_events_total{outcome}` | counter | Events posted to the event API (and `/chat`): `accepted`, `duplicate` (same id and content), `limited` (429, inbox full) or `conflicted` (409, same id, other content). |
+| `newt_turns_total{outcome}` | counter | `started`, `completed`, `failed` and `cancelled` turns. A turn interrupted by shutdown counts as cancelled. |
+| `newt_commits_fenced_total` | counter | Turn commits discarded because the lease had moved to another owner or epoch. |
+| `newt_dead_letters_total` | counter | Events given up on (after the retry limit, or on cancel). |
+| `newt_retries_total` | counter | Sessions released with a backoff to be retried. |
+| `newt_wakes_dropped_total` | counter | Wakes dropped because `[runner] max_waiting` sessions were already waiting for a slot; the sweep picks those sessions up later. |
+| `newt_running_turns` | gauge | Turns holding a slot. |
+| `newt_waiting_turns` | gauge | Woken sessions waiting for a slot. |
+| `newt_max_sessions` | gauge | `[runner] max_sessions`. |
+| `newt_oldest_wait_seconds` | gauge | How long the longest-waiting session has waited. |
+| `newt_slot_wait_seconds` | histogram | Time from a session's wake to getting a turn slot (buckets 1 ms to 120 s). |
+

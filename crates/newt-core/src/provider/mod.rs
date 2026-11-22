@@ -93,10 +93,21 @@ pub struct ModelResponse {
     pub request_ids: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
     OutputStarted,
-    ToolCallStarted { id: String, name: String },
+    TextDelta(String),
+    ToolCallStarted {
+        id: String,
+        name: String,
+    },
+    /// A chunk of a tool call's arguments, as the model writes them.
+    ToolInputDelta {
+        id: String,
+        delta: String,
+    },
+    /// A tool call whose arguments have finished streaming, before the response ends.
+    ToolCallReady(crate::message::ToolCall),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -360,6 +371,11 @@ impl Emitter<'_> {
         }
     }
 
+    fn text(&mut self, text: &str) {
+        self.output();
+        (self.on_event)(StreamEvent::TextDelta(text.to_owned()));
+    }
+
     fn tool_started(&mut self, id: &str, name: &str) {
         self.output();
         if self.first_tool.is_none() {
@@ -369,6 +385,17 @@ impl Emitter<'_> {
             id: id.to_owned(),
             name: name.to_owned(),
         });
+    }
+
+    fn tool_input_delta(&mut self, id: &str, delta: &str) {
+        (self.on_event)(StreamEvent::ToolInputDelta {
+            id: id.to_owned(),
+            delta: delta.to_owned(),
+        });
+    }
+
+    fn tool_ready(&mut self, call: &crate::message::ToolCall) {
+        (self.on_event)(StreamEvent::ToolCallReady(call.clone()));
     }
 
     fn timing(&self) -> CallTiming {

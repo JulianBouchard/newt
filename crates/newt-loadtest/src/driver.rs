@@ -6,6 +6,7 @@ use newt_core::sse::SseParser;
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
+use crate::eve::EveTarget;
 use crate::sample::Rng;
 
 const SIGNAL_BUFFER: usize = 64;
@@ -13,6 +14,7 @@ const SIGNAL_BUFFER: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
     Started,
+    Sign,
     Finished { ok: bool },
 }
 
@@ -81,6 +83,7 @@ impl NewtTarget {
                 };
                 let signal = match data.get("type").and_then(Value::as_str) {
                     Some("turn_started") => Signal::Started,
+                    Some("tool_started" | "text_delta" | "tool_input_delta") => Signal::Sign,
                     Some("turn_completed") => Signal::Finished { ok: true },
                     Some("turn_failed") => Signal::Finished { ok: false },
                     _ => continue,
@@ -89,6 +92,40 @@ impl NewtTarget {
                     return;
                 }
             }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Target {
+    Newt(NewtTarget),
+    Eve(EveTarget),
+}
+
+impl Target {
+    async fn post(
+        &self,
+        http: &reqwest::Client,
+        key: &str,
+        id: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        match self {
+            Self::Newt(target) => target.post(http, key, id, text).await,
+            Self::Eve(target) => target.post(http, key, id, text).await,
+        }
+    }
+
+    async fn follow(
+        &self,
+        http: reqwest::Client,
+        key: String,
+        connected: oneshot::Sender<()>,
+        signals: mpsc::Sender<Signal>,
+    ) {
+        match self {
+            Self::Newt(target) => target.follow(http, key, connected, signals).await,
+            Self::Eve(target) => target.follow(http, key, connected, signals).await,
         }
     }
 }
@@ -106,12 +143,17 @@ pub struct LoadPlan {
     /// once.
     pub ramp: Duration,
     pub timeout: Duration,
+    pub speed: f64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct TurnSample {
+    pub session: usize,
+    pub turn: usize,
+    pub posted_at_ms: f64,
     pub accept_ms: f64,
     pub start_ms: Option<f64>,
+    pub first_sign_ms: Option<f64>,
     pub end_to_end_ms: Option<f64>,
     pub ok: bool,
     pub error: Option<String>,
@@ -122,7 +164,7 @@ fn ms(duration: Duration) -> f64 {
 }
 
 async fn run_session(
-    target: Arc<NewtTarget>,
+    target: Arc<Target>,
     http: reqwest::Client,
     key: String,
     plan: LoadPlan,
@@ -149,7 +191,7 @@ async fn run_session(
         return samples;
     }
     let rng = Rng::new(u64::try_from(seed).unwrap_or(0) + 1);
-    tokio::time::sleep(pause(&rng, Duration::ZERO, plan.ramp)).await;
+    tokio::time::sleep(pause(&rng, Duration::ZERO, plan.ramp).div_f64(plan.speed.max(0.001))).await;
     for turn in 0..plan.turns {
         let posted = Instant::now();
         let text = format!("load message {seed}-{turn}: any news on the role?");
@@ -157,6 +199,10 @@ async fn run_session(
             .post(&http, &key, &format!("{key}-{turn}"), &text)
             .await;
         let mut sample = TurnSample {
+            session: seed,
+            turn,
+            posted_at_ms: crate::intervals::epoch_ms(std::time::SystemTime::now())
+                - ms(posted.elapsed()),
             accept_ms: ms(posted.elapsed()),
             ..TurnSample::default()
         };
@@ -171,7 +217,10 @@ async fn run_session(
                 Ok(Some(Signal::Started)) if sample.start_ms.is_none() => {
                     sample.start_ms = Some(ms(posted.elapsed()));
                 }
-                Ok(Some(Signal::Started)) => {}
+                Ok(Some(Signal::Sign)) if sample.first_sign_ms.is_none() => {
+                    sample.first_sign_ms = Some(ms(posted.elapsed()));
+                }
+                Ok(Some(Signal::Started | Signal::Sign)) => {}
                 Ok(Some(Signal::Finished { ok })) => {
                     sample.end_to_end_ms = Some(ms(posted.elapsed()));
                     sample.ok = ok;
@@ -188,7 +237,8 @@ async fn run_session(
             }
         }
         samples.push(sample);
-        tokio::time::sleep(pause(&rng, plan.think, plan.think_max)).await;
+        tokio::time::sleep(pause(&rng, plan.think, plan.think_max).div_f64(plan.speed.max(0.001)))
+            .await;
     }
     follower.abort();
     samples
@@ -200,7 +250,7 @@ fn pause(rng: &Rng, low: Duration, high: Duration) -> Duration {
         .map_or(low, |spread| low + spread.mul_f64(rng.unit()))
 }
 
-pub async fn run(target: NewtTarget, plan: LoadPlan, run_id: &str) -> (Vec<TurnSample>, Duration) {
+pub async fn run(target: Target, plan: LoadPlan, run_id: &str) -> (Vec<TurnSample>, Duration) {
     let target = Arc::new(target);
     let http = reqwest::Client::builder()
         .pool_max_idle_per_host(plan.concurrency.max(1) * 2)

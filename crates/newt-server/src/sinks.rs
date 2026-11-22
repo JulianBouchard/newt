@@ -17,6 +17,7 @@ const REMOTE_NOTIFY_EVERY: Duration = Duration::from_millis(200);
 #[derive(Debug, Clone)]
 pub struct LiveSink {
     sender: mpsc::Sender<Event>,
+    stream: bool,
 }
 
 impl LiveSink {
@@ -25,18 +26,34 @@ impl LiveSink {
         local: Topics,
         agent: String,
         key: String,
+        stream: bool,
     ) -> (Self, JoinHandle<()>) {
         let (sender, receiver) = mpsc::channel::<Event>(LIVE_BUFFER);
         let writer = tokio::spawn(write_live(store, local, agent, key, receiver));
-        (Self { sender }, writer)
+        (Self { sender, stream }, writer)
     }
+}
+
+const MODEL_CALL_STARTED_FIELDS: [&str; 6] = ["type", "at", "session", "turn", "call", "model"];
+const MODEL_CALL_FINISHED_FIELDS: [&str; 6] = ["type", "at", "session", "turn", "call", "stop"];
+
+fn slim_model_call(mut frame: serde_json::Value) -> serde_json::Value {
+    let keep: &[&str] = match frame["type"].as_str() {
+        Some("model_call_started") => &MODEL_CALL_STARTED_FIELDS,
+        Some("model_call_finished") => &MODEL_CALL_FINISHED_FIELDS,
+        _ => return frame,
+    };
+    if let Some(fields) = frame.as_object_mut() {
+        fields.retain(|name, _| keep.contains(&name.as_str()));
+    }
+    frame
 }
 
 fn encode(batch: &mut Vec<Event>) -> Vec<serde_json::Value> {
     batch
         .drain(..)
         .filter_map(|event| match serde_json::to_value(&event) {
-            Ok(encoded) => Some(encoded),
+            Ok(encoded) => Some(slim_model_call(encoded)),
             Err(error) => {
                 tracing::error!(%error, "could not encode a live event");
                 None
@@ -101,7 +118,15 @@ async fn write_live(
     }
 }
 
-fn is_live(kind: &EventKind) -> bool {
+fn is_live(kind: &EventKind, stream: bool) -> bool {
+    if kind.is_live_only()
+        || matches!(
+            kind,
+            EventKind::ModelCallStarted { .. } | EventKind::ModelCallFinished { .. }
+        )
+    {
+        return stream;
+    }
     matches!(
         kind,
         EventKind::TurnStarted { .. }
@@ -116,7 +141,7 @@ fn is_live(kind: &EventKind) -> bool {
 
 impl EventSink for LiveSink {
     fn emit(&self, event: Event) {
-        if is_live(&event.kind) && self.sender.try_send(event).is_err() {
+        if is_live(&event.kind, self.stream) && self.sender.try_send(event).is_err() {
             tracing::warn!("live feed buffer full or closed, event dropped");
         }
     }
@@ -146,7 +171,9 @@ impl EventSink for TeeSink<'_> {
         {
             on_model_call();
         }
-        if let Some(instrumentation) = self.instrumentation {
+        if let Some(instrumentation) = self.instrumentation
+            && !event.kind.is_live_only()
+        {
             instrumentation.emit(event.clone());
         }
         self.live.emit(event);

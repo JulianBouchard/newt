@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use crate::checkpoint::Checkpoint;
 use crate::commit::{CommitRules, committed_messages};
-use crate::event::{Event, EventKind};
+use crate::event::{Event, EventKind, FailureReason};
 use crate::journal::{Journal, JournalEntry, Replay};
 use crate::message::{Message, Part, Role, ToolCall};
 use crate::prompt::{Effort, Lane, LayerFingerprint, ModelRequest, Prompt, ToolSpec};
@@ -21,6 +21,7 @@ use crate::tools::{EndTurn, Retention, ToolDef, ToolHost, builtin_tools};
 use crate::workspace::{PageKey, Workspace};
 
 mod call;
+mod coalesce;
 mod setup;
 
 use call::{next_response, take_arrivals};
@@ -71,6 +72,8 @@ pub struct TurnSettings<'a> {
     /// Restate the turn's events to the model on long turns (recitation).
     /// Internal while its effect is measured; the server always sets it.
     pub recite: bool,
+    /// A reply with no tool calls ends the turn, without a separate `end_turn` call.
+    pub reply_ends_turn: bool,
     pub lane: Lane,
     pub reset: bool,
     pub compaction: Option<Compaction<'a>>,
@@ -181,7 +184,7 @@ impl<M, H, S, J> std::fmt::Debug for TurnDeps<'_, M, H, S, J> {
 }
 
 enum CallResult {
-    Response(Box<ModelResponse>),
+    Response(Box<ModelResponse>, crate::batch::Early),
     Interrupted,
 }
 
@@ -369,6 +372,8 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
                 turn: ids.turn.to_owned(),
                 error: error.to_string(),
                 committed_messages: committed.len(),
+                reason: matches!(error, TurnError::Provider(ProviderError::Cancelled))
+                    .then_some(FailureReason::Cancelled),
             }));
             Err(TurnFailure {
                 error,
@@ -396,6 +401,22 @@ fn remind_to_end(state: &mut TurnState, context: &TurnContext<'_>) {
         } else {
             END_TURN_REMINDER
         }));
+}
+
+fn finish_on_reply(
+    settings: &TurnSettings<'_>,
+    context: &TurnContext<'_>,
+    text: Option<&str>,
+) -> Option<Finish> {
+    let reply = text.filter(|_| settings.reply_ends_turn && context.compaction.is_none())?;
+    Some(Finish {
+        end: EndTurn {
+            recorded: Vec::new(),
+            nothing_new: Some("replied".to_owned()),
+        },
+        reply: Some(reply.to_owned()),
+        checkpoint: None,
+    })
 }
 
 fn text_of(message: &Message) -> Option<String> {
@@ -461,7 +482,7 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
         )
         .await?;
         state.traced = state.scratch.len();
-        let Some(response) = next else {
+        let Some((response, mut early)) = next else {
             continue;
         };
         state.calls.push(CallReport {
@@ -476,6 +497,9 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
             state.scratch.push(response.message);
         }
         if tool_calls.is_empty() {
+            if let Some(finish) = finish_on_reply(settings, context, text.as_deref()) {
+                return Ok(finish);
+            }
             if reminded {
                 return Err(TurnError::NoEndTurn);
             }
@@ -485,7 +509,8 @@ async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
             continue;
         }
 
-        let batch = crate::batch::run_tools(&tool_calls, context, deps, &state.replay).await;
+        let batch =
+            crate::batch::run_tools(&tool_calls, context, deps, &state.replay, &mut early).await;
         state.summaries.extend(batch.summaries);
         state.kept.extend(batch.kept);
         state.effects |= batch.effects;

@@ -48,6 +48,7 @@ impl Backend for Budgeted {
             max_model_calls: 4,
             max_turn_tokens: None,
             recite: false,
+            reply_ends_turn: false,
             history_budget: BUDGET,
             state: SessionState::default(),
             choice: None,

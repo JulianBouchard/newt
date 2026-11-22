@@ -232,11 +232,11 @@ impl super::Decoder for Decoder {
         }
         for choice in chunk.choices {
             if let Some(content) = choice.delta.content.filter(|content| !content.is_empty()) {
-                emit.output();
+                emit.text(&content);
                 self.text.push_str(&content);
             }
             if let Some(refusal) = choice.delta.refusal.filter(|refusal| !refusal.is_empty()) {
-                emit.output();
+                emit.text(&refusal);
                 self.refused = true;
                 self.text.push_str(&refusal);
             }
@@ -251,11 +251,17 @@ impl super::Decoder for Decoder {
                     }
                     if let Some(arguments) = function.arguments {
                         call.arguments.push_str(&arguments);
+                        if call.announced && !arguments.is_empty() {
+                            emit.tool_input_delta(&call.id, &arguments);
+                        }
                     }
                 }
                 if !call.announced && !call.id.is_empty() && !call.name.is_empty() {
                     call.announced = true;
                     emit.tool_started(&call.id, &call.name);
+                    if !call.arguments.is_empty() {
+                        emit.tool_input_delta(&call.id, &call.arguments);
+                    }
                 }
             }
             match choice.finish_reason.as_deref() {

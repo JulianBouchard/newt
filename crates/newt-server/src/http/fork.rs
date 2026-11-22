@@ -58,7 +58,10 @@ pub(super) async fn fork(
     .map_err(|error| match error {
         ForkError::NoSession => ApiError::NotFound,
         ForkError::NoTurn => ApiError::Invalid("the session has no turn with that id"),
-        ForkError::Exists => ApiError::Conflict("the target session already exists"),
+        ForkError::Exists => ApiError::Conflict {
+            code: "session_exists",
+            message: "the target session already exists",
+        },
         ForkError::Database(error) => ApiError::Internal(error),
     })?;
     tracing::info!(agent, key, into_agent, into = %request.into, copied, "forked a session");

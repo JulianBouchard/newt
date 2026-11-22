@@ -81,14 +81,36 @@ pub struct Events {
 pub struct Runner {
     #[serde(default = "default_max_sessions")]
     pub max_sessions: usize,
+    #[serde(default)]
+    pub reserved_interactive: Option<usize>,
+    #[serde(default)]
+    pub max_waiting: Option<usize>,
     #[serde(default = "default_cache_key_buckets")]
     pub cache_key_buckets: Buckets,
+}
+
+impl Runner {
+    /// The configured `max_waiting`, or four waiting sessions per slot.
+    #[must_use]
+    pub fn max_waiting(&self) -> usize {
+        self.max_waiting
+            .unwrap_or_else(|| crate::runner::default_max_waiting(self.max_sessions))
+    }
+
+    /// The configured `reserved_interactive`, or a quarter of the slots.
+    #[must_use]
+    pub fn reserved_interactive(&self) -> usize {
+        self.reserved_interactive
+            .unwrap_or_else(|| crate::runner::default_reserved_interactive(self.max_sessions))
+    }
 }
 
 impl Default for Runner {
     fn default() -> Self {
         Self {
             max_sessions: default_max_sessions(),
+            reserved_interactive: None,
+            max_waiting: None,
             cache_key_buckets: default_cache_key_buckets(),
         }
     }
@@ -186,6 +208,16 @@ pub struct Agent {
     /// Put the event's `meta` on its live `received` frame.
     #[serde(default)]
     pub live_meta: bool,
+    /// Stream the model's answer text and tool-call arguments on the live feed.
+    #[serde(default)]
+    pub live_stream: bool,
+    /// Unconsumed events one session of this agent may hold.
+    #[serde(default = "default_max_pending_events")]
+    pub max_pending_events: usize,
+}
+
+const fn default_max_pending_events() -> usize {
+    crate::store::DEFAULT_MAX_PENDING_EVENTS
 }
 
 impl ServerConfig {
@@ -208,6 +240,14 @@ impl ServerConfig {
         }
         if config.runner.max_sessions == 0 {
             bail!("runner max_sessions must be at least 1");
+        }
+        if config.runner.max_waiting() == 0 {
+            bail!("runner max_waiting must be at least 1");
+        }
+        if config.runner.reserved_interactive() >= config.runner.max_sessions
+            && config.runner.max_sessions > 1
+        {
+            bail!("runner reserved_interactive must be less than max_sessions");
         }
         if let Some(tracing) = &config.tracing
             && !is_http_url(&tracing.endpoint)
@@ -250,6 +290,9 @@ impl ServerConfig {
 
     fn check_agents(&self) -> anyhow::Result<()> {
         for (name, agent) in &self.agents {
+            if agent.max_pending_events == 0 {
+                bail!("agent `{name}` max_pending_events must be at least 1");
+            }
             if let Err(error) = crate::mcp::McpServer::check_url(&agent.mcp) {
                 bail!("agent `{name}`: mcp {error}");
             }
@@ -396,6 +439,71 @@ mod tests {
             with("mcp = \"http://localhost:4000/mcp\"\nmodel = \"default\"").is_err(),
             "the home names the model, not server.toml"
         );
+    }
+
+    #[test]
+    fn max_pending_events_defaults_to_100_and_must_be_positive() {
+        let agent = |extra: &str| {
+            let raw = format!(
+                "server = {{ listen = \"127.0.0.1:0\" }}\ndatabase = {{ url_env = \"X\" }}\n\
+                 [routes.r]\nprotocol = \"openai-chat\"\nmodel = \"m\"\nbase_url = \"http://localhost:1\"\nkey_env = \"K\"\nmax_concurrent = 1\n\
+                 [models.default]\nchain = [\"r\"]\n\
+                 [agents.demo]\nmcp = \"http://localhost:4000/mcp\"\ntoken_env = \"T\"\n{extra}"
+            );
+            ServerConfig::parse(&raw)
+        };
+        assert_eq!(agent("").unwrap().agents["demo"].max_pending_events, 100);
+        assert_eq!(
+            agent("max_pending_events = 7").unwrap().agents["demo"].max_pending_events,
+            7
+        );
+        let error = agent("max_pending_events = 0").unwrap_err().to_string();
+        assert!(
+            error.contains("max_pending_events must be at least 1"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reserved_interactive_is_a_quarter_of_the_slots_and_less_than_all_of_them() {
+        let runner = |max_sessions: usize, reserved: Option<usize>| Runner {
+            max_sessions,
+            reserved_interactive: reserved,
+            ..Runner::default()
+        };
+        assert_eq!(runner(64, None).reserved_interactive(), 16);
+        assert_eq!(runner(8, None).reserved_interactive(), 2);
+        assert_eq!(runner(2, None).reserved_interactive(), 1);
+        assert_eq!(runner(1, None).reserved_interactive(), 0);
+        assert_eq!(runner(8, Some(5)).reserved_interactive(), 5);
+
+        let raw = |extra: &str| {
+            format!(
+                "server = {{ listen = \"127.0.0.1:0\" }}\ndatabase = {{ url_env = \"X\" }}\n[runner]\nmax_sessions = 4\n{extra}"
+            )
+        };
+        assert!(ServerConfig::parse(&raw("reserved_interactive = 3")).is_ok());
+        let error = ServerConfig::parse(&raw("reserved_interactive = 4"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("reserved_interactive must be less than max_sessions"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn max_waiting_is_four_per_slot_unless_set_and_never_zero() {
+        let runner = |max_sessions: usize, waiting: Option<usize>| Runner {
+            max_sessions,
+            max_waiting: waiting,
+            ..Runner::default()
+        };
+        assert_eq!(runner(64, None).max_waiting(), 256);
+        assert_eq!(runner(2, Some(5)).max_waiting(), 5);
+        let raw = "server = { listen = \"127.0.0.1:0\" }\ndatabase = { url_env = \"X\" }\n[runner]\nmax_waiting = 0\n";
+        let error = ServerConfig::parse(raw).unwrap_err().to_string();
+        assert!(error.contains("max_waiting must be at least 1"), "{error}");
     }
 
     #[test]
