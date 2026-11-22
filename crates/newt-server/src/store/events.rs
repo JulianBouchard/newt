@@ -143,6 +143,9 @@ pub enum AcceptError {
 }
 
 #[cfg(test)]
+mod regressions;
+
+#[cfg(test)]
 mod tests {
     #![expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
 
