@@ -71,7 +71,7 @@ Don't want a second terminal? Let newt run the demo itself. Build it with `cargo
 
 On a live run against `gpt-6.1-terra`, each turn took 6 to 8 seconds, and newt itself spent about 20 ms of that. `newt-report newt-events.jsonl` shows you the breakdown ([See what each turn did](../tracing/)).
 
-## Next
+## See also
 
 - Copy `crates/newt-demo` to start your own agent.
 - [Build your agent](../agent-core/): what your agent serves.

@@ -45,6 +45,6 @@ Unlike the local file, `[tracing]` sends message text unless you set `capture_co
 
 Every tool call carries a `traceparent`, so your servers can put their own spans under the turn's trace. If you use newt as a library, an `Enricher` adds attributes per session and a `Redactor` runs over every captured message before it leaves the process.
 
-## Next
+## See also
 
 - [Configuration: `[tracing]`](../configuration/#tracing) and [`[events]`](../configuration/#events).

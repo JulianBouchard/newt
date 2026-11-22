@@ -120,7 +120,7 @@ newt gives every agent a few tools of its own, so your servers can't use these n
 
 newt doesn't check arguments against your `inputSchema`, so validate them in the handler.
 
-## Next
+## See also
 
 - [Add more MCP servers](../extra-servers/): tools from servers you don't run.
 - [Protocol, sections 2 to 4](../protocol/#2-servers-and-tools): every field and rule.

@@ -51,7 +51,7 @@ The person's replies don't come through the feed. They go out through your own t
 
 `DELETE` removes everything newt stored for the session: its events, history, checkpoints, journal and live feed. Use it when a customer leaves or asks you to erase their data, newt never deletes history on its own. If a turn is running you get a `409`, so try again once it's done.
 
-## Next
+## See also
 
 - [Protocol, section 5](../protocol/#5-event-api-called-by-your-application): every field and status code.
 - [Re-run a real conversation](../replay/).

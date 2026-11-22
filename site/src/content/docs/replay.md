@@ -33,6 +33,6 @@ A replay calls the other agent's tools for real. Point it at a server that's saf
 
 Point the other agent at the fake model from [Load test without paying for tokens](../load-testing/) to replay for free, or at a real model to compare prompts or models.
 
-## Next
+## See also
 
 - [Protocol 5.4 and 5.5](../protocol/#54-get-history).
