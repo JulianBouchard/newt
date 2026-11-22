@@ -138,13 +138,14 @@ proptest! {
     }
 
     #[test]
-    fn calls_that_are_not_batches_pass_through_untouched(
-        name in prop::sample::select(NAMES.iter().copied().filter(|name| *name != BATCH).collect::<Vec<_>>()),
+    fn calls_that_are_not_batches_pass_through_with_only_their_name_resolved(
+        name in prop::sample::select(NAMES.iter().copied().filter(|name| resolved(name, &tools()) != BATCH).collect::<Vec<_>>()),
         arguments in json_value(),
     ) {
         let call = ToolCall { id: "c".into(), name: name.to_owned(), arguments };
         let expanded = expand(std::slice::from_ref(&call), &tools());
-        prop_assert_eq!(&expanded.calls, &vec![call]);
+        let expected = ToolCall { name: resolved(name, &tools()), ..call };
+        prop_assert_eq!(&expanded.calls, &vec![expected]);
         prop_assert!(expanded.preset.is_empty());
     }
 

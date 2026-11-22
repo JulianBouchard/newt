@@ -309,36 +309,20 @@ proptest! {
 }
 
 #[test]
-fn a_functions_prefixed_name_at_the_top_level_is_an_error_result_and_the_turn_goes_on() {
-    let call = |id: &str, name: &str| {
-        Part::ToolCall(ToolCall {
-            id: id.to_owned(),
-            name: name.to_owned(),
+fn a_functions_prefixed_name_at_the_top_level_resolves_to_the_tool() {
+    let script = vec![Message {
+        role: Role::Assistant,
+        parts: vec![Part::ToolCall(ToolCall {
+            id: "a".to_owned(),
+            name: "functions.end_turn".to_owned(),
             arguments: json!({}),
-        })
-    };
-    let script = vec![
-        Message {
-            role: Role::Assistant,
-            parts: vec![call("a", "functions.end_turn")],
-        },
-        Message {
-            role: Role::Assistant,
-            parts: vec![call("b", "end_turn")],
-        },
-    ];
+        })],
+    }];
     let ran = run(script, false);
     assert!(ran.ok);
-    let results: Vec<(&str, bool)> = ran
-        .scratches
-        .last()
-        .unwrap()
-        .iter()
-        .flat_map(|message| &message.parts)
-        .filter_map(|part| match part {
-            Part::ToolResult(result) => Some((result.call_id.as_str(), result.is_error)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(results, vec![("a", true)]);
+    assert_eq!(
+        ran.scratches.len(),
+        1,
+        "the prefixed end_turn ended the turn in one model call"
+    );
 }

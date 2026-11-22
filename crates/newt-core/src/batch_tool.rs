@@ -88,6 +88,10 @@ pub(crate) fn expand(tool_calls: &[ToolCall], retention: &HashMap<String, Retent
         groups: Vec::with_capacity(tool_calls.len()),
     };
     for call in tool_calls {
+        let call = &ToolCall {
+            name: resolve_name(&call.name, retention),
+            ..call.clone()
+        };
         if call.name != BATCH || call.invalid_arguments().is_some() {
             expanded.groups.push(Group::Single(expanded.calls.len()));
             expanded.calls.push(call.clone());
@@ -131,6 +135,17 @@ pub(crate) fn expand(tool_calls: &[ToolCall], retention: &HashMap<String, Retent
     expanded
 }
 
+/// The tool a model meant: a name with the `functions.` namespace some models
+/// add resolves to the tool without it, when only that one exists.
+pub(crate) fn resolve_name(name: &str, retention: &HashMap<String, Retention>) -> String {
+    match name.strip_prefix(MODEL_NAMESPACE) {
+        Some(bare) if !retention.contains_key(name) && retention.contains_key(bare) => {
+            bare.to_owned()
+        }
+        _ => name.to_owned(),
+    }
+}
+
 fn inner_arguments(arguments: Value) -> Value {
     match arguments {
         Value::Object(_) => arguments,
@@ -147,12 +162,7 @@ fn parse(
     let mut args = BatchArgs::deserialize(&call.arguments)
         .map_err(|error| format!("invalid arguments for batch: {error}"))?;
     for inner in &mut args.calls {
-        if let Some(bare) = inner.name.strip_prefix(MODEL_NAMESPACE)
-            && !retention.contains_key(&inner.name)
-            && retention.contains_key(bare)
-        {
-            inner.name = bare.to_owned();
-        }
+        inner.name = resolve_name(&inner.name, retention);
     }
     if args.calls.is_empty() || args.calls.len() > MAX_CALLS {
         return Err(format!("a batch holds between 1 and {MAX_CALLS} calls"));

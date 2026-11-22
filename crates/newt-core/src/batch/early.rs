@@ -24,6 +24,10 @@ where
     if call.invalid_arguments().is_some() {
         return None;
     }
+    let call = ToolCall {
+        name: crate::batch_tool::resolve_name(&call.name, context.retention),
+        ..call
+    };
     if crate::tools::is_workspace_tool(&call.name) {
         return Some(Box::pin(async move {
             let output = timed_read(context, &call).await;
