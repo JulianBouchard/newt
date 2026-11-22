@@ -101,6 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_turn_tokens: None,
         recite: true,
         require_end_turn: false,
+        builtin_tools: newt_core::tools::BuiltinTools::ALL,
         lane: Lane::Interactive,
         reset: false,
         compaction: None,

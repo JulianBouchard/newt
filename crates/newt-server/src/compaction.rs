@@ -68,6 +68,7 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
             max_turn_tokens: None,
             recite: false,
             require_end_turn: false,
+            builtin_tools: prepared.builtin_tools,
             lane: Lane::Background,
             reset: false,
             compaction: Some(Compaction {

@@ -92,7 +92,10 @@ pub(crate) fn expand(tool_calls: &[ToolCall], retention: &HashMap<String, Retent
             name: resolve_name(&call.name, retention),
             ..call.clone()
         };
-        if call.name != BATCH || call.invalid_arguments().is_some() {
+        if call.name != BATCH
+            || !retention.contains_key(BATCH)
+            || call.invalid_arguments().is_some()
+        {
             expanded.groups.push(Group::Single(expanded.calls.len()));
             expanded.calls.push(call.clone());
             continue;

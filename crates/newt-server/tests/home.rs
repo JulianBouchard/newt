@@ -12,7 +12,7 @@ use std::time::Duration;
 use newt_core::journal::TurnChoice;
 use newt_core::message::ToolCall;
 use newt_core::prompt::Effort;
-use newt_core::tools::{CallContext, Retention, ToolHost};
+use newt_core::tools::{BuiltinTools, CallContext, Retention, ToolHost};
 use newt_server::backend::{Backend, Prepared, TurnEvent, TurnRequest};
 use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::mcp::McpHost;
@@ -413,6 +413,38 @@ async fn a_home_that_does_not_declare_the_agent_fails_loudly() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("MCP server `assistant`"), "{error}");
+}
+
+#[tokio::test]
+async fn the_home_chooses_which_builtin_tools_the_agent_gets() {
+    let none = App::home();
+    none.settings(json!({ "model": "default", "builtin_tools": false }));
+    assert_eq!(
+        prepare(&backend(none).await, "ana").await.builtin_tools,
+        BuiltinTools::NONE
+    );
+
+    let some = App::home();
+    some.settings(json!({ "model": "default", "builtin_tools": ["read_file", "end_turn"] }));
+    let prepared = prepare(&backend(some).await, "ana").await;
+    assert!(prepared.builtin_tools.offers("read_file") && !prepared.builtin_tools.offers("batch"));
+
+    let unknown = App::home();
+    unknown.settings(json!({ "model": "default", "builtin_tools": ["web_search"] }));
+    let error = prepare_error(unknown).await;
+    assert!(
+        error.contains("`web_search` is not a built-in tool"),
+        "{error}"
+    );
+
+    let strict = App::home();
+    strict
+        .settings(json!({ "model": "default", "builtin_tools": false, "require_end_turn": true }));
+    let error = prepare_error(strict).await;
+    assert!(
+        error.contains("require_end_turn needs the built-in end_turn tool"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

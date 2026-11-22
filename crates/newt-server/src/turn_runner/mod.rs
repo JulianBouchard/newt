@@ -18,7 +18,7 @@ use futures_util::FutureExt;
 use newt_core::event::EventKind;
 use newt_core::journal::{Journal, JournalEntry};
 use newt_core::provider::Model;
-use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
+use newt_core::turn::{TurnDeps, TurnInput, run_turn};
 use preparation::{Ready, TurnPlan, apply_choice, event_messages, ready_turn};
 
 pub(crate) async fn run_session<B: Backend, M: Model>(
@@ -203,19 +203,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             workspace: &prepared.workspace,
             replay: plan.replay,
         },
-        &TurnSettings {
-            model: &prepared.model,
-            first_call_effort: prepared.first_call_effort,
-            effort: prepared.effort,
-            max_output_tokens: prepared.max_output_tokens,
-            max_model_calls: prepared.max_model_calls,
-            max_turn_tokens: prepared.max_turn_tokens,
-            recite: prepared.recite,
-            require_end_turn: prepared.require_end_turn,
-            lane,
-            reset,
-            compaction: None,
-        },
+        &prepared.turn_settings(lane, reset),
     )
     .await;
     drop(live);

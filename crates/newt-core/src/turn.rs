@@ -20,7 +20,7 @@ mod state;
 mod types;
 
 use drive::{Finish, drive};
-use setup::{ToolTable, tool_table, turn_started};
+use setup::{ToolTable, offered_skills, tool_table, turn_started};
 use state::TurnState;
 pub use types::{
     CallReport, Compaction, TurnDeps, TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings,
@@ -81,6 +81,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     settings: &TurnSettings<'_>,
 ) -> Result<TurnOutcome, TurnFailure> {
     let sink = deps.sink;
+    let skills = offered_skills(input.skills, settings.builtin_tools);
     let ToolTable {
         specs,
         retention,
@@ -88,13 +89,15 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         ends_turn,
     } = match tool_table(
         input.external_tools,
-        input.skills,
+        skills,
         settings.require_end_turn,
+        settings.builtin_tools,
+        settings.compaction.is_some(),
     ) {
         Ok(table) => table,
         Err(error) => return Err(TurnFailure::before_start(error, input.events)),
     };
-    let system = with_index(input.system, input.skills);
+    let system = with_index(input.system, skills);
     let layers = Prompt {
         system: &system,
         tools: &specs,
@@ -118,7 +121,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         ends_turn: &ends_turn,
         require_end_turn: settings.require_end_turn,
         compaction: settings.compaction,
-        skills: input.skills,
+        skills,
         loaded_skills: Mutex::new(BTreeSet::new()),
         prefix_fingerprint: layers.prefix_fingerprint(),
         history_fingerprint: layers.history_fingerprint(),

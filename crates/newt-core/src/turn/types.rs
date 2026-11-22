@@ -49,6 +49,9 @@ pub struct TurnSettings<'a> {
     /// a reply with no tool calls gets a reminder instead of ending the turn.
     /// Off by default, when a reply with no tool calls ends the turn.
     pub require_end_turn: bool,
+    /// Which of newt's built-in tools the agent is offered. A compaction turn
+    /// is always offered `checkpoint`.
+    pub builtin_tools: crate::tools::BuiltinTools,
     pub lane: Lane,
     pub reset: bool,
     pub compaction: Option<Compaction<'a>>,

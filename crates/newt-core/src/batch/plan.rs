@@ -75,6 +75,9 @@ pub(super) fn plan_calls(
                 }
                 return Plan::Done(output.clone(), 0);
             }
+            if !context.retention.contains_key(&call.name) {
+                return Plan::Done(failure(format!("unknown tool `{}`", call.name)), 0);
+            }
             if call.name == LOAD_SKILL {
                 if let Some(index) = skills::served(call, context.skills) {
                     return Plan::Skill(index);
@@ -118,8 +121,7 @@ pub(super) fn plan_calls(
                     Plan::Done(failure(NO_SENDS_WHILE_COMPACTING), 0)
                 }
                 Some(Retention::Outward) => Plan::Outward,
-                Some(_) => Plan::Concurrent,
-                None => Plan::Done(failure(format!("unknown tool `{}`", call.name)), 0),
+                _ => Plan::Concurrent,
             }
         })
         .collect();

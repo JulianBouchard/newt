@@ -17,7 +17,7 @@ use newt_core::provider::{
 };
 use newt_core::sink::EventSink;
 use newt_core::steering::NoSteering;
-use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
+use newt_core::tools::{BuiltinTools, CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::turn::{
     Compaction, TurnDeps, TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings, run_turn,
 };
@@ -259,6 +259,7 @@ async fn run_with(
             max_turn_tokens,
             recite,
             require_end_turn,
+            builtin_tools: BuiltinTools::ALL,
             lane: Lane::Interactive,
             reset: false,
             compaction: compaction.map(|open_commitments| Compaction {
@@ -745,6 +746,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             max_turn_tokens: None,
             recite: true,
             require_end_turn: true,
+            builtin_tools: BuiltinTools::ALL,
             lane: Lane::Interactive,
             reset: false,
             compaction: None,

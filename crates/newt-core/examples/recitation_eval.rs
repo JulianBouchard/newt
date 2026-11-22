@@ -376,6 +376,7 @@ async fn run_job(client: &ProviderClient, model: &str, job: &Job, run: u64) -> V
         max_turn_tokens: None,
         recite: job.recite,
         require_end_turn: false,
+        builtin_tools: newt_core::tools::BuiltinTools::ALL,
         lane: Lane::Interactive,
         reset: false,
         compaction: None,

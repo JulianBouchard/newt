@@ -11,6 +11,7 @@ const RECITE_FROM: u32 = 4;
 const RECITE_EVERY: u32 = 4;
 const GOAL_EVENT_CHARS: usize = 500;
 const OVER_BUDGET: &str = "This turn has spent its token budget. Finish now: send what you have if the person is waiting, then call end_turn.";
+const OVER_BUDGET_REPLY: &str = "This turn has spent its token budget. Finish now: send what you have if the person is waiting, then end with your reply.";
 
 pub(super) struct TurnState {
     pub(super) effects: bool,
@@ -73,7 +74,11 @@ impl TurnState {
                     return Err(TurnError::OverBudget(budget));
                 }
                 self.told_over_budget = true;
-                self.note(OVER_BUDGET);
+                self.note(if settings.builtin_tools.offers(crate::tools::END_TURN) {
+                    OVER_BUDGET
+                } else {
+                    OVER_BUDGET_REPLY
+                });
                 return Ok(());
             }
         }

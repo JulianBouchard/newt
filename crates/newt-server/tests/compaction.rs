@@ -49,6 +49,7 @@ impl Backend for Budgeted {
             max_turn_tokens: None,
             recite: false,
             require_end_turn: true,
+            builtin_tools: newt_core::tools::BuiltinTools::ALL,
             history_budget: BUDGET,
             state: SessionState::default(),
             choice: None,

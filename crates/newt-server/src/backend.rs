@@ -2,9 +2,10 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use newt_core::journal::TurnChoice;
-use newt_core::prompt::Effort;
+use newt_core::prompt::{Effort, Lane};
 use newt_core::skills::Skill;
-use newt_core::tools::{NoTools, ToolDef, ToolHost};
+use newt_core::tools::{BuiltinTools, NoTools, ToolDef, ToolHost};
+use newt_core::turn::TurnSettings;
 use newt_core::workspace::Workspace;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -143,6 +144,7 @@ pub struct Prepared<H> {
     pub max_turn_tokens: Option<u64>,
     pub recite: bool,
     pub require_end_turn: bool,
+    pub builtin_tools: BuiltinTools,
     pub history_budget: u32,
     pub state: SessionState,
     /// What `/turn` chose for this turn, resolved against the bootstrap.
@@ -154,6 +156,26 @@ pub struct Prepared<H> {
     pub turn_end: bool,
     pub turn_state: TurnState,
     pub host: H,
+}
+
+impl<H> Prepared<H> {
+    /// The settings of an ordinary turn of this session.
+    pub fn turn_settings(&self, lane: Lane, reset: bool) -> TurnSettings<'_> {
+        TurnSettings {
+            model: &self.model,
+            first_call_effort: self.first_call_effort,
+            effort: self.effort,
+            max_output_tokens: self.max_output_tokens,
+            max_model_calls: self.max_model_calls,
+            max_turn_tokens: self.max_turn_tokens,
+            recite: self.recite,
+            require_end_turn: self.require_end_turn,
+            builtin_tools: self.builtin_tools,
+            lane,
+            reset,
+            compaction: None,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -211,6 +233,7 @@ impl Backend for StaticBackend {
             max_turn_tokens: None,
             recite: false,
             require_end_turn: false,
+            builtin_tools: BuiltinTools::ALL,
             history_budget: 60_000,
             state: SessionState::starting_from(request.state.clone()),
             choice: None,

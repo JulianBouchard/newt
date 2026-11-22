@@ -386,6 +386,7 @@ async fn write_then_read_with(
             max_turn_tokens: None,
             recite: true,
             require_end_turn: true,
+            builtin_tools: newt_core::tools::BuiltinTools::ALL,
             lane: Lane::Interactive,
             reset: false,
             compaction: None,

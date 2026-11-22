@@ -28,6 +28,9 @@ where
         name: crate::batch_tool::resolve_name(&call.name, context.retention),
         ..call
     };
+    if !context.retention.contains_key(&call.name) {
+        return None;
+    }
     if crate::tools::is_workspace_tool(&call.name) {
         return Some(Box::pin(async move {
             let output = timed_read(context, &call).await;

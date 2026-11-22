@@ -1,5 +1,6 @@
 use crate::mcp::{McpAuth, McpServer};
 use newt_core::prompt::Effort;
+use newt_core::tools::BuiltinTools;
 use serde::Deserialize;
 
 /// Where an agent's home server is, from `server.toml`.
@@ -45,6 +46,10 @@ pub struct Settings {
     /// with no tool calls ends the turn.
     #[serde(default)]
     pub require_end_turn: bool,
+    /// Which built-in tools the agent is offered: `true` (all), `false` (none) or
+    /// the names of the ones to keep.
+    #[serde(default)]
+    pub builtin_tools: BuiltinTools,
     #[serde(default = "default_history_budget")]
     pub history_budget: u32,
     /// Ask the home with `newt/turn` before each turn.

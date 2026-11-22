@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{TurnError, TurnInput, TurnSettings};
+use crate::checkpoint::CHECKPOINT;
 use crate::event::{Event, EventKind};
 use crate::message::Message;
 use crate::prompt::ToolSpec;
-use crate::skills::{Skill, load_skill_tool};
-use crate::tools::{ENDS_TURN_NOTE, Retention, ToolDef, builtin_tools};
+use crate::skills::{LOAD_SKILL, Skill, load_skill_tool};
+use crate::tools::{BuiltinTools, ENDS_TURN_NOTE, Retention, ToolDef, builtin_tools};
 use crate::workspace::PageKey;
 
 pub(super) fn turn_started(input: &TurnInput<'_>, settings: &TurnSettings<'_>) -> Event {
@@ -41,13 +42,26 @@ pub(super) struct ToolTable {
     pub(super) ends_turn: HashSet<String>,
 }
 
+pub(super) fn offered_skills(skills: &[Skill], builtin: BuiltinTools) -> &[Skill] {
+    if builtin.offers(LOAD_SKILL) {
+        skills
+    } else {
+        &[]
+    }
+}
+
 pub(super) fn tool_table(
     external_tools: &[ToolDef],
     skills: &[Skill],
     require_end_turn: bool,
+    builtin: BuiltinTools,
+    compacting: bool,
 ) -> Result<ToolTable, TurnError> {
     let tools: Vec<ToolDef> = builtin_tools(require_end_turn)
         .into_iter()
+        .filter(|tool| {
+            builtin.offers(&tool.spec.name) || (compacting && tool.spec.name == CHECKPOINT)
+        })
         .chain((!skills.is_empty()).then(|| load_skill_tool(skills)))
         .chain(external_tools.iter().cloned())
         .collect();

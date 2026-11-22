@@ -128,6 +128,7 @@ impl HomeBackend {
 
     fn check_settings(&self, settings: &Settings) -> Result<(), String> {
         self.check_model(&settings.model, "the home")?;
+        settings.builtin_tools.check(settings.require_end_turn)?;
         if settings.history_budget < 1_000 {
             return Err("history_budget must be at least 1000 tokens".to_owned());
         }
@@ -200,6 +201,7 @@ impl HomeBackend {
             max_turn_tokens: settings.max_turn_tokens,
             recite: settings.recite,
             require_end_turn: settings.require_end_turn,
+            builtin_tools: settings.builtin_tools,
             history_budget: settings.history_budget,
             choice: turn.choice(settings),
             turn_end: settings.turn_end,
