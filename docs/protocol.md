@@ -27,7 +27,9 @@ The same three ways to run it hold for the database: someone else hosts it (`htt
 
 Newt speaks MCP `2026-07-28` (`server/discover`, no handshake) and falls back to the `2025-11-25` `initialize` handshake for a server that does not answer `server/discover`. Connecting and listing tools may take 20 seconds per server.
 
-Newt keeps one connection per agent, shared by every session, and connects again before the next turn when the connection breaks or closes, when a server says its tools changed (`notifications/tools/list_changed` on a `subscriptions/listen` stream), when that stream ends, or when a server that was down answers again (2.1). It then reads `server/discover` again, so a change to the agent's instructions or settings takes effect on the next turn after one of these. A home that changes its settings should restart or announce a tool change. A home newt runs over stdio is the exception: it keeps its state in its process, so newt keeps that process while it runs, relists its tools on the same connection, and reads its declaration only when it starts it.
+Newt keeps one connection per server, shared by every session, and before the next turn rebuilds only what changed. A server whose connection broke or closed, that said its tools changed (`notifications/tools/list_changed` on a `subscriptions/listen` stream), or whose change stream ended, is listed again; an added server that was down is tried again (2.1); every other server is kept as it is. A server newt runs over stdio keeps its state in its process, so while the process runs newt lists it again on the same connection instead of starting a new one.
+
+When newt connects to the home again (its connection closed, or a home reached over HTTP said its tools changed), it reads `server/discover` again, so a change to the agent's instructions or settings takes effect on the next turn after one of these. A home that changes its settings should restart or announce a tool change. A home newt runs over stdio declares its settings when newt starts it.
 
 A failure to connect to the home, or a home whose declaration is rejected (1.2), stops the turn from starting. The session's events stay pending, the lease is released with exponential backoff (2 s doubling, capped at 300 s) and the sweeper tries again. The error is logged as `agent `<agent>`: ...`.
 
@@ -265,7 +267,7 @@ The home lists the other servers of the agent in `servers` (1.2):
 | `url` | string | yes | `https://…`, `http://…` or `stdio:<command>`, as for the home (1.1). |
 | `auth_env` | string | no | The environment variable holding the server's token, sent as `Authorization: Bearer <token>`. Newt refuses to load the agent if it is unset or empty. Without it, nothing is sent. |
 
-Newt connects to every added server at the same time, each with its own 20 second limit. A server that cannot be reached, does not list its tools in time, or offers a tool newt cannot load (a name over the length limit, an `outward` tool without `newt/idempotent`), is left out: its tools and pages are missing, and the turn context names it (1.3) so the model can say so. The rest of the agent runs. Newt tries the server again every 30 seconds, the same way, and reconnects everything before the next turn once it connects and lists cleanly.
+Newt connects to every added server at the same time, each with its own 20 second limit. A server that cannot be reached, does not list its tools in time, or offers a tool newt cannot load (a name over the length limit, an `outward` tool without `newt/idempotent`), is left out: its tools and pages are missing, and the turn context names it (1.3) so the model can say so. The rest of the agent runs. Newt tries the server again every 30 seconds, the same way, and adds it back before the next turn once it connects and lists cleanly.
 
 What newt does with an added server depends on whether it **speaks newt** (declares `capabilities.extensions.newt`, with an empty object):
 

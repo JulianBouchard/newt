@@ -21,6 +21,7 @@ const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const SKILL_FILE: &str = "SKILL.md";
 
 /// A skill one server serves, as its listing described it.
+#[derive(Clone)]
 pub(super) struct Served {
     remote: Remote,
     entry: Entry,
@@ -36,6 +37,7 @@ pub(super) async fn list(
     client: &Arc<Client>,
     speaks_newt: bool,
     owner: &Owner,
+    stale: &Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<(Skill, Served)>, String> {
     if !client
         .peer_info()
@@ -91,6 +93,7 @@ pub(super) async fn list(
             tool: String::new(),
             speaks_newt,
             owner: owner.clone(),
+            stale: Arc::clone(stale),
         };
         skills.push((
             skill,
@@ -248,7 +251,7 @@ impl McpHost {
             });
         if let Err(why) = mismatch {
             tracing::warn!(server = %served.remote.server, uri = %listed.uri, "MCP skill file failed verification: {why}");
-            self.stale.store(true, Ordering::Relaxed);
+            served.remote.stale.store(true, Ordering::Relaxed);
             return Err(ToolOutput::error(
                 "The skill changed on its server since it was listed, so it was not loaded. Newt lists the skills again before the next turn.",
             ));

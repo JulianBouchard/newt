@@ -52,6 +52,7 @@ struct App {
     seen_meta: Seen,
     read_patch: Option<Value>,
     result_meta: Option<Value>,
+    listings: Arc<AtomicUsize>,
 }
 
 impl App {
@@ -138,6 +139,7 @@ impl ServerHandler for App {
     fn get_info(&self) -> ServerConfig {
         let mut capabilities = ServerCapabilities::builder()
             .enable_tools()
+            .enable_tool_list_changed()
             .enable_resources()
             .enable_resources_subscribe()
             .build();
@@ -178,6 +180,7 @@ impl ServerHandler for App {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        self.listings.fetch_add(1, Ordering::SeqCst);
         let tools = self
             .tools
             .iter()
@@ -897,5 +900,37 @@ async fn an_added_server_cannot_share_the_agents_name() {
     assert!(
         error.contains("cannot be named `assistant`, like the agent"),
         "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_changes_its_tools_is_listed_again_without_touching_the_others() {
+    let plain = App::plain();
+    let home = App::home();
+    home.settings(json!({
+        "model": "default",
+        "servers": [{ "name": "paraform", "url": serve(plain.clone()).await }],
+    }));
+    let backend = backend(home.clone()).await;
+    prepare(&backend, "ana").await;
+    assert_eq!(home.listings.load(Ordering::SeqCst), 1);
+    assert_eq!(plain.listings.load(Ordering::SeqCst), 1);
+
+    eventually(|| !plain.listeners.lock().unwrap().is_empty()).await;
+    let listeners = plain.listeners.lock().unwrap().clone();
+    for listener in listeners {
+        let _ = listener.notify_tool_list_changed().await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    prepare(&backend, "ana").await;
+    assert_eq!(
+        home.listings.load(Ordering::SeqCst),
+        1,
+        "the home is kept as it was"
+    );
+    assert_eq!(
+        plain.listings.load(Ordering::SeqCst),
+        2,
+        "the server that changed is listed again"
     );
 }

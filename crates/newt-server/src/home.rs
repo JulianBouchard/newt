@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::backend::{Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState};
-use crate::mcp::{McpAuth, McpHost, McpServer, NEWT_EXTENSION, STDIO_SCHEME, Toolset};
+use crate::mcp::{
+    HomeConnection, McpAuth, McpHost, McpServer, NEWT_EXTENSION, STDIO_SCHEME, Toolset,
+};
 
 /// Where an agent's home server is, from `server.toml`.
 #[derive(Clone)]
@@ -230,19 +232,45 @@ impl HomeBackend {
         if let Some(loaded) = slot.as_ref().filter(|loaded| !loaded.toolset.is_stale()) {
             return Ok(Arc::clone(loaded));
         }
-        let server = McpServer {
-            name: agent.to_owned(),
-            url: home.url.clone(),
-            auth: if home.url.starts_with(STDIO_SCHEME) {
-                McpAuth::None
-            } else {
-                McpAuth::Bearer(home.token.clone())
-            },
+        let (settings, toolset) = match slot.as_ref() {
+            Some(previous) if !previous.toolset.needs_new_home() => {
+                let added = resolve(&previous.settings.servers)?;
+                (
+                    previous.settings.clone(),
+                    previous.toolset.refresh(&added).await?,
+                )
+            }
+            _ => {
+                let server = McpServer {
+                    name: agent.to_owned(),
+                    url: home.url.clone(),
+                    auth: if home.url.starts_with(STDIO_SCHEME) {
+                        McpAuth::None
+                    } else {
+                        McpAuth::Bearer(home.token.clone())
+                    },
+                };
+                let connected = HomeConnection::connect(&server).await?;
+                let settings = self.declared_settings(&connected)?;
+                let added = resolve(&settings.servers)?;
+                (settings, connected.with_servers(&added).await?)
+            }
         };
-        let connected = match running_stdio_home(slot.as_ref(), &home.url) {
-            Some(running) => running,
-            None => crate::mcp::Home::connect(&server).await?,
-        };
+        tracing::info!(
+            agent,
+            tools = toolset.tools.len(),
+            skills = toolset.skills.len(),
+            servers = settings.servers.len(),
+            unavailable = toolset.unavailable.len(),
+            "loaded agent"
+        );
+        let loaded = Arc::new(Loaded { settings, toolset });
+        *slot = Some(Arc::clone(&loaded));
+        Ok(loaded)
+    }
+
+    /// The agent's settings, as the home declared them when newt connected.
+    fn declared_settings(&self, connected: &HomeConnection) -> Result<Settings, String> {
         if connected.instructions.is_empty() {
             return Err(
                 "the home server sent no instructions; they are the agent's system prompt"
@@ -257,19 +285,7 @@ impl HomeBackend {
         let settings: Settings = serde_json::from_value(Value::Object(extension))
             .map_err(|error| format!("the home's `{NEWT_EXTENSION}` extension: {error}"))?;
         self.check_settings(&settings)?;
-        let added = resolve(&settings.servers)?;
-        let toolset = connected.with_servers(&added).await?;
-        tracing::info!(
-            agent,
-            tools = toolset.tools.len(),
-            skills = toolset.skills.len(),
-            servers = settings.servers.len(),
-            unavailable = toolset.unavailable.len(),
-            "loaded agent"
-        );
-        let loaded = Arc::new(Loaded { settings, toolset });
-        *slot = Some(Arc::clone(&loaded));
-        Ok(loaded)
+        Ok(settings)
     }
 
     fn check_settings(&self, settings: &Settings) -> Result<(), String> {
@@ -353,18 +369,6 @@ impl HomeBackend {
             turn_state,
         })
     }
-}
-
-/// The home process newt already runs, while it is alive. A stdio home keeps
-/// its state in its process, so newt reconnects the other servers around it
-/// instead of starting a new one; it reads its declaration when it starts.
-fn running_stdio_home(loaded: Option<&Arc<Loaded>>, url: &str) -> Option<crate::mcp::Home> {
-    if !url.starts_with(STDIO_SCHEME) {
-        return None;
-    }
-    loaded
-        .map(|loaded| loaded.toolset.home().clone())
-        .filter(|home| !home.is_closed())
 }
 
 /// The servers the home adds, with their tokens read from the environment.

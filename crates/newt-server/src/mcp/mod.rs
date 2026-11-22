@@ -219,6 +219,8 @@ struct Remote {
     /// Whether the server declared the newt extension (the home always does).
     speaks_newt: bool,
     owner: Owner,
+    /// Its server's stale flag: a call that finds the connection broken sets it.
+    stale: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +245,6 @@ pub struct McpHost {
     tools: Arc<HashMap<String, Remote>>,
     skills: Arc<HashMap<String, skills::Served>>,
     verified: skills::Verified,
-    stale: Arc<AtomicBool>,
     limits: CallLimits,
     session: String,
     turn_state: TurnState,
@@ -256,16 +257,16 @@ impl std::fmt::Debug for McpHost {
             .debug_struct("McpHost")
             .field("tools", &self.tools.len())
             .field("skills", &self.skills.len())
-            .field("stale", &self.stale)
             .field("limits", &self.limits)
             .field("session", &self.session)
             .finish_non_exhaustive()
     }
 }
 
-/// A connected home server, before the servers it adds are connected.
+/// A connection to the home server, with what it declared when newt
+/// connected: its instructions and its `newt` extension.
 #[derive(Clone)]
-pub struct Home {
+pub struct HomeConnection {
     server: McpServer,
     client: Arc<Client>,
     /// The home's `instructions`: the agent's system prompt.
@@ -274,26 +275,20 @@ pub struct Home {
     pub extension: Option<JsonObject>,
 }
 
-impl std::fmt::Debug for Home {
+impl std::fmt::Debug for HomeConnection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("Home")
+            .debug_struct("HomeConnection")
             .field("server", &self.server)
             .finish_non_exhaustive()
     }
 }
 
-impl Home {
+impl HomeConnection {
     pub async fn connect(server: &McpServer) -> Result<Self, String> {
-        let client = tokio::time::timeout(CONNECT_TIMEOUT, connect(server))
+        let client = within_connect_timeout("connect", connect(server))
             .await
-            .map_err(|_| {
-                format!(
-                    "MCP server `{}` did not connect within {} seconds",
-                    server.name,
-                    CONNECT_TIMEOUT.as_secs()
-                )
-            })??;
+            .map_err(|error| format!("MCP server `{}` {error}", server.name))??;
         let info = client.peer_info();
         let instructions = info
             .as_ref()
@@ -320,27 +315,40 @@ impl Home {
         call::custom(&self.client, &self.server.name, method, params).await
     }
 
-    /// Whether the connection to the home is gone.
-    pub fn is_closed(&self) -> bool {
-        self.client.is_closed()
+    /// Lists the home's tools and connects the servers it adds, all at once.
+    /// An added server that cannot be reached is left out and listed in
+    /// `unavailable`; newt keeps trying it in the background.
+    pub async fn with_servers(self, added: &[McpServer]) -> Result<Toolset, String> {
+        let folders = check_added(&self.server.name, added)?;
+        let home = list_home(&self.server, &self.client).await?;
+        let attempts = join_all(
+            added
+                .iter()
+                .map(|server| async move { (server.clone(), connect_added(server).await) }),
+        )
+        .await;
+        assemble(self, home, attempts, folders)
     }
 }
 
+/// The servers of one agent, connected and listed: the tools and skills the
+/// model sees, and where each call goes.
 pub struct Toolset {
     pub tools: Vec<ToolDef>,
     /// Skills the servers serve, sorted by name, named `{server}/{skill path}`.
     pub skills: Vec<Skill>,
     /// Added servers that could not be reached this time, by name.
     pub unavailable: Vec<String>,
-    home: Home,
+    home: HomeConnection,
+    /// The home first, then each added server that is connected.
+    servers: Vec<Listed>,
     remotes: Arc<HashMap<String, Remote>>,
-    resources: Vec<(McpServer, Arc<Client>, bool, Owner)>,
     /// The added servers' names: folders the home's pages may not use.
     folders: Arc<HashSet<String>>,
-    clients: Vec<Arc<Client>>,
     served: Arc<HashMap<String, skills::Served>>,
     verified: skills::Verified,
-    stale: Arc<AtomicBool>,
+    /// Set when a server that was down answers again.
+    retry: Arc<AtomicBool>,
     limits: CallLimits,
     #[expect(
         dead_code,
@@ -370,6 +378,7 @@ impl Drop for AbortOnDrop {
 
 /// One server's tools, under the names the model sees, and its skills, once
 /// it is connected, listed and checked.
+#[derive(Clone)]
 struct Listed {
     server: McpServer,
     client: Arc<Client>,
@@ -377,46 +386,120 @@ struct Listed {
     skills: Vec<(Skill, skills::Served)>,
     speaks_newt: bool,
     owner: Owner,
+    /// Set when the server says its tools changed, its change notifications
+    /// stop, or a call finds its connection broken.
+    stale: Arc<AtomicBool>,
+}
+
+impl Listed {
+    /// Still connected, and nothing it said since it was listed changes it.
+    fn is_current(&self) -> bool {
+        !self.stale.load(Ordering::Relaxed) && !self.client.is_closed()
+    }
+
+    fn offers_resources(&self) -> bool {
+        self.client
+            .peer_info()
+            .is_some_and(|info| info.capabilities.resources.is_some())
+    }
+
+    /// A server newt runs over stdio keeps its state in its process, so while
+    /// the process lives newt lists it again on the same connection instead
+    /// of starting a new one.
+    fn keeps_its_process(&self) -> bool {
+        self.server.url.starts_with(STDIO_SCHEME) && !self.client.is_closed()
+    }
+
+    async fn relist(&self) -> Result<Self, String> {
+        within_connect_timeout(
+            "list its tools",
+            list(
+                self.server.clone(),
+                Arc::clone(&self.client),
+                self.speaks_newt,
+                self.owner.clone(),
+            ),
+        )
+        .await?
+    }
 }
 
 impl Toolset {
     /// Connects the home, then the servers it adds.
     pub async fn connect(home: &McpServer, added: &[McpServer]) -> Result<Self, String> {
-        Home::connect(home).await?.with_servers(added).await
+        HomeConnection::connect(home)
+            .await?
+            .with_servers(added)
+            .await
     }
 
-    /// True once a connection broke or closed, a server said its tools
-    /// changed, its change notifications stopped, or a server that was down
-    /// came back: the next turn reconnects and lists the tools again.
+    /// True when the next turn needs the toolset rebuilt: a server's
+    /// connection broke or closed, it said its tools changed, or a server
+    /// that was down answers again.
     pub fn is_stale(&self) -> bool {
-        self.stale.load(Ordering::Relaxed) || self.clients.iter().any(|client| client.is_closed())
+        self.retry.load(Ordering::Relaxed) || self.servers.iter().any(|server| !server.is_current())
     }
 
-    pub const fn home(&self) -> &Home {
+    /// True when rebuilding needs a new connection to the home, which reads
+    /// its declaration again: its connection closed, or a home reached over
+    /// HTTP said its tools changed.
+    pub fn needs_new_home(&self) -> bool {
+        self.servers
+            .first()
+            .is_none_or(|home| !home.is_current() && !home.keeps_its_process())
+    }
+
+    /// The next toolset, built from this one: a server that is still current
+    /// is kept as it is, one newt runs over stdio is listed again on the same
+    /// process, and every other server connects again.
+    pub async fn refresh(&self, added: &[McpServer]) -> Result<Self, String> {
+        let folders = check_added(&self.home.server.name, added)?;
+        let home = match self.servers.first() {
+            Some(home) if home.is_current() => home.clone(),
+            Some(home) if home.keeps_its_process() => home.relist().await?,
+            _ => list_home(&self.home.server, &self.home.client).await?,
+        };
+        let attempts = join_all(added.iter().map(|server| async move {
+            let previous = self
+                .servers
+                .iter()
+                .skip(1)
+                .find(|listed| listed.server == *server);
+            let attempt = match previous {
+                Some(listed) if listed.is_current() => Ok(listed.clone()),
+                Some(listed) if listed.keeps_its_process() => listed.relist().await,
+                _ => connect_added(server).await,
+            };
+            (server.clone(), attempt)
+        }))
+        .await;
+        assemble(self.home.clone(), home, attempts, folders)
+    }
+
+    pub const fn home(&self) -> &HomeConnection {
         &self.home
     }
 
     /// One session's workspace pages, from every server that offers
     /// resources, or `None` when no server does.
     pub fn pages(&self, session: &str, state: &SessionState) -> Option<Arc<ServerPages>> {
-        (!self.resources.is_empty()).then(|| {
-            Arc::new(ServerPages::new(
-                self.resources
-                    .iter()
-                    .map(|(server, client, speaks_newt, owner)| {
-                        pages::McpPages::new(
-                            Arc::clone(client),
-                            &server.name,
-                            session,
-                            *speaks_newt,
-                            owner.clone(),
-                            state.clone(),
-                            Arc::clone(&self.folders),
-                        )
-                    })
-                    .collect(),
-            ))
-        })
+        let sources: Vec<pages::McpPages> = self
+            .servers
+            .iter()
+            .filter(|listed| listed.offers_resources())
+            .map(|listed| {
+                pages::McpPages::new(
+                    Arc::clone(&listed.client),
+                    &listed.server.name,
+                    session,
+                    listed.speaks_newt,
+                    listed.owner.clone(),
+                    state.clone(),
+                    Arc::clone(&self.folders),
+                )
+            })
+            .collect();
+        (!sources.is_empty()).then(|| Arc::new(ServerPages::new(sources)))
     }
 
     #[must_use]
@@ -435,7 +518,6 @@ impl Toolset {
             tools: Arc::clone(&self.remotes),
             skills: Arc::clone(&self.served),
             verified: Arc::clone(&self.verified),
-            stale: Arc::clone(&self.stale),
             limits: self.limits,
             session: session.to_owned(),
             turn_state,
@@ -444,120 +526,105 @@ impl Toolset {
     }
 }
 
-impl Home {
-    /// Lists the home's tools and connects the servers it adds, all at once.
-    /// An added server that cannot be reached is left out and listed in
-    /// `unavailable`; newt keeps trying it in the background and reconnects
-    /// everything once it answers.
-    pub async fn with_servers(self, added: &[McpServer]) -> Result<Toolset, String> {
-        let mut folders = HashSet::new();
-        for server in added {
-            check_server_name(&server.name)?;
-            if server.name == self.server.name {
-                return Err(format!(
-                    "an added server cannot be named `{}`, like the agent: their skills would share names",
-                    server.name
-                ));
-            }
-            if !folders.insert(server.name.clone()) {
-                return Err(format!("two servers are both named `{}`", server.name));
-            }
+/// Checks the added servers' names, and returns them: the folders the home's
+/// pages may not use.
+fn check_added(agent: &str, added: &[McpServer]) -> Result<HashSet<String>, String> {
+    let mut folders = HashSet::new();
+    for server in added {
+        check_server_name(&server.name)?;
+        if server.name == agent {
+            return Err(format!(
+                "an added server cannot be named `{}`, like the agent: their skills would share names",
+                server.name
+            ));
         }
-        let stale = Arc::new(AtomicBool::new(false));
-        let home = within_connect_timeout(
-            "list its tools",
-            list(
-                self.server.clone(),
-                Arc::clone(&self.client),
-                true,
-                Owner::HOME,
-                &stale,
-            ),
-        )
-        .await
-        .map_err(|error| format!("MCP server `{}`: {error}", self.server.name))??;
-        let attempts = join_all(added.iter().map(|server| {
-            let stale = Arc::clone(&stale);
-            async move { (server, connect_added(server, &stale).await) }
-        }))
-        .await;
-        let mut servers = vec![home];
-        let mut unavailable = Vec::new();
-        let mut probes = Vec::new();
-        for (server, attempt) in attempts {
-            match attempt {
-                Ok(listed) => servers.push(listed),
-                Err(error) => {
-                    tracing::warn!(server = %server.name, %error, "MCP server unavailable; its tools are left out until it answers");
-                    unavailable.push(server.name.clone());
-                    probes.push(probe(server.clone(), Arc::clone(&stale)));
-                }
-            }
+        if !folders.insert(server.name.clone()) {
+            return Err(format!("two servers are both named `{}`", server.name));
         }
-        let Indexed {
-            tools,
-            remotes,
-            mut offered,
-            served,
-            resources,
-            clients,
-        } = index(servers)?;
-        offered.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(Toolset {
-            tools,
-            skills: offered,
-            unavailable,
-            home: self,
-            remotes: Arc::new(remotes),
-            resources,
-            folders: Arc::new(folders),
-            clients,
-            served: Arc::new(served),
-            verified: skills::Verified::default(),
-            stale,
-            limits: CallLimits::default(),
-            probes,
-        })
     }
+    Ok(folders)
 }
 
-/// The connected servers' tools, skills and resources, gathered under the
-/// names the model sees.
+async fn list_home(server: &McpServer, client: &Arc<Client>) -> Result<Listed, String> {
+    within_connect_timeout(
+        "list its tools",
+        list(server.clone(), Arc::clone(client), true, Owner::HOME),
+    )
+    .await
+    .map_err(|error| format!("MCP server `{}`: {error}", server.name))?
+}
+
+/// The toolset from the listed home and the attempts to reach each added
+/// server. A server whose attempt failed is left out and probed.
+fn assemble(
+    home: HomeConnection,
+    home_listed: Listed,
+    attempts: Vec<(McpServer, Result<Listed, String>)>,
+    folders: HashSet<String>,
+) -> Result<Toolset, String> {
+    let retry = Arc::new(AtomicBool::new(false));
+    let mut servers = vec![home_listed];
+    let mut unavailable = Vec::new();
+    let mut probes = Vec::new();
+    for (server, attempt) in attempts {
+        match attempt {
+            Ok(listed) => servers.push(listed),
+            Err(error) => {
+                tracing::warn!(server = %server.name, %error, "MCP server unavailable; its tools are left out until it answers");
+                unavailable.push(server.name.clone());
+                probes.push(probe(server, Arc::clone(&retry)));
+            }
+        }
+    }
+    let Indexed {
+        tools,
+        remotes,
+        mut offered,
+        served,
+    } = index(&servers)?;
+    offered.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(Toolset {
+        tools,
+        skills: offered,
+        unavailable,
+        home,
+        servers,
+        remotes: Arc::new(remotes),
+        folders: Arc::new(folders),
+        served: Arc::new(served),
+        verified: skills::Verified::default(),
+        retry,
+        limits: CallLimits::default(),
+        probes,
+    })
+}
+
+/// The connected servers' tools and skills, gathered under the names the
+/// model sees.
 #[derive(Default)]
 struct Indexed {
     tools: Vec<ToolDef>,
     remotes: HashMap<String, Remote>,
     offered: Vec<Skill>,
     served: HashMap<String, skills::Served>,
-    resources: Vec<(McpServer, Arc<Client>, bool, Owner)>,
-    clients: Vec<Arc<Client>>,
 }
 
-fn index(servers: Vec<Listed>) -> Result<Indexed, String> {
+fn index(servers: &[Listed]) -> Result<Indexed, String> {
     let mut indexed = Indexed::default();
     for listed in servers {
-        indexed.clients.push(Arc::clone(&listed.client));
-        if listed
-            .client
-            .peer_info()
-            .is_some_and(|info| info.capabilities.resources.is_some())
-        {
-            indexed.resources.push((
-                listed.server.clone(),
-                Arc::clone(&listed.client),
-                listed.speaks_newt,
-                listed.owner.clone(),
-            ));
-        }
-        for (name, def, remote) in listed.tools {
-            if indexed.remotes.insert(name.clone(), remote).is_some() {
+        for (name, def, remote) in &listed.tools {
+            if indexed
+                .remotes
+                .insert(name.clone(), remote.clone())
+                .is_some()
+            {
                 return Err(format!("two tools are both named `{name}`"));
             }
-            indexed.tools.push(def);
+            indexed.tools.push(def.clone());
         }
-        for (skill, entry) in listed.skills {
-            indexed.served.insert(skill.name.clone(), entry);
-            indexed.offered.push(skill);
+        for (skill, entry) in &listed.skills {
+            indexed.served.insert(skill.name.clone(), entry.clone());
+            indexed.offered.push(skill.clone());
         }
     }
     Ok(indexed)
@@ -579,7 +646,7 @@ async fn within_connect_timeout<T>(
 
 /// Connects an added server and lists and checks its tools. Any failure,
 /// including a tool newt cannot offer, leaves the server out of the turn.
-async fn connect_added(server: &McpServer, stale: &Arc<AtomicBool>) -> Result<Listed, String> {
+async fn connect_added(server: &McpServer) -> Result<Listed, String> {
     let client = within_connect_timeout("connect", connect(server)).await??;
     let speaks_newt = client.peer_info().is_some_and(|info| {
         info.capabilities
@@ -594,7 +661,6 @@ async fn connect_added(server: &McpServer, stale: &Arc<AtomicBool>) -> Result<Li
             Arc::new(client),
             speaks_newt,
             Owner::added(&server.name),
-            stale,
         ),
     )
     .await?
@@ -605,8 +671,8 @@ async fn list(
     client: Arc<Client>,
     speaks_newt: bool,
     owner: Owner,
-    stale: &Arc<AtomicBool>,
 ) -> Result<Listed, String> {
+    let stale = Arc::new(AtomicBool::new(false));
     let mut tools = client
         .list_all_tools()
         .await
@@ -614,10 +680,10 @@ async fn list(
     tools.sort_by(|left, right| left.name.cmp(&right.name));
     let tools = tools
         .into_iter()
-        .map(|tool| offer(tool, &server.name, &client, speaks_newt, &owner))
+        .map(|tool| offer(tool, &server.name, &client, speaks_newt, &owner, &stale))
         .collect::<Result<Vec<_>, String>>()?;
-    watch_tool_list(&server.name, &client, stale).await;
-    let skills = skills::list(&server.name, &client, speaks_newt, &owner).await?;
+    watch_tool_list(&server.name, &client, &stale).await;
+    let skills = skills::list(&server.name, &client, speaks_newt, &owner, &stale).await?;
     tracing::info!(server = %server.name, tools = tools.len(), skills = skills.len(), speaks_newt, "MCP server connected");
     Ok(Listed {
         server,
@@ -626,6 +692,7 @@ async fn list(
         skills,
         speaks_newt,
         owner,
+        stale,
     })
 }
 
@@ -637,6 +704,7 @@ fn offer(
     client: &Arc<Client>,
     speaks_newt: bool,
     owner: &Owner,
+    stale: &Arc<AtomicBool>,
 ) -> Result<(String, ToolDef, Remote), String> {
     let tool_name = tool.name.to_string();
     let name = match &owner.0 {
@@ -656,6 +724,7 @@ fn offer(
         tool: tool_name,
         speaks_newt,
         owner: owner.clone(),
+        stale: Arc::clone(stale),
     };
     Ok((name, def, remote))
 }
@@ -663,17 +732,16 @@ fn offer(
 /// Keeps trying a server that was down, the same way the toolset connects
 /// it. Once it connects and lists cleanly, the toolset is marked stale, so
 /// the next turn reconnects with it.
-fn probe(server: McpServer, stale: Arc<AtomicBool>) -> AbortOnDrop {
+fn probe(server: McpServer, retry: Arc<AtomicBool>) -> AbortOnDrop {
     let task = tokio::spawn(async move {
         loop {
             tokio::time::sleep(PROBE_INTERVAL).await;
-            if stale.load(Ordering::Relaxed) {
+            if retry.load(Ordering::Relaxed) {
                 return;
             }
-            let ignored = Arc::new(AtomicBool::new(false));
-            if connect_added(&server, &ignored).await.is_ok() {
+            if connect_added(&server).await.is_ok() {
                 tracing::info!(server = %server.name, "MCP server answers again; reconnecting before the next turn");
-                stale.store(true, Ordering::Relaxed);
+                retry.store(true, Ordering::Relaxed);
                 return;
             }
         }
