@@ -283,7 +283,7 @@ fn plain_output(result: CallToolResult) -> ToolOutput {
 
 /// A newt-speaking server's result, with its workspace fields scoped to the
 /// server's own pages.
-fn tool_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
+pub(super) fn tool_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
     let meta = result.meta.clone();
     let mut output = plain_output(result);
     let meta = meta.as_deref();

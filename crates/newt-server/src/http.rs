@@ -30,6 +30,7 @@ use crate::store::{AcceptError, Accepted, InboundEvent, LiveEvent, Store, live_t
 mod chat;
 mod error;
 mod fork;
+mod input;
 mod ui_stream;
 
 const EVENT_BODY_LIMIT: usize = 2 * 1024 * 1024;
@@ -115,9 +116,9 @@ fn authorize(
     if !allowed {
         return Err(ApiError::Unauthorized);
     }
-    if key.is_empty() || key.len() > MAX_NAME_BYTES || key.contains('/') {
+    if key.is_empty() || key.len() > MAX_NAME_BYTES || key.contains(['/', '\0']) {
         return Err(ApiError::Invalid(
-            "session key must be 1 to 200 bytes and contain no slash",
+            "session key must be 1 to 200 bytes and contain no slash or NUL",
         ));
     }
     Ok(())
@@ -187,6 +188,7 @@ async fn accept_event(
     if event.text.trim().is_empty() {
         return Err(ApiError::Invalid("an event needs text"));
     }
+    input::event_without_nul(event)?;
     let started = std::time::Instant::now();
     let accepted = state
         .store
@@ -236,6 +238,9 @@ async fn cancel_turn(
         serde_json::from_slice(&body)
             .map_err(|_| ApiError::Invalid("the body must be {} or {\"turn\": \"<turn id>\"}"))?
     };
+    if let Some(turn) = &request.turn {
+        input::no_nul(turn)?;
+    }
     match state
         .store
         .request_cancel(&agent, &key, request.turn.as_deref())

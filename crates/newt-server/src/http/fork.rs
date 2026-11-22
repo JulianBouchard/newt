@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ApiError, AppState, authorize};
+use super::{ApiError, AppState, authorize, input};
 use crate::fork::{Fork, ForkError};
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +44,9 @@ pub(super) async fn fork(
         .map_err(|_| ApiError::Invalid("body must be { into, agent?, through_turn? }"))?;
     let into_agent = request.agent.as_deref().unwrap_or(&agent);
     authorize(&state, into_agent, &request.into, &headers)?;
+    if let Some(turn) = &request.through_turn {
+        input::no_nul(turn)?;
+    }
     let copied = crate::fork::fork(
         state.store.pool(),
         Fork {

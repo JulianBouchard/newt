@@ -7,6 +7,8 @@ mod connection;
 mod listing;
 mod mrtr;
 mod pages;
+#[cfg(test)]
+mod props;
 mod skills;
 mod tools;
 mod toolset;
