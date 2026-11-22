@@ -307,6 +307,11 @@ impl super::Decoder for Decoder {
         if !self.text.is_empty() {
             parts.push(Part::text(self.text));
         }
+        if let Some((index, _)) = self.calls.iter().find(|(_, call)| !call.announced) {
+            return Err(ProviderError::Protocol(format!(
+                "tool call {index} ended without an id and a name"
+            )));
+        }
         let has_tool_call = !self.calls.is_empty();
         parts.extend(self.calls.into_values().map(|call| {
             Part::ToolCall(ToolCall {
