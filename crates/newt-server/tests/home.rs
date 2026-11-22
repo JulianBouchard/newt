@@ -248,7 +248,10 @@ impl ServerHandler for App {
         let resources: Vec<Resource> = uris
             .iter()
             .map(|uri| {
-                let name = uri.trim_start_matches(&prefix).replace("jobs://", "jobs/")
+                let name = uri
+                    .trim_start_matches(&prefix)
+                    .trim_end_matches('/')
+                    .replace("jobs://", "jobs/")
                     + if prefix.is_empty() { ".md" } else { "" };
                 Resource::new(uri, name)
             })
@@ -750,7 +753,7 @@ async fn an_unreachable_added_server_leaves_the_agent_running_without_it() {
             .context
             .as_deref()
             .unwrap()
-            .contains("<unavailable_servers>\nparaform: unreachable"),
+            .contains("<unavailable_servers>\nparaform: unavailable"),
     );
     assert_eq!(
         prepared
@@ -821,7 +824,7 @@ async fn an_added_server_with_a_tool_newt_cannot_offer_is_left_out_not_fatal() {
             .context
             .as_deref()
             .unwrap()
-            .contains("<unavailable_servers>\ncrm: unreachable")
+            .contains("<unavailable_servers>\ncrm: unavailable")
     );
     assert!(
         prepared
@@ -932,5 +935,59 @@ async fn a_server_that_changes_its_tools_is_listed_again_without_touching_the_ot
         plain.listings.load(Ordering::SeqCst),
         2,
         "the server that changed is listed again"
+    );
+}
+
+#[tokio::test]
+async fn an_added_server_with_two_pages_at_one_path_leaves_the_home_readable() {
+    let clashing = App::default();
+    clashing.set("jobs://acme-sre", "one");
+    clashing.set("jobs://acme-sre/", "two");
+    let home = App::home();
+    home.settings(json!({
+        "model": "default",
+        "servers": [{ "name": "paraform", "url": serve(clashing).await }],
+    }));
+    let prepared = prepare(&backend(home).await, "ana").await;
+    assert_eq!(
+        prepared
+            .workspace
+            .read("tasks.md")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("- [ ] Call the bank\n")
+    );
+}
+
+#[tokio::test]
+async fn an_added_tool_named_like_a_home_tool_leaves_that_server_out() {
+    let clash = App {
+        tools: vec![("task", json!({}))],
+        ..App::default()
+    };
+    let home = App {
+        tools: vec![("crm__task", json!({}))],
+        ..App::home()
+    };
+    home.settings(json!({
+        "model": "default",
+        "servers": [{ "name": "crm", "url": serve(clash).await }],
+    }));
+    let prepared = prepare(&backend(home).await, "ana").await;
+    assert!(
+        prepared
+            .context
+            .as_deref()
+            .unwrap()
+            .contains("<unavailable_servers>\ncrm: unavailable")
+    );
+    assert_eq!(
+        prepared
+            .tools
+            .iter()
+            .filter(|tool| tool.spec.name == "crm__task")
+            .count(),
+        1
     );
 }

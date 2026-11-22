@@ -168,7 +168,7 @@ impl TurnContext {
             out.push_str("<unavailable_servers>\n");
             out.push_str(&unavailable.join(", "));
             out.push_str(
-                ": unreachable right now, so their tools and pages are missing this turn.\n",
+                ": unavailable right now, so their tools and pages are missing this turn.\n",
             );
             out.push_str("</unavailable_servers>\n");
         }
@@ -232,13 +232,12 @@ impl HomeBackend {
         if let Some(loaded) = slot.as_ref().filter(|loaded| !loaded.toolset.is_stale()) {
             return Ok(Arc::clone(loaded));
         }
+        let previous = slot.as_ref().map(|loaded| &loaded.toolset);
         let (settings, toolset) = match slot.as_ref() {
-            Some(previous) if !previous.toolset.needs_new_home() => {
-                let added = resolve(&previous.settings.servers)?;
-                (
-                    previous.settings.clone(),
-                    previous.toolset.refresh(&added).await?,
-                )
+            Some(loaded) if !loaded.toolset.needs_new_home() => {
+                let added = resolve(&loaded.settings.servers)?;
+                let toolset = loaded.toolset.refresh(None, &added).await?;
+                (loaded.settings.clone(), toolset)
             }
             _ => {
                 let server = McpServer {
@@ -253,7 +252,11 @@ impl HomeBackend {
                 let connected = HomeConnection::connect(&server).await?;
                 let settings = self.declared_settings(&connected)?;
                 let added = resolve(&settings.servers)?;
-                (settings, connected.with_servers(&added).await?)
+                let toolset = match previous {
+                    Some(previous) => previous.refresh(Some(connected), &added).await?,
+                    None => connected.with_servers(&added).await?,
+                };
+                (settings, toolset)
             }
         };
         tracing::info!(
@@ -465,7 +468,7 @@ mod tests {
         let rendered = TurnContext::default()
             .render(&["paraform".to_owned()])
             .unwrap();
-        assert!(rendered.contains("<unavailable_servers>\nparaform: unreachable"));
+        assert!(rendered.contains("<unavailable_servers>\nparaform: unavailable"));
         assert_eq!(TurnContext::default().render(&[]), None);
     }
 }
