@@ -2,6 +2,8 @@ mod anthropic;
 mod capture;
 mod chat;
 mod client;
+#[cfg(test)]
+mod fuzz;
 mod openai;
 mod stream;
 mod types;

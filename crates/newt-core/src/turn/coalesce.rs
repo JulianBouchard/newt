@@ -66,6 +66,9 @@ fn ends_a_line_or_sentence(text: &str) -> bool {
 }
 
 #[cfg(test)]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use std::cell::RefCell;
 

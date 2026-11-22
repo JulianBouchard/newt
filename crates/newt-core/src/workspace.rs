@@ -12,6 +12,8 @@ mod refresh;
 
 use refresh::Claimed;
 
+const GLOB_LIMIT: usize = 512;
+
 pub type PageKey = Vec<String>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,6 +388,9 @@ impl Workspace {
 }
 
 fn matcher(pattern: &str) -> Result<GlobMatcher, WorkspaceError> {
+    if pattern.len() > GLOB_LIMIT {
+        return Err(WorkspaceError::Glob("longer than 512 bytes".to_owned()));
+    }
     Ok(GlobBuilder::new(pattern)
         .literal_separator(true)
         .build()

@@ -9,6 +9,8 @@ use crate::workspace::{Page, PageKey};
 
 mod builtin;
 mod end_turn;
+#[cfg(test)]
+mod fuzz;
 mod workspace;
 
 pub(crate) use builtin::remember;

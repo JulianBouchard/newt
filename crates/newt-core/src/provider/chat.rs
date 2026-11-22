@@ -124,13 +124,13 @@ struct Delta {
     #[serde(default)]
     refusal: Option<String>,
     #[serde(default)]
-    tool_calls: Vec<CallDelta>,
+    tool_calls: Option<Vec<CallDelta>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CallDelta {
     #[serde(default)]
-    index: usize,
+    index: Option<usize>,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -215,6 +215,7 @@ impl Decoder {
 impl super::Decoder for Decoder {
     fn handle(&mut self, event: &SseEvent, emit: &mut Emitter<'_>) -> Result<bool, ProviderError> {
         if event.data.trim() == DONE {
+            self.release_calls_before(usize::MAX, emit);
             return Ok(true);
         }
         let chunk: Chunk = decode(event)?;
@@ -256,9 +257,16 @@ impl super::Decoder for Decoder {
                 self.refused = true;
                 self.text.push_str(&refusal);
             }
-            for delta in choice.delta.tool_calls {
-                self.release_calls_before(delta.index, emit);
-                let call = self.calls.entry(delta.index).or_default();
+            for delta in choice.delta.tool_calls.unwrap_or_default() {
+                let last = self.calls.keys().next_back().copied();
+                let index = match (delta.index, last) {
+                    (Some(index), _) => index,
+                    (None, Some(last)) if delta.id.is_none() => last,
+                    (None, Some(last)) => last.saturating_add(1),
+                    (None, None) => 0,
+                };
+                self.release_calls_before(index, emit);
+                let call = self.calls.entry(index).or_default();
                 if let Some(id) = delta.id {
                     call.id = id;
                 }
@@ -298,6 +306,11 @@ impl super::Decoder for Decoder {
         let mut parts = Vec::new();
         if !self.text.is_empty() {
             parts.push(Part::text(self.text));
+        }
+        if let Some((index, _)) = self.calls.iter().find(|(_, call)| !call.announced) {
+            return Err(ProviderError::Protocol(format!(
+                "tool call {index} ended without an id and a name"
+            )));
         }
         let has_tool_call = !self.calls.is_empty();
         parts.extend(self.calls.into_values().map(|call| {
