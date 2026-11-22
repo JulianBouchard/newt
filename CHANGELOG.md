@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-22
+
+### Security
+
+- **`url` 2.5.9** for [RUSTSEC-2026-0592](https://rustsec.org/advisories/RUSTSEC-2026-0592) (stack overflow in `Url::origin()` on nested `blob:` URLs). newt's own code never calls it; the crate comes in through its HTTP dependencies.
+
 ## [2.2.1] - 2026-11-22
 
 Fewer database round trips for the live feed. In the agent-runtime bench (one session, four turns, 21 model calls and 73 tool calls), statements per turn drop from 536 to 315 with `live_stream` and from 196 to 131 without; turn time and time to first answer text are unchanged.
