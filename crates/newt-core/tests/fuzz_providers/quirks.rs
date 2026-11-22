@@ -80,6 +80,26 @@ fn call_delta(index: Option<u64>, id: Option<&str>, name: Option<&str>, argument
 }
 
 #[test]
+fn chat_accepts_null_content_and_null_tool_calls_in_deltas() {
+    let outcome = chat(
+        &[
+            delta(
+                json!({ "role": "assistant", "content": null, "tool_calls": null }),
+                Value::Null,
+            ),
+            delta(
+                json!({ "content": "Hello", "tool_calls": null }),
+                Value::Null,
+            ),
+            delta(json!({}), json!("stop")),
+        ],
+        true,
+    );
+    let summary = outcome.result.expect("a response");
+    assert_eq!(summary.parts, vec![Part::text("Hello")]);
+}
+
+#[test]
 fn chat_readies_every_call_when_the_stream_ends_without_a_finish_reason() {
     let outcome = chat(
         &[
