@@ -3,7 +3,7 @@ title: Stability
 description: What newt promises within a major version, what minor releases may add, and what is outside the promise.
 ---
 
-newt follows semantic versioning. Within a major version (2.x now), nothing below changes in a way that breaks a working setup. 2.0 replaced the HTTP context provider with the home MCP server; the [changelog](../changelog/) has what changed.
+newt follows semantic versioning. From 2.1 on, nothing below changes within 2.x in a way that breaks a working setup. 2.0 replaced the HTTP context provider with the home MCP server, and 2.1 settled a few of its defaults and responses; the [changelog](../changelog/) has what changed.
 
 ## Covered
 

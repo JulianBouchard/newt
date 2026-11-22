@@ -1,4 +1,8 @@
 export const RELEASE_HIGHLIGHTS = {
+  "2.1.0": {
+    title: "Stream into any chat UI, end turns like everyone else",
+    body: "With `live_stream`, text and tool-call input stream on the live feed as the model writes them: `POST .../chat` speaks the Vercel AI SDK's UI message stream, and `examples/eve-react` serves eve's React client. A reply now ends the turn, and any tool can end it with `newt/ends_turn`. Cancel from any instance, `/metrics`, an inbox cap and slots held back for live chats round it out. [Events](../events/)",
+  },
   "2.0.0": {
     title: "An agent is an MCP server",
     body: "The HTTP context provider is gone: an agent is its home MCP server, which declares its settings in the `newt` extension, plus any servers it adds. Servers that do not speak newt get a plain tool call and nothing of the session's, and newt can run any of them itself over stdio. [The home server](../home-server/)",

@@ -4,28 +4,65 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-21
+
+Chat streaming for the AI SDK and eve's React client, a new rule for ending turns, and the protection a production event API needs. 2.1 changes a few 2.0 defaults and responses, listed first; from 2.1 on, 2.x keeps the compatibility promise in the README.
+
+### Changed from 2.0
+
+- **A reply ends the turn.** A response with text and no tool calls ends the turn with that text as the reply, as in most agent loops, instead of a reminder and one more model call just for `end_turn`. `end_turn`'s `recorded` and `nothing_new` are optional. `require_end_turn: true` in the home's settings keeps the 2.0 rule. Protocol section 6.
+- **One error shape.** Every 4xx and 5xx of the HTTP API, including the framework's own (unknown route, wrong method, body over 2 MiB), is `{"error": {"code", "message"}}` with stable codes (protocol section 5); `error` used to be a string. 429 and 503 carry `Retry-After`.
+- **A reused event id with different content gets 409.** The inbox row stores a sha256 of the event's `text` and `meta` (keys sorted; migration `0009`). The same id with the same content is still a `duplicate`; 2.0 silently answered a different one with the first event. Rows from before the migration have no hash and stay duplicates.
+- **At most 100 unconsumed events per session** (`max_pending_events`, per agent). `POST .../events` past it returns 429 with `Retry-After`; a repeat of an event already held is still a duplicate. The check and the insert are one statement under a per-session advisory lock (migration `0008`).
+- **Slots held back for live chats.** `reserved_interactive` in `[runner]` (default `max(1, max_sessions / 4)`, always less than `max_sessions`) keeps that many turn slots for turns with an interactive event, so a burst of `priority: "background"` turns can no longer make a live chat wait.
+- **`/healthz` answers JSON:** `ready`, `running`, `waiting`, `max_sessions` and `oldest_wait_ms`. Still 200 while the database check passes and 503 when it fails, now with the same body. Protocol 5.8.
+
 ### Added
 
-- **Cancel works from any instance.** `POST .../cancel` no longer needs to reach the instance running the turn. It looks up the session's running turn in Postgres and records the request on the session row (`cancel_turn`, `cancel_requested_at`; migration `0010`), notifies the `newt_cancel` channel, and answers 202 `{"turn": "<id>"}`; the instance that holds the lease cancels at once, or at its next lease heartbeat if the notification was lost, with no extra database read per model call. The body may name `{"turn": "<id>"}` so a late cancel can never hit the next turn. Repeating a request is 202 again and cancels once; an unknown session is 404 `session_not_found`; no running turn, or another one, is 409 `turn_not_running` (the old per-instance 404 `no_running_turn` is gone). The flag is cleared when the turn ends. See protocol 5.9.
-- **`max_waiting` in `[runner]` (default `4 * max_sessions`).** Every wake used to spawn a task that waited for a slot, with no limit. Now at most `max_waiting` woken sessions wait; a wake past it is dropped, the session stays in the inbox for the next sweep, and `newt_wakes_dropped_total` counts it.
-- **One error shape and a gap frame for clients.** Every 4xx and 5xx of the HTTP API, including the framework's own (unknown route, wrong method, body over 2 MiB), is now `{"error": {"code", "message"}}` with stable codes (listed in protocol section 5), and 429 and 503 carry `Retry-After`. The `error` field used to be a string. `GET .../live` resumed from a cursor older than the oldest kept frame now starts with a `gap` frame `{from, to}` instead of silently starting later. The SSE keep-alive is a comment line every 15 seconds, now documented.
-- **`GET /metrics`** in Prometheus text format, with no new dependency: events accepted, duplicate, limited and conflicted; turns started, completed, failed and cancelled; fenced commits, dead-lettered events and retries; running and waiting turns, `max_sessions` and the oldest wait; and a histogram of how long woken sessions waited for a slot. See protocol 5.10.
-- **`POST /v1/agents/{agent}/sessions/{key}/cancel`.** Cancels the session's running turn through its cancellation token. The turn emits `turn_failed` with the new `reason: "cancelled"` (also on the `TurnFailed` event in `newt-core`, `FailureReason::Cancelled`), and its events are dead-lettered with the reason `cancelled` when no outward call had run, so it is not retried. See protocol 5.9.
-- **`reserved_interactive` in `[runner]`.** Turn slots (`max_sessions`) were one FIFO pool, so a burst of background turns could fill the process and make a live chat wait. Now `reserved_interactive` slots (default `max(1, max_sessions / 4)`, always less than `max_sessions`) are only for interactive turns; turns whose events are all `priority: "background"` share the rest. The signal is the event's existing `priority` field, so no new `lane` field was added.
-- **Event id conflicts.** The inbox row now stores a sha256 of the event's content (`text` and `meta`, keys sorted; migration `0009`). A repeat id with the same content is still a `duplicate`; a repeat id with different content gets 409 and is not stored, instead of silently answering with the first event. Rows from before the migration have no hash and stay duplicates.
-- **`max_pending_events` per agent (default 100).** The number of unconsumed events one session may hold. `POST .../events` past it returns 429 with `Retry-After`; a repeat of an event already held is still a duplicate, not a 429. The check and the insert are one statement under a per-session advisory lock (migration `0008`), so concurrent posts cannot go past the cap.
-- **Load-aware `/healthz`.** The body is now JSON: `ready`, `running` (turns holding a slot), `waiting` (woken sessions waiting for one), `max_sessions` and `oldest_wait_ms`. The status is still 200 while the database check passes and 503 when it fails, now with the same body. See protocol 5.8.
-- **The live feed carries what a chat UI needs.** Under `live_stream`, the `received` frame carries the user's text and a new `tool_output` frame carries each tool call's result (first 4,000 characters). The AI SDK `/chat` stream sends that result as `tool-output-available`, and `examples/eve-react` turns newt's live feed into eve's message stream, so a UI built on `eve/react` runs against newt; its check drives eve's own client and reducer.
+Chat and streaming:
 
-- **A reply ends the turn; any tool can end it too.** A response with text and no tool calls now ends the turn with that text as the reply, as in most agent loops, instead of costing one more model call just for `end_turn`; `end_turn`'s `recorded` and `nothing_new` become optional. A tool whose `_meta` says `newt/ends_turn: true` (eve's `endsTurn`) ends the turn once every call of its response succeeds, so a custom end tool like `no_reply` or `submit` can sit in the same response as the last action and save the closing model call; a result's `newt/ends_turn` overrides it per call. `require_end_turn: true` in the home's settings keeps the old rule: every turn ends with `end_turn` saying what it recorded. Protocol section 6. In the production replay bench, a turn took 6.0 model calls under the old rule and 5.3 with replies ending turns, with 12% fewer input tokens.
-- **`live_stream` per agent.** An agent with `live_stream = true` gets the model's output on its live feed as it is written: the answer text as `text_delta` frames (`session`, `turn`, `text`), and each tool call's arguments as `tool_input_delta` frames (`call_id`, `name`, `delta`), so an agent that answers through a tool such as `send_message` can be shown as it writes. Both are batched to about every 50 ms or a line or sentence end, per call, and always flushed before the model call ends and before the call's ready event. Reasoning is never streamed, and the frames stay out of history, the journal, the JSONL event file and OTLP. All three provider protocols pass text and arguments through (`StreamEvent::TextDelta`, `StreamEvent::ToolInputDelta`: OpenAI Responses `response.function_call_arguments.delta`, Anthropic `input_json_delta`, chat-completions `tool_calls[].function.arguments`).
-- **`tool_input`, `model_call_started` and `model_call_finished` live frames** for agents with `live_stream`. `tool_input` (`call_id`, `name`, `input`) carries a call's complete, parsed arguments once the model has finished writing them, before the tool runs. The two model call frames carry only `call` and the model or stop reason, and mark the steps of a turn.
-- **`POST /v1/agents/{agent}/sessions/{key}/chat`** for the Vercel AI SDK. It accepts the body `DefaultChatTransport` sends, posts the last user message as an event (the message `id` is the event id, so retries deduplicate), and streams that turn as a UI message stream (`x-vercel-ai-ui-message-stream: v1`, `data: [DONE]`), so `useChat` shows text and tool-call input as they are written. Needs `live_stream`; a message sent mid-turn joins the running turn. See protocol 5.7 and `examples/ai-sdk-chat`.
-- **`first_sign_ms` in `newt-loadtest`.** Each turn's time to first sign of life is logged and shown in `decompose` next to turn start and end: the earliest of a `tool_started`, `text_delta` or `tool_input_delta` frame on newt, and of `actions.requested`, `action.input.appended` or `message.appended` on eve. With a replay, `decompose` compares it to production's earliest tool-call start or first model token. The fake model now streams a call's arguments in 6 to 10 chunks spread over the time leading to the call, in both schedule modes.
+- **`live_stream` per agent.** The model's output on the live feed as it is written:
+  - `text_delta` frames carry the answer text.
+  - `tool_input_delta` frames carry each tool call's arguments, so an agent that answers through a tool such as `send_message` can be shown as it writes.
+  - `tool_input` carries a call's complete, parsed arguments once the model has finished writing them, before the tool runs.
+  - `tool_output` carries each result, cut to its first 4,000 characters.
+  - The `received` frame carries the user's text.
+  - `model_call_started` and `model_call_finished` mark the steps of a turn.
+
+  Deltas are batched to about every 50 ms or a line or sentence end, and flushed before the model call ends. Reasoning is never streamed. None of these frames reach history, the journal, the JSONL event file or OTLP. All three provider protocols pass text and arguments through.
+- **`POST .../chat` for the Vercel AI SDK.** It takes the body `DefaultChatTransport` sends, posts the last user message as an event (the message `id` is the event id, so retries deduplicate), and streams that turn as a UI message stream, so `useChat` shows text, tool input and tool results as they arrive. It needs `live_stream`. Protocol 5.7 and `examples/ai-sdk-chat`; that example's check drives the real `ai` client.
+- **`examples/eve-react`** turns newt's live feed into eve's message stream and serves the session endpoints `eve/react` calls, so a UI built for eve runs against newt: streamed text, tool input and results, and resume by index with no gaps or duplicates. Its check drives eve's own client and reducer.
+
+Ending turns:
+
+- **Any tool can end the turn.** A tool whose `_meta` says `newt/ends_turn: true` (eve's `endsTurn`) ends the turn once every call of its response has succeeded. A custom end tool like `no_reply` or `submit` can sit in the same response as the last action, which saves the closing model call. A result's `newt/ends_turn` overrides the tool's value for that one call. Protocol section 6.
+
+Operations:
+
+- **Cancel a running turn from any instance.** `POST .../cancel`, optionally naming `{"turn": "<id>"}` so a late cancel never hits the next turn.
+  - The request is recorded on the session row (migration `0010`) and announced on `newt_cancel`.
+  - The instance holding the lease cancels at once, or at its next lease heartbeat if the notification was lost.
+  - Answers: 202 `{"turn"}` (also on a repeat); 409 `turn_not_running`; 404 `session_not_found`.
+  - The turn ends with `turn_failed` and `reason: "cancelled"`. Its events are dead-lettered when no outward call had run, so it is not retried. Protocol 5.9.
+- **`GET /metrics`** in Prometheus text format: events by outcome, turns by outcome, fenced commits, dead letters, retries, running and waiting turns, and a histogram of the wait for a slot. Protocol 5.10.
+- **`max_waiting` in `[runner]`** (default `4 * max_sessions`) bounds the woken sessions that wait for a slot. A wake past it is dropped and left for the next sweep, and `newt_wakes_dropped_total` counts it.
+- **A `gap` frame.** `GET .../live` resumed from a cursor older than the oldest kept frame starts with `{"type": "gap", "from", "to"}` instead of silently starting later. The SSE keep-alive, a comment line every 15 seconds, is now documented.
+
+Speed:
+
+- **Read-only tool calls start while the model is still writing.** A workspace read, or a call to an `ephemeral` tool, starts as soon as its arguments have finished streaming instead of after the whole response. Writes and sends still wait for the complete response, so a crash can never repeat them.
+
+Benchmarking (`newt-loadtest`):
+
+- **A production-faithful bench.** `scripts/bench-compare.sh newt|eve` runs the same workload against newt or against eve 0.83 built for production (`eve build` + `eve start`, the Postgres workflow world, a Docker sandbox).
+  - It runs sped up. The fake model and mock app log when they were busy on each turn's behalf, and `newt-loadtest decompose` splits every turn into the runtime's own time and the simulated wait, then scales that wait back to real speed.
+  - `--replay` replays recorded production turns call by call: each call's duration, each tool call released at its recorded moment, each host tool taking its recorded latency. It then compares every turn with its production time.
+  - Each run gets its own ports and databases.
+  - `first_sign_ms` measures time to first sign of life.
 
 ### Fixed
 
-- **A panic in a turn no longer stalls the session.** The runner now releases the session's lease immediately, fenced by owner and epoch, and schedules a retry with the usual backoff, instead of leaving the lease to expire (about 30 s). The interrupted turn resumes from its journal on the next attempt.
+- **A panic in a turn no longer stalls its session.** The runner releases the lease at once, fenced by owner and epoch, and retries with the usual backoff, instead of leaving the lease to expire (about 30 s).
 
 ## [2.0.0] - 2026-11-21
 

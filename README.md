@@ -17,7 +17,7 @@ Experimental features work and are tested, including end to end against `newt-de
 
 ### Stability
 
-Newt follows semantic versioning. 2.0 replaced the HTTP context provider with the home MCP server (see [CHANGELOG.md](CHANGELOG.md)). Within 2.x, nothing below changes in a way that breaks a working setup:
+Newt follows semantic versioning. 2.0 replaced the HTTP context provider with the home MCP server, and 2.1 settled a few of its defaults and responses (see [CHANGELOG.md](CHANGELOG.md)). From 2.1 on, nothing below changes within 2.x in a way that breaks a working setup:
 
 - the event API (`docs/protocol.md`, section 5): paths, fields, status codes;
 - the `newt` MCP extension: the home's declaration, `newt/turn`, `newt/turn_end` and the `newt/*` `_meta` fields (sections 1 to 4);
