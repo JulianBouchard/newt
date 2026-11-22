@@ -4,6 +4,27 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-11-21
+
+Fixes from a real model in a deployed demo and from fuzzing every surface that parses model output, tool input or client requests. The fuzz properties stay in the test suite.
+
+### Fixed
+
+- **A NUL character no longer stops a turn.** Postgres refuses NUL in text and jsonb, so a model reply, tool argument or tool result containing one failed every commit of its turn: the turn retried, re-running its model calls, and its events were dead-lettered after five attempts. Model output and tool output now replace NUL with U+FFFD where they enter the turn. The event API, `/chat`, `/cancel` and `/fork` answer 400 `invalid_request` for a NUL in what a client sends, where they used to answer 500.
+- **A `functions.` prefix on a tool name resolves to the tool.** OpenAI models address tools as `functions.<name>` internally, and the prefix can leak into the names they write, as it did inside `batch`. A prefixed name now runs the tool when only the bare name exists, for top-level calls, calls inside `batch` and calls started early.
+- **`batch` parses an inner call's `arguments` like a top-level call's.** A JSON-encoded string becomes the object, `null` becomes `{}`, and anything else is reported to the model as invalid arguments instead of reaching the tool as a string.
+- **A glob can no longer crash newt.** A `glob` pattern (in `glob` or in `grep`'s `glob`) of about a thousand nested braces overflowed the stack and aborted the process, and one of a few hundred thousand characters panicked. Patterns longer than 512 bytes are refused with an error result.
+- **Chat Completions hosts:**
+  - a stream that ends with `[DONE]` and no `finish_reason` now marks its last tool call ready;
+  - `"tool_calls": null` in a chunk is accepted;
+  - tool call chunks without an `index` no longer merge parallel calls into one;
+  - a tool call that never got an id or a name fails the response instead of reaching the turn.
+- **`end_turn`** refuses arguments that are not an object.
+- **`/chat`:** a tool frame without a `call_id` no longer produces a chunk with an empty `toolCallId`, and a tool call gets at most one `tool-input-available`, never after its output.
+- **Event `meta` numbers keep their exact value.** Floats were parsed lossily, so a large float could come back slightly different.
+- **`[database] max_connections = 0`** is refused with a clear error instead of panicking at startup.
+
+
 ## [2.1.0] - 2026-11-21
 
 Chat streaming for the AI SDK and eve's React client, a new rule for ending turns, and the protection a production event API needs. 2.1 changes a few 2.0 defaults and responses, listed first; from 2.1 on, 2.x keeps the compatibility promise in the README.

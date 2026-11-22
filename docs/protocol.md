@@ -180,7 +180,7 @@ Resources with a `skill://` URI are skills, not pages, and are left out. A resou
 
 A `resources/read` result from a server with the newt extension may carry `_meta["newt/state_patch"]`, a JSON merge patch applied to the session's state (1.3). A patch that is not an object fails the read.
 
-Paths match `glob` patterns with `/` as a literal separator (`*` does not cross `/`, `**` does). Newt reports the path and version of each page the agent read to tools in `newt/pages_read` (2.3).
+Paths match `glob` patterns with `/` as a literal separator (`*` does not cross `/`, `**` does). A pattern longer than 512 bytes is refused with an error result. Newt reports the path and version of each page the agent read to tools in `newt/pages_read` (2.3).
 
 **Invalidation.** A page goes stale when:
 
@@ -455,7 +455,7 @@ Every error of this API, from a handler or from the framework (unknown route, wr
 
 | Status | `code` | When |
 |---|---|---|
-| 400 | `invalid_request` | Bad body, id, text or session key. |
+| 400 | `invalid_request` | Bad body, id, text or session key, or a NUL character anywhere in them (Postgres cannot store it). |
 | 401 | `unauthorized` | Missing or wrong token, or unknown agent. |
 | 404 | `not_found` | No such session or route. |
 | 405 | `method_not_allowed` | Wrong method for the path. |
