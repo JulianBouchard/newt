@@ -3,193 +3,20 @@
 //! settings, its resources are the root of the workspace, and it can answer
 //! `newt/turn` and `newt/turn_end` when it declares them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
+mod servers;
+mod turn_context;
 
-use newt_core::journal::TurnChoice;
-use newt_core::prompt::Effort;
-use newt_core::workspace::Workspace;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+pub use servers::{AddedServer, HomeServer, Settings};
+
+use servers::resolve;
+use turn_context::{Loaded, TurnCall, TurnContext};
 
 use crate::backend::{Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState};
-use crate::mcp::{
-    HomeConnection, McpAuth, McpHost, McpServer, NEWT_EXTENSION, STDIO_SCHEME, Toolset,
-};
-
-/// Where an agent's home server is, from `server.toml`.
-#[derive(Clone)]
-pub struct HomeServer {
-    pub url: String,
-    /// The agent's token: sent to a home reached over HTTP, never over stdio.
-    pub token: String,
-}
-
-impl std::fmt::Debug for HomeServer {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("HomeServer")
-            .field("url", &self.url)
-            .field("token", &"<redacted>")
-            .finish()
-    }
-}
-
-/// The agent's settings: the `newt` object in the home's declared extensions.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag is a field of the declared settings object, decoded as it is written"
-)]
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Settings {
-    pub model: String,
-    #[serde(default)]
-    pub first_call_effort: Option<Effort>,
-    #[serde(default)]
-    pub effort: Option<Effort>,
-    #[serde(default = "default_max_output_tokens")]
-    pub max_output_tokens: u32,
-    #[serde(default = "default_max_model_calls")]
-    pub max_model_calls: u32,
-    #[serde(default)]
-    pub max_turn_tokens: Option<u64>,
-    #[serde(default)]
-    pub recite: bool,
-    /// Every turn must end with `end_turn` saying what it recorded; otherwise a reply
-    /// with no tool calls ends the turn.
-    #[serde(default)]
-    pub require_end_turn: bool,
-    #[serde(default = "default_history_budget")]
-    pub history_budget: u32,
-    /// Ask the home with `newt/turn` before each turn.
-    #[serde(default)]
-    pub turn: bool,
-    /// Send the home `newt/turn_end` after each committed turn.
-    #[serde(default)]
-    pub turn_end: bool,
-    #[serde(default)]
-    pub servers: Vec<AddedServer>,
-}
-
-/// A server the home adds to the agent.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AddedServer {
-    pub name: String,
-    pub url: String,
-    /// The environment variable that holds the server's bearer token.
-    #[serde(default)]
-    pub auth_env: Option<String>,
-}
-
-const fn default_history_budget() -> u32 {
-    60_000
-}
-
-const fn default_max_output_tokens() -> u32 {
-    4096
-}
-
-const fn default_max_model_calls() -> u32 {
-    8
-}
-
-/// What the home answers to `newt/turn`. Every field is optional.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TurnContext {
-    #[serde(default)]
-    pinned: Option<String>,
-    #[serde(default)]
-    instructions: Option<String>,
-    #[serde(default)]
-    constraints: Vec<String>,
-    #[serde(default)]
-    state: Option<Value>,
-    #[serde(default)]
-    turn_state: Option<Value>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    effort: Option<Effort>,
-    #[serde(default)]
-    first_call_effort: Option<Effort>,
-    #[serde(default)]
-    reset: bool,
-    #[serde(default, rename = "_meta")]
-    _meta: Option<Value>,
-}
-
-#[derive(Serialize)]
-struct TurnCall<'a> {
-    session: &'a str,
-    events: &'a [crate::backend::TurnEvent],
-    state: Option<&'a Value>,
-}
-
-impl TurnContext {
-    fn choice(&self, settings: &Settings) -> Option<TurnChoice> {
-        let chose = self.model.is_some()
-            || self.effort.is_some()
-            || self.first_call_effort.is_some()
-            || self.reset;
-        chose.then(|| TurnChoice {
-            model: self.model.clone().unwrap_or_else(|| settings.model.clone()),
-            first_call_effort: self.first_call_effort.or(settings.first_call_effort),
-            effort: self.effort.or(settings.effort),
-            reset: self.reset,
-        })
-    }
-
-    fn render(&self, unavailable: &[String]) -> Option<String> {
-        let instructions = self
-            .instructions
-            .as_deref()
-            .map(str::trim)
-            .filter(|text| !text.is_empty());
-        let constraints: Vec<&str> = self
-            .constraints
-            .iter()
-            .map(|constraint| constraint.trim())
-            .filter(|constraint| !constraint.is_empty())
-            .collect();
-        if instructions.is_none() && constraints.is_empty() && unavailable.is_empty() {
-            return None;
-        }
-        let mut out = String::from("<turn_context>\n");
-        if let Some(instructions) = instructions {
-            out.push_str("<instructions>\n");
-            out.push_str(instructions);
-            out.push_str("\n</instructions>\n");
-        }
-        if !constraints.is_empty() {
-            out.push_str("<active_constraints>\n");
-            for constraint in constraints {
-                out.push_str("- ");
-                out.push_str(constraint);
-                out.push('\n');
-            }
-            out.push_str("</active_constraints>\n");
-        }
-        if !unavailable.is_empty() {
-            out.push_str("<unavailable_servers>\n");
-            out.push_str(&unavailable.join(", "));
-            out.push_str(
-                ": unavailable right now, so their tools and pages are missing this turn.\n",
-            );
-            out.push_str("</unavailable_servers>\n");
-        }
-        out.push_str("</turn_context>");
-        Some(out)
-    }
-}
-
-#[derive(Debug)]
-struct Loaded {
-    settings: Settings,
-    toolset: Toolset,
-}
+use crate::mcp::{HomeConnection, McpAuth, McpHost, McpServer, NEWT_EXTENSION, STDIO_SCHEME};
+use newt_core::workspace::Workspace;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 pub struct HomeBackend {
     homes: HashMap<String, Arc<HomeServer>>,
@@ -381,40 +208,6 @@ impl HomeBackend {
             turn_state,
         })
     }
-}
-
-/// The servers the home adds, with their tokens read from the environment.
-fn resolve(servers: &[AddedServer]) -> Result<Vec<McpServer>, String> {
-    servers
-        .iter()
-        .map(|server| {
-            McpServer::check_url(&server.url)
-                .map_err(|error| format!("server `{}`: {error}", server.name))?;
-            let auth = match &server.auth_env {
-                Some(variable) => {
-                    let token = std::env::var(variable).map_err(|_| {
-                        format!(
-                            "server `{}`: environment variable {variable} is not set",
-                            server.name
-                        )
-                    })?;
-                    if token.trim().is_empty() {
-                        return Err(format!(
-                            "server `{}`: environment variable {variable} is empty",
-                            server.name
-                        ));
-                    }
-                    McpAuth::Bearer(token)
-                }
-                None => McpAuth::None,
-            };
-            Ok(McpServer {
-                name: server.name.clone(),
-                url: server.url.clone(),
-                auth,
-            })
-        })
-        .collect()
 }
 
 impl Backend for HomeBackend {
