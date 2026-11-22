@@ -2,6 +2,8 @@
 
 mod support;
 
+use std::fmt::Write as _;
+
 use proptest::prelude::*;
 use reqwest::Method;
 use serde_json::json;
@@ -184,13 +186,14 @@ async fn arbitrary_live_cursors_never_fail_the_server(pool: PgPool) {
     )) {
         let mut url = format!("{base}/v1/agents/assistant/sessions/live/live");
         if let Some(query) = &query {
-            url.push_str(&format!("?cursor={query}"));
+            let _ = write!(url, "?cursor={query}");
         }
         let mut request = client.get(&url).bearer_auth("secret");
-        if let Some(header) = &header {
-            if let Ok(value) = reqwest::header::HeaderValue::from_str(header) {
-                request = request.header("last-event-id", value);
-            }
+        if let Some(value) = header
+            .as_deref()
+            .and_then(|header| reqwest::header::HeaderValue::from_str(header).ok())
+        {
+            request = request.header("last-event-id", value);
         }
         let response = request.send().await.unwrap();
         let status = response.status();

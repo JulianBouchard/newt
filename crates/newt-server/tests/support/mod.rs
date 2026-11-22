@@ -2,6 +2,7 @@
 #![allow(dead_code, reason = "each fuzz test file uses a different part")]
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use newt_server::http::{AppState, router};
@@ -70,7 +71,7 @@ pub fn percent_encode(bytes: &[u8]) -> String {
         if byte.is_ascii_alphanumeric() || b"-._~".contains(byte) {
             out.push(char::from(*byte));
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            let _ = write!(out, "%{byte:02X}");
         }
         out
     })
@@ -167,8 +168,11 @@ pub fn assert_contract(label: &str, status: StatusCode, body: &[u8]) {
     if !status.is_client_error() {
         return;
     }
-    let value: Value = serde_json::from_slice(body)
-        .unwrap_or_else(|_| panic!("{label}: {status} body is not JSON: {body:?}"));
+    let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    assert!(
+        value.is_object(),
+        "{label}: {status} body is not a JSON object: {body:?}"
+    );
     let object = value.as_object().unwrap();
     assert_eq!(
         object.keys().collect::<Vec<_>>(),

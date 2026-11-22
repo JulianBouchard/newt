@@ -1,3 +1,5 @@
+#![expect(clippy::expect_used, reason = "tests fail loudly on setup errors")]
+
 use std::sync::Arc;
 
 use newt_core::tools::Retention;
@@ -123,9 +125,8 @@ fn tool_with(meta: Map<String, Value>) -> Tool {
 
 fn expected_tool(meta: &Map<String, Value>) -> Option<(Retention, Vec<Vec<String>>, bool)> {
     let retention = match meta.get("newt/retention").map(Value::as_str) {
-        None => Retention::Durable,
+        None | Some(Some("durable")) => Retention::Durable,
         Some(Some("ephemeral")) => Retention::Ephemeral,
-        Some(Some("durable")) => Retention::Durable,
         Some(Some("outward")) => Retention::Outward,
         Some(_) => return None,
     };
@@ -170,12 +171,7 @@ proptest! {
         );
         let owner = if added { Owner::added("srv") } else { Owner::HOME };
         let result = tool_def(tool_with(meta.clone()), "probe", speaks_newt, &owner);
-        if !speaks_newt {
-            let def = result.expect("a plain server's tool always loads");
-            prop_assert_eq!(def.retention, Retention::Durable);
-            prop_assert!(def.invalidates.is_empty());
-            prop_assert!(!def.ends_turn);
-        } else {
+        if speaks_newt {
             match (expected_tool(&meta), result) {
                 (Some((retention, invalidates, ends_turn)), Ok(def)) => {
                     prop_assert_eq!(def.retention, retention);
@@ -186,6 +182,11 @@ proptest! {
                 (None, Err(message)) => prop_assert!(message.contains("newt/"), "{message}"),
                 (expected, result) => prop_assert!(false, "{meta:?}: expected {expected:?}, got {:?}", result.map(|def| (def.retention, def.ends_turn))),
             }
+        } else {
+            let def = result.expect("a plain server's tool always loads");
+            prop_assert_eq!(def.retention, Retention::Durable);
+            prop_assert!(def.invalidates.is_empty());
+            prop_assert!(!def.ends_turn);
         }
     }
 }

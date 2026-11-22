@@ -191,7 +191,6 @@ fn tool_finished_chunk(frame: &Value, call_id: &str) -> Value {
 #[cfg(test)]
 mod props;
 #[cfg(test)]
-#[cfg(test)]
 mod regressions;
 #[cfg(test)]
 mod tests;

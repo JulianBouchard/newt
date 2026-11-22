@@ -1,3 +1,5 @@
+#![expect(clippy::expect_used, reason = "tests fail loudly on setup errors")]
+
 use proptest::prelude::*;
 use serde_json::{Map, Value, json};
 

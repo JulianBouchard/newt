@@ -3,6 +3,7 @@
 mod support;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use proptest::prelude::*;
 use reqwest::Method;
@@ -46,7 +47,7 @@ fn render(value: &Value, reversed: bool, out: &mut String) {
 fn event_json(id: &str, text: &str, meta: &Value, reversed: bool) -> Vec<u8> {
     let mut out = format!("{{\"text\":{},\"meta\":", Value::from(text));
     render(meta, reversed, &mut out);
-    out.push_str(&format!(",\"id\":{}}}", Value::from(id)));
+    let _ = write!(out, ",\"id\":{}}}", Value::from(id));
     out.into_bytes()
 }
 
