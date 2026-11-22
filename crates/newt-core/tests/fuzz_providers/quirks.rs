@@ -79,6 +79,30 @@ fn call_delta(index: Option<u64>, id: Option<&str>, name: Option<&str>, argument
     json!({ "tool_calls": [call] })
 }
 
+#[test]
+fn chat_readies_every_call_when_the_stream_ends_without_a_finish_reason() {
+    let outcome = chat(
+        &[
+            delta(
+                call_delta(Some(0), Some("call_1"), Some("read_file"), "{\"paths\":[]}"),
+                Value::Null,
+            ),
+            delta(
+                call_delta(Some(1), Some("call_2"), Some("end_turn"), "{}"),
+                Value::Null,
+            ),
+        ],
+        true,
+    );
+    assert_eq!(check_tool_stream(&outcome), Ok(()));
+    let readied = outcome
+        .events
+        .iter()
+        .filter(|event| matches!(event, StreamEvent::ToolCallReady(_)))
+        .count();
+    assert_eq!(readied, 2);
+}
+
 fn message_start() -> (&'static str, Value) {
     (
         "message_start",
