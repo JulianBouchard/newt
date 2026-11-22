@@ -215,6 +215,7 @@ impl Decoder {
 impl super::Decoder for Decoder {
     fn handle(&mut self, event: &SseEvent, emit: &mut Emitter<'_>) -> Result<bool, ProviderError> {
         if event.data.trim() == DONE {
+            self.release_calls_before(usize::MAX, emit);
             return Ok(true);
         }
         let chunk: Chunk = decode(event)?;
