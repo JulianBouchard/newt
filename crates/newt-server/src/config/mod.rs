@@ -133,6 +133,9 @@ fn is_http_url(value: &str) -> bool {
 }
 
 #[cfg(test)]
+mod regressions;
+
+#[cfg(test)]
 mod tests {
     #![expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
 
