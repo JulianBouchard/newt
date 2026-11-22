@@ -1,11 +1,11 @@
-//! Replays recorded production turns through the fake model and the mock app, so a
+//! Replays recorded turns through the fake model and the mock app, so a
 //! runtime under test does exactly the work a real turn did: the same model calls with
 //! their recorded time to first token and stream time, the same tool calls, and each
 //! host tool taking its recorded latency.
 //!
-//! A turn file has one JSON object per line, as written by the production extractors:
-//! `model_calls` and `tool_calls` with start and end times in milliseconds from the
-//! turn's event. Each tool call belongs to the model call that started last before it
+//! A turn file has one JSON object per line: `model_calls` and `tool_calls` with start
+//! and end times in milliseconds from the turn's event. A model call without
+//! `first_token` takes `estimated_first_token_ms` after its start, or 2.5 seconds. Each tool call belongs to the model call that started last before it
 //! started. A model call that asked for no tools and is not the last one carries no work
 //! a runtime could repeat, so it is folded into the next one: its time stays, its turn boundary does not.
 
@@ -26,24 +26,10 @@ struct RecordedCall {
     first_token: Option<f64>,
     end: f64,
     #[serde(default)]
-    model: Option<String>,
+    estimated_first_token_ms: Option<f64>,
 }
 
-/// Time to first token when a recording has none: the median duration of calls
-/// with at most 60 output tokens, per model family, from production traces of
-/// 2026-11-15 to 11-21.
-fn estimated_first_token_ms(model: Option<&str>) -> f64 {
-    let model = model.unwrap_or_default();
-    if model.contains("opus") {
-        1_000.0
-    } else if model.contains("luna") {
-        2_500.0
-    } else if model.contains("terra") {
-        3_000.0
-    } else {
-        2_500.0
-    }
-}
+const DEFAULT_FIRST_TOKEN_MS: f64 = 2_500.0;
 
 #[derive(Debug, Deserialize)]
 struct RecordedTool {
@@ -142,7 +128,10 @@ fn steps_of(recorded: RecordedTurn) -> Option<ReplayTurn> {
                 .first_token
                 .filter(|first| *first >= call.start && *first <= call.end)
                 .unwrap_or_else(|| {
-                    (call.start + estimated_first_token_ms(call.model.as_deref())).min(call.end)
+                    let estimate = call
+                        .estimated_first_token_ms
+                        .unwrap_or(DEFAULT_FIRST_TOKEN_MS);
+                    (call.start + estimate).min(call.end)
                 });
             Step {
                 first_token_ms: first_token - call.start,
@@ -197,27 +186,6 @@ impl Replay {
             .collect();
         anyhow::ensure!(!turns.is_empty(), "{path} has no replayable turns");
         Ok(Self { turns })
-    }
-
-    pub fn len(&self) -> usize {
-        self.turns.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.turns.is_empty()
-    }
-
-    pub fn tool_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .turns
-            .iter()
-            .flat_map(|turn| &turn.steps)
-            .flat_map(|step| &step.calls)
-            .map(|call| call.tool.clone())
-            .collect();
-        names.sort();
-        names.dedup();
-        names
     }
 
     pub fn prod_times(&self, key: u64) -> ProdTimes {
@@ -336,7 +304,7 @@ mod tests {
                 {"start":3800,"first_token":4500,"end":5200}],
                "tool_calls":[
                 {"name":"read_file","start":1510,"end":1520},
-                {"name":"getRoleDetails","start":1505,"end":1800},
+                {"name":"lookupOrder","start":1505,"end":1800},
                 {"name":"sendMessage","start":3010,"end":3700}]}"#,
         );
         assert_eq!(recorded.steps.len(), 3);

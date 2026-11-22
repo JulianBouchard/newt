@@ -24,8 +24,8 @@ pub fn epoch_ms(at: SystemTime) -> f64 {
 }
 
 pub fn turn_key(text: &str) -> Option<u64> {
-    let (_, rest) = text.split_once("load message ")?;
-    let key = rest.split(':').next()?;
+    let (_, rest) = text.split_once(crate::driver::TURN_MARKER)?;
+    let key = rest.trim_start().split(':').next()?;
     Some(crate::plan::seed_of(key))
 }
 

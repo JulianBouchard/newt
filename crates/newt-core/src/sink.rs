@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::event::{Event, EventKind};
+use crate::event::Event;
 
 pub trait EventSink: Send + Sync {
     fn emit(&self, event: Event);
@@ -83,7 +83,7 @@ impl JsonlSink {
 
 impl EventSink for JsonlSink {
     fn emit(&self, event: Event) {
-        if matches!(event.kind, EventKind::TextDelta { .. }) {
+        if event.kind.is_live_only() {
             return;
         }
         let event = if self.capture_content {

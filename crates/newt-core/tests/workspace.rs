@@ -92,7 +92,7 @@ impl PageSource for Source {
                 gate.acquire().await.unwrap().forget();
             }
             if backing.fail.load(Ordering::SeqCst) {
-                return Err("context provider unavailable".to_owned());
+                return Err("home server unavailable".to_owned());
             }
             let paths: Vec<String> = backing
                 .pages

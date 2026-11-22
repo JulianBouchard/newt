@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -43,10 +43,7 @@ impl Metrics {
     }
 
     fn waiters(&self) -> MutexGuard<'_, HashMap<u64, Instant>> {
-        match self.waiters.lock() {
-            Ok(waiters) => waiters,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        self.waiters.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     #[must_use]
@@ -82,10 +79,7 @@ impl Metrics {
     }
 
     fn turns(&self) -> MutexGuard<'_, HashMap<(String, String), (String, CancellationToken)>> {
-        match self.turns.lock() {
-            Ok(turns) => turns,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        self.turns.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Whether a turn of this session is running on this instance.

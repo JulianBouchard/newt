@@ -346,7 +346,7 @@ async fn cancelling_after_the_turn_ended_or_in_an_unknown_session_is_refused(poo
     let unknown = node.cancel(&json!({})).await;
     assert_eq!(unknown.status(), 404);
     let body: Value = unknown.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "session_not_found");
+    assert_eq!(body["error"]["code"], "not_found");
 
     node.model.release(1);
     node.send("e1").await;

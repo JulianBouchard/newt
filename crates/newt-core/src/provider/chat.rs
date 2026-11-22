@@ -184,6 +184,7 @@ struct PendingCall {
     name: String,
     arguments: String,
     announced: bool,
+    ready: bool,
 }
 
 #[derive(Debug, Default)]
@@ -194,6 +195,21 @@ pub(super) struct Decoder {
     usage: Usage,
     stop: Option<StopReason>,
     response_id: Option<String>,
+}
+
+impl Decoder {
+    fn release_calls_before(&mut self, index: usize, emit: &mut Emitter<'_>) {
+        for call in self.calls.range_mut(..index).map(|(_, call)| call) {
+            if call.announced && !call.ready {
+                call.ready = true;
+                emit.tool_ready(&ToolCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: tool_arguments(&call.arguments),
+                });
+            }
+        }
+    }
 }
 
 impl super::Decoder for Decoder {
@@ -241,6 +257,7 @@ impl super::Decoder for Decoder {
                 self.text.push_str(&refusal);
             }
             for delta in choice.delta.tool_calls {
+                self.release_calls_before(delta.index, emit);
                 let call = self.calls.entry(delta.index).or_default();
                 if let Some(id) = delta.id {
                     call.id = id;
@@ -263,6 +280,9 @@ impl super::Decoder for Decoder {
                         emit.tool_input_delta(&call.id, &call.arguments);
                     }
                 }
+            }
+            if choice.finish_reason.is_some() {
+                self.release_calls_before(usize::MAX, emit);
             }
             match choice.finish_reason.as_deref() {
                 Some("length") => self.stop = Some(StopReason::MaxTokens),

@@ -243,13 +243,9 @@ mod tests {
 
     #[test]
     fn route_headers_are_parsed_and_marked_sensitive() {
-        let headers = route_headers(
-            &route_config(None),
-            "H",
-            "x-clera-internal=tok, x-other = 2",
-        )
-        .unwrap();
-        assert_eq!(headers.get("x-clera-internal").unwrap(), "tok");
+        let headers =
+            route_headers(&route_config(None), "H", "x-gateway-token=tok, x-other = 2").unwrap();
+        assert_eq!(headers.get("x-gateway-token").unwrap(), "tok");
         assert_eq!(headers.get("x-other").unwrap(), "2");
         assert!(headers.values().all(HeaderValue::is_sensitive));
     }
@@ -265,7 +261,7 @@ mod tests {
 
     #[test]
     fn route_headers_reject_malformed_pairs() {
-        assert!(route_headers(&route_config(None), "H", "x-clera-internal").is_err());
+        assert!(route_headers(&route_config(None), "H", "x-gateway-token").is_err());
         assert!(route_headers(&route_config(None), "H", "bad name=x").is_err());
     }
 

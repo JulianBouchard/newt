@@ -174,6 +174,11 @@ async fn anthropic_stream_decodes_thinking_text_tool_call_and_cache_usage() {
                 id: "toolu_1".into(),
                 delta: "file.md\"]}".into()
             },
+            StreamEvent::ToolCallReady(ToolCall {
+                id: "toolu_1".into(),
+                name: "read_file".into(),
+                arguments: json!({ "paths": ["profile.md"] }),
+            }),
         ]
     );
     assert!(response.timing.first_tool_ms.is_some());
@@ -416,6 +421,11 @@ async fn openai_chat_stream_assembles_text_and_split_tool_calls_and_reports_cach
                 id: "call_1".into(),
                 delta: "ile.md\"]}".into()
             },
+            StreamEvent::ToolCallReady(ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: json!({ "paths": ["profile.md"] }),
+            }),
             StreamEvent::ToolCallStarted {
                 id: "call_2".into(),
                 name: "end_turn".into()
@@ -424,6 +434,11 @@ async fn openai_chat_stream_assembles_text_and_split_tool_calls_and_reports_cach
                 id: "call_2".into(),
                 delta: "{}".into()
             },
+            StreamEvent::ToolCallReady(ToolCall {
+                id: "call_2".into(),
+                name: "end_turn".into(),
+                arguments: json!({}),
+            }),
         ]
     );
 
@@ -721,7 +736,7 @@ async fn extra_route_headers_go_out_next_to_the_bearer_key() {
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let mut extra = reqwest::header::HeaderMap::new();
-    extra.insert("x-clera-internal", "internal-token".parse().unwrap());
+    extra.insert("x-gateway-token", "internal-token".parse().unwrap());
     let client = ProviderClient::new(
         Protocol::OpenaiResponses,
         format!("http://{address}"),
@@ -736,7 +751,7 @@ async fn extra_route_headers_go_out_next_to_the_bearer_key() {
         .unwrap();
 
     let headers = seen.lock().await.take().unwrap();
-    assert_eq!(headers.get("x-clera-internal").unwrap(), "internal-token");
+    assert_eq!(headers.get("x-gateway-token").unwrap(), "internal-token");
     assert_eq!(headers.get("authorization").unwrap(), "Bearer service-key");
     assert!(!format!("{client:?}").contains("internal-token"));
 }

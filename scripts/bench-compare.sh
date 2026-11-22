@@ -136,7 +136,7 @@ stop_eve_sandboxes() {
 
 one_run() {
   local speed=$1
-  "$bin/newt-loadtest" fake-model --listen 127.0.0.1:${model_port} --speed "$speed" --cache-scope routed --machines 4 --turn-marker "load message" --finish "${BENCH_FINISH:-reply-then-end}" ${profile[@]+"${profile[@]}"} ${BENCH_REPLAY:+--replay "$BENCH_REPLAY"} ${BENCH_DUMP_DIR:+--dump-dir "$BENCH_DUMP_DIR"} \
+  "$bin/newt-loadtest" fake-model --listen 127.0.0.1:${model_port} --speed "$speed" --cache-scope routed --machines 4 --finish "${BENCH_FINISH:-reply-then-end}" ${profile[@]+"${profile[@]}"} ${BENCH_REPLAY:+--replay "$BENCH_REPLAY"} ${BENCH_DUMP_DIR:+--dump-dir "$BENCH_DUMP_DIR"} \
     --interval-log "$work/model-intervals.jsonl" --cache-log "$work/cache-$speed.jsonl" > "$work/fake-$speed.log" 2>&1 &
   pids+=($!)
   "$bin/newt-loadtest" mock-app --listen 127.0.0.1:${app_port} --speed "$speed" --interval-log "$work/tool-intervals.jsonl" --require-end-turn "${BENCH_REQUIRE_END_TURN:-false}" --prompt-bytes "${BENCH_PROMPT_BYTES:-30000}" --render-ms "${BENCH_RENDER_MS:-0}" ${profile[@]+"${profile[@]}"} > "$work/mock-$speed.log" 2>&1 &

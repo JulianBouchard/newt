@@ -65,14 +65,14 @@ impl UiStream {
                 if self.announced.contains(text("call_id"))
                     && self.answered.insert(text("call_id").to_owned())
                 {
-                    out.push(tool_result(frame, text("call_id")));
+                    out.push(tool_output_chunk(frame, text("call_id")));
                 }
             }
             "tool_finished" => {
                 if self.announced.contains(text("call_id"))
                     && self.answered.insert(text("call_id").to_owned())
                 {
-                    out.push(tool_output(frame, text("call_id")));
+                    out.push(tool_finished_chunk(frame, text("call_id")));
                 }
             }
             "turn_completed" => {
@@ -82,7 +82,7 @@ impl UiStream {
             }
             "turn_failed" => {
                 self.close_step(&mut out);
-                out.push(json!({ "type": "error", "errorText": text("error") }));
+                out.push(json!({ "type": "error", "errorText": TURN_FAILED_TEXT }));
                 out.push(json!({ "type": "finish", "finishReason": "error" }));
                 self.finished = true;
             }
@@ -151,7 +151,9 @@ impl UiStream {
     }
 }
 
-fn tool_result(frame: &Value, call_id: &str) -> Value {
+const TURN_FAILED_TEXT: &str = "the agent could not finish this turn";
+
+fn tool_output_chunk(frame: &Value, call_id: &str) -> Value {
     let output = frame["output"].as_str().unwrap_or_default();
     if frame["is_error"].as_bool().unwrap_or(false) {
         json!({ "type": "tool-output-error", "toolCallId": call_id, "errorText": output })
@@ -160,7 +162,7 @@ fn tool_result(frame: &Value, call_id: &str) -> Value {
     }
 }
 
-fn tool_output(frame: &Value, call_id: &str) -> Value {
+fn tool_finished_chunk(frame: &Value, call_id: &str) -> Value {
     if frame["is_error"].as_bool().unwrap_or(false) {
         json!({
             "type": "tool-output-error",
@@ -289,36 +291,32 @@ mod tests {
             types(&out),
             ["start", "start-step", "finish-step", "error", "finish"]
         );
-        assert_eq!(out[3]["errorText"], "model went away");
+        assert_eq!(out[3]["errorText"], TURN_FAILED_TEXT);
     }
 
     #[test]
     fn a_tool_output_frame_carries_the_result_and_its_tool_finished_adds_nothing() {
         let (mut stream, _) = UiStream::start();
-        let frame = |kind: &str, extra: Value| {
-            let mut value = json!({ "type": kind, "turn": "t1" });
-            if let (Some(target), Value::Object(fields)) = (value.as_object_mut(), extra) {
-                target.extend(fields);
-            }
-            value
-        };
-        stream.push(&frame("turn_started", json!({})));
+        stream.push(&frame("turn_started", "t1", json!({})));
         stream.push(&frame(
             "tool_started",
+            "t1",
             json!({ "call_id": "c1", "name": "lookup" }),
         ));
         let output = stream.push(&frame(
             "tool_output",
-            json!({ "call_id": "c1", "name": "lookup", "output": "3 roles", "is_error": false }),
+            "t1",
+            json!({ "call_id": "c1", "name": "lookup", "output": "3 orders", "is_error": false }),
         ));
         assert_eq!(
             output,
             vec![
-                json!({ "type": "tool-output-available", "toolCallId": "c1", "output": "3 roles" })
+                json!({ "type": "tool-output-available", "toolCallId": "c1", "output": "3 orders" })
             ]
         );
         let finished = stream.push(&frame(
             "tool_finished",
+            "t1",
             json!({ "call_id": "c1", "name": "lookup", "is_error": false, "ms": 3 }),
         ));
         assert_eq!(finished, Vec::<Value>::new());

@@ -11,13 +11,12 @@ use serde_json::json;
 
 use crate::store::AcceptError;
 
-const RETRY_AFTER_SECONDS: &str = "2";
+pub(super) const RETRY_AFTER_SECONDS: &str = "2";
 
 #[derive(Debug)]
 pub(super) enum ApiError {
     Unauthorized,
     NotFound,
-    SessionNotFound,
     TurnNotRunning,
     Invalid(&'static str),
     Conflict {
@@ -54,11 +53,6 @@ impl IntoResponse for ApiError {
                 "missing or wrong token",
             ),
             Self::NotFound => error_response(StatusCode::NOT_FOUND, "not_found", "no such session"),
-            Self::SessionNotFound => error_response(
-                StatusCode::NOT_FOUND,
-                "session_not_found",
-                "no such session",
-            ),
             Self::TurnNotRunning => error_response(
                 StatusCode::CONFLICT,
                 "turn_not_running",

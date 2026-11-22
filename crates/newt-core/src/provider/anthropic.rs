@@ -120,6 +120,9 @@ enum Event {
         index: usize,
         delta: Delta,
     },
+    ContentBlockStop {
+        index: usize,
+    },
     MessageDelta {
         delta: MessageDeltaBody,
         #[serde(default)]
@@ -308,6 +311,20 @@ impl super::Decoder for Decoder {
                     )));
                 }
             },
+            Event::ContentBlockStop { index } => {
+                if let Block::Tool {
+                    id,
+                    name,
+                    arguments,
+                } = self.block(index)?
+                {
+                    emit.tool_ready(&ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: tool_arguments(arguments),
+                    });
+                }
+            }
             Event::MessageDelta { delta, usage } => {
                 if let Some(usage) = usage {
                     self.usage.output_tokens = usage.output_tokens;

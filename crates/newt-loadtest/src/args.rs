@@ -35,7 +35,7 @@ pub fn arguments_for(
             &profile.pages[rng.below(profile.pages.len())],
             &profile.file_path_prefix,
         ),
-        ("grep", _) => json!({ "pattern": "role|intro" }),
+        ("grep", _) => json!({ "pattern": "order|refund" }),
         ("glob", _) => json!({ "pattern": "**/*.md" }),
         (_, Kind::Send) => send(schema, rng),
         _ => from_schema(schema, rng, 0),

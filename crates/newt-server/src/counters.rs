@@ -23,7 +23,7 @@ pub enum Counter {
     WakesDropped,
 }
 
-const COUNTERS: usize = 12;
+const COUNTERS: usize = Counter::WakesDropped as usize + 1;
 
 struct Family {
     name: &'static str,

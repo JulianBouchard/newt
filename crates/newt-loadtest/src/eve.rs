@@ -51,7 +51,6 @@ impl EveTarget {
         &self,
         http: &reqwest::Client,
         key: &str,
-        _id: &str,
         text: &str,
     ) -> Result<(), String> {
         let session = self

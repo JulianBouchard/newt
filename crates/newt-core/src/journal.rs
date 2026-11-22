@@ -32,10 +32,10 @@ pub enum JournalEntry {
     Choice(TurnChoice),
 }
 
-/// What the context provider chose for a turn, journaled when it differs
-/// from the bootstrap. Once a model call is journaled, a resumed turn keeps
-/// it, or the bootstrap's settings when none was journaled, whatever the
-/// provider answers the second time.
+/// What the home server's `newt/turn` chose for a turn, journaled when it
+/// differs from the bootstrap. Once a model call is journaled, a resumed turn
+/// keeps it, or the bootstrap's settings when none was journaled, whatever the
+/// server answers the second time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnChoice {
     pub model: String,

@@ -110,7 +110,7 @@ impl Profile {
                 history_ms,
                 ..
             } => {
-                self.stage("prepare (context provider)", number(*prepare_ms));
+                self.stage("prepare (home server)", number(*prepare_ms));
                 self.stage("history load", number(*history_ms));
                 if let Some(waiting) = self.waiting.get_mut(session)
                     && waiting.accepted.is_some()

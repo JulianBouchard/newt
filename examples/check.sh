@@ -41,7 +41,7 @@ wait_for() {
   return 1
 }
 
-"$bin/newt-loadtest" fake-model --listen 127.0.0.1:${model_port} --speed "$speed" --cache-scope routed --machines 1 --turn-marker "load message" --finish reply-then-end > "$work/fake.log" 2>&1 &
+"$bin/newt-loadtest" fake-model --listen 127.0.0.1:${model_port} --speed "$speed" --cache-scope routed --machines 1 --finish reply-then-end > "$work/fake.log" 2>&1 &
 pids+=($!)
 "$bin/newt-loadtest" mock-app --listen 127.0.0.1:${app_port} --speed "$speed" > "$work/mock.log" 2>&1 &
 pids+=($!)

@@ -19,7 +19,7 @@ const REQUEST: &str = "with running as ( \
        join turn_journal j on j.agent = s.agent and j.key = s.key and j.kind = 'start' \
        where s.agent = $1 and s.key = $2 \
          and s.lease_owner is not null and s.lease_expires_at > now() \
-       order by j.created_at limit 1), \
+       order by j.created_at desc limit 1), \
      flagged as ( \
        update sessions s set cancel_turn = r.turn_id, \
          cancel_requested_at = case when s.cancel_turn = r.turn_id \

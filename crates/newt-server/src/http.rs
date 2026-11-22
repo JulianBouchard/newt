@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::header::{CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -145,16 +146,17 @@ async fn healthz(State(state): State<AppState>) -> Response {
     });
     let mut response = (status, Json(body)).into_response();
     if !ready {
-        response
-            .headers_mut()
-            .insert("retry-after", HeaderValue::from_static("2"));
+        response.headers_mut().insert(
+            RETRY_AFTER,
+            HeaderValue::from_static(error::RETRY_AFTER_SECONDS),
+        );
     }
     response
 }
 
 async fn metrics(State(state): State<AppState>) -> Response {
     (
-        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        [(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
         state.metrics.render(),
     )
         .into_response()
@@ -239,7 +241,7 @@ async fn cancel_turn(
         .request_cancel(&agent, &key, request.turn.as_deref())
         .await?
     {
-        CancelRequest::SessionNotFound => Err(ApiError::SessionNotFound),
+        CancelRequest::SessionNotFound => Err(ApiError::NotFound),
         CancelRequest::NotRunning => Err(ApiError::TurnNotRunning),
         CancelRequest::Requested(turn) => {
             Ok((StatusCode::ACCEPTED, Json(json!({ "turn": turn }))).into_response())

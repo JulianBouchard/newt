@@ -18,6 +18,10 @@ pub enum Signal {
     Finished { ok: bool },
 }
 
+/// Starts every message the driver sends, so the fake model and the mock app can
+/// tell which turn a request belongs to.
+pub const TURN_MARKER: &str = "load message";
+
 #[derive(Debug, Clone)]
 pub struct NewtTarget {
     pub base: String,
@@ -112,7 +116,7 @@ impl Target {
     ) -> Result<(), String> {
         match self {
             Self::Newt(target) => target.post(http, key, id, text).await,
-            Self::Eve(target) => target.post(http, key, id, text).await,
+            Self::Eve(target) => target.post(http, key, text).await,
         }
     }
 
@@ -194,7 +198,7 @@ async fn run_session(
     tokio::time::sleep(pause(&rng, Duration::ZERO, plan.ramp).div_f64(plan.speed.max(0.001))).await;
     for turn in 0..plan.turns {
         let posted = Instant::now();
-        let text = format!("load message {seed}-{turn}: any news on the role?");
+        let text = format!("{TURN_MARKER} {seed}-{turn}: anything new today?");
         let accepted = target
             .post(&http, &key, &format!("{key}-{turn}"), &text)
             .await;
