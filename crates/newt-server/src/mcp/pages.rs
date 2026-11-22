@@ -98,6 +98,12 @@ impl McpPages {
                 if resource.uri.starts_with(SKILL_SCHEME) {
                     continue;
                 }
+                if resource.name.trim().is_empty() {
+                    return Err(format!(
+                        "MCP server `{}`: resource `{}` has an empty name",
+                        self.server, resource.uri
+                    ));
+                }
                 if self.owner == Owner::HOME
                     && let Some((folder, _)) = resource.name.split_once('/')
                     && self.folders.contains(folder)
@@ -256,7 +262,9 @@ impl McpPages {
             .into_iter()
             .filter(|(_, key)| keys.iter().any(|prefix| key_starts_with(key, prefix)));
         let pages = try_join_all(wanted.map(|(resource, key)| self.read(resource, key))).await?;
-        Ok(pages.into_iter().flatten().collect())
+        let pages: Vec<Page> = pages.into_iter().flatten().collect();
+        check_pages(&pages).map_err(|error| format!("MCP server `{}`: {error}", self.server))?;
+        Ok(pages)
     }
 }
 

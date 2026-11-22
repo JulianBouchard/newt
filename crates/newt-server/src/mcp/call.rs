@@ -290,6 +290,9 @@ fn tool_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
     let summary = meta_field::<String>(meta, META_SUMMARY);
     let invalidate = meta_field::<Vec<PageKey>>(meta, META_INVALIDATE);
     let pages = meta_field::<Vec<Page>>(meta, META_PAGES).and_then(|pages| {
+        if let Some(pages) = &pages {
+            super::check_pages(pages)?;
+        }
         let pages: Option<Vec<Page>> = pages.map(|pages| {
             pages
                 .into_iter()
