@@ -18,7 +18,7 @@ At startup newt connects to Postgres and applies the files in `migrations/`, the
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `listen` | socket address | required | Address the HTTP API binds to, for example `"127.0.0.1:7878"`. Plain HTTP; terminate TLS in front. |
+| `listen` | socket address | required | Address the HTTP API binds to, for example `"127.0.0.1:7878"`. Plain HTTP; terminate TLS in front. `/healthz` and `/metrics` answer without auth on the same address, so keep it off the public internet or route only `/v1` to it. |
 
 ## `[database]`
 

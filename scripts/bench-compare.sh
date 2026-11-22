@@ -8,6 +8,18 @@
 #
 # Defaults: 20 sessions, 3 turns, speed 50. Production settings: a pool of 5
 # database connections, sessions pausing 20 to 90 simulated seconds between messages.
+#
+# Environment knobs (all optional):
+#   BENCH_PORT_OFFSET       shift every port and database name, to run several benches at once
+#   BENCH_REPLAY            replay file of recorded turns (docs/benchmark.md)
+#   BENCH_PROFILE           workload profile for newt; BENCH_PROFILE_EVE the one for eve
+#   BENCH_REQUIRE_END_TURN  true to run newt with require_end_turn (default false)
+#   BENCH_LIVE_STREAM       false to run newt without live_stream (default true)
+#   BENCH_FINISH            how the fake model ends turns (default reply-then-end)
+#   BENCH_PROMPT_BYTES      size of the home server's prompt (default 30000)
+#   BENCH_RENDER_MS         simulated time the app takes to render a page (default 0)
+#   BENCH_NEWT_BIN          newt binary to run instead of the one built here
+#   BENCH_DUMP_DIR          directory where the fake model writes every request it gets
 set -euo pipefail
 
 runtime=${1:?usage: bench-compare.sh newt|eve [sessions] [turns] [speed]}
@@ -23,6 +35,7 @@ eve_port=$((3100 + offset))
 work=$(mktemp -d)
 bench_db=newt_bench_${BENCH_PORT_OFFSET:-0}
 db_container=$(docker ps -q --filter publish=55432 | head -1)
+[ -n "$db_container" ] || { echo "no Postgres container publishes port 55432: run docker compose up -d --wait" >&2; exit 1; }
 docker exec "$db_container" psql -U newt -d postgres -qc "drop database if exists $bench_db with (force)" > /dev/null
 docker exec "$db_container" psql -U newt -d postgres -qc "create database $bench_db" > /dev/null
 export NEWT_DATABASE_URL=${NEWT_DATABASE_URL:-postgres://newt:newt@localhost:55432/newt}
@@ -45,7 +58,7 @@ wait_for() {
 
 start_newt() {
   local live_stream_line=""
-  [ "${BENCH_LIVE_TEXT:-true}" = true ] && live_stream_line="live_stream = true"
+  [ "${BENCH_LIVE_STREAM:-true}" = true ] && live_stream_line="live_stream = true"
   cat > "$work/server.toml" <<EOF
 server = { listen = "127.0.0.1:${newt_port}" }
 database = { url_env = "NEWT_DATABASE_URL", max_connections = 5 }
@@ -82,10 +95,8 @@ prepare_eve() {
   export WORKFLOW_TARGET_WORLD=@workflow/world-postgres
   export WORKFLOW_POSTGRES_URL=${WORKFLOW_POSTGRES_URL:-postgres://newt:newt@localhost:55432/eve_bench}
   export WORKFLOW_POSTGRES_URL="${WORKFLOW_POSTGRES_URL%/*}/eve_bench_${BENCH_PORT_OFFSET:-0}"
-  local db
-  db=$(docker ps -q --filter publish=55432 | head -1)
-  docker exec "$db" psql -U newt -d postgres -qc "drop database if exists eve_bench_${BENCH_PORT_OFFSET:-0} with (force)" > /dev/null
-  docker exec "$db" psql -U newt -d postgres -qc "create database eve_bench_${BENCH_PORT_OFFSET:-0}" > /dev/null
+  docker exec "$db_container" psql -U newt -d postgres -qc "drop database if exists eve_bench_${BENCH_PORT_OFFSET:-0} with (force)" > /dev/null
+  docker exec "$db_container" psql -U newt -d postgres -qc "create database eve_bench_${BENCH_PORT_OFFSET:-0}" > /dev/null
   (cd "$agent" && npm install --no-audit --no-fund --silent)
   export BENCH_PROFILE_FILE=${BENCH_PROFILE_EVE:-$agent/profile.json}
   if [ -n "${BENCH_PROFILE_EVE:-}" ]; then

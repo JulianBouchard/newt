@@ -462,7 +462,6 @@ Every error of this API, from a handler or from the framework (unknown route, wr
 | 400 | `invalid_request` | Bad body, id, text or session key. |
 | 401 | `unauthorized` | Missing or wrong token, or unknown agent. |
 | 404 | `not_found` | No such session or route. |
-| 404 | `session_not_found` | `cancel` for a session that does not exist (5.9). |
 | 405 | `method_not_allowed` | Wrong method for the path. |
 | 409 | `event_id_conflict` | An event id reused with different content (5.1). |
 | 409 | `turn_not_running` | `cancel` when no turn is running, or the `turn` given is not the running one (5.9). |
@@ -510,7 +509,7 @@ A session holds at most `[agents.<name>] max_pending_events` unconsumed events (
 
 A `text/event-stream`. Each frame has `id:` (the event's sequence number in the session) and a JSON `data:` payload. Resume with the `Last-Event-ID` header or `?cursor=<seq>`. Frames older than `[retention] live_days` (7 days by default) are deleted; a resume from further back gets a `gap` frame first (below) and then starts at the oldest frame kept. The server sends an SSE comment line (`:`) as a keep-alive every 15 seconds when nothing else was sent, so a proxy with an idle timeout above that keeps the connection open. A client should treat 30 seconds of silence as a dead connection and reconnect with its last `id`.
 
-When the cursor (`?cursor=` or `Last-Event-ID`) is older than the oldest frame still kept, the stream starts with one `gap` frame before anything else: `data: {"type":"gap","from":2,"to":3}`, the first and last sequence numbers that were deleted and can no longer be read. It has no `id:`, so it does not move the client's cursor; the next frame carries the first id still available. A fresh stream (no cursor, or 0) never starts with a gap, and neither does a cursor that is current. A client that needs the lost frames' effects can read `GET .../history` (5.4). The `type` field is one of `received` (`event_id`, `inbox_id`, the event's `meta` when the agent sets `live_meta`, and its `text` when the agent sets `live_stream`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed` (`error`, and `reason: "cancelled"` when the turn was cancelled, 5.9). An agent with `live_stream = true` also gets `text_delta` (`text`), `tool_input_delta` (`call_id`, `name`, `delta`), `tool_input` (`call_id`, `name`, `input`), `tool_output` (`call_id`, `name`, `output`, `is_error`), `model_call_started` (`call`, `model`) and `model_call_finished` (`call`, `stop`); see below. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. `turn_started` also carries `model` (the alias the turn's model calls use) and `reset` (whether the turn runs on a reset history, 1.4.1), and its `history_messages` counts the messages the model sees. Payloads hold names, counts and timings, and error text on failure; they do not hold message text or tool arguments, except the frames `live_stream` adds.
+When the cursor (`?cursor=` or `Last-Event-ID`) is older than the oldest frame still kept, the stream starts with one `gap` frame before anything else: `data: {"type":"gap","from":2,"to":3}`, the first and last sequence numbers that were deleted and can no longer be read. It has no `id:`, so it does not move the client's cursor; the next frame carries the first id still available. A fresh stream (no cursor, or 0) never starts with a gap, and neither does a cursor that is current. A client that needs the lost frames' effects can read `GET .../history` (5.4). The `type` field is one of `received` (`event_id`, `inbox_id`, the event's `meta` when the agent sets `live_meta`, and its `text` when the agent sets `live_stream`; sent when an event is accepted), `turn_started`, `turn_steered`, `tool_started`, `tool_progress` (`call_id`, `name`, `message`), `tool_finished`, `turn_completed` and `turn_failed` (`error`, and `reason: "cancelled"` when the turn was cancelled, 5.9). An agent with `live_stream = true` also gets `text_delta` (`text`), `tool_input_delta` (`call_id`, `name`, `delta`), `tool_input` (`call_id`, `name`, `input`), `tool_output` (`call_id`, `name`, `output`, `is_error`), `model_call_started` (`call`, `model`) and `model_call_finished` (`call`, `stop`); see below. All but `received` also carry `at` (RFC 3339) and `session` and `turn`. `turn_started` also carries `model` (the alias the turn's model calls use) and `reset` (whether the turn runs on a reset history, 1.3.1), and its `history_messages` counts the messages the model sees. Payloads hold names, counts and timings, and error text on failure; they do not hold message text or tool arguments, except the frames `live_stream` adds.
 
 `text_delta` frames carry a chunk of the answer the model is writing, in order: concatenated, the chunks of one model call equal the text that call adds to history. Newt batches them, sending at most about every 50 ms or at a line or sentence end, and always before the model call ends, so every `text_delta` of a turn comes before its `turn_completed`. They are live-only: never journaled, never in history, never in the JSONL event file or OTLP, and removed with the rest of the live feed after `live_days`. Reasoning text is never sent. A model call replayed from the journal after a crash sends no text frames.
 
@@ -579,17 +578,18 @@ The response is a `text/event-stream` with the header `x-vercel-ai-ui-message-st
 | `tool_input_delta` | `tool-input-delta` (`toolCallId`, `inputTextDelta`) |
 | `tool_input` | `tool-input-available` (`toolCallId`, `toolName`, `input`) |
 | `model_call_finished` | `text-end` if open, then `finish-step` |
-| `tool_finished` | `tool-output-available` (`toolCallId`, `output: { ms }`), or `tool-output-error` (`toolCallId`, `errorText`) when the call failed |
+| `tool_output` | `tool-output-available` (`toolCallId`, `output`: the result text), or `tool-output-error` (`toolCallId`, `errorText`: the error the model sees) when the call failed |
+| `tool_finished` | only for a call with no `tool_output` before it: `tool-output-available` (`toolCallId`, `output: { ms }`), or `tool-output-error` with a generic `errorText` |
 | `turn_completed` | `finish` |
-| `turn_failed` | `error` (`errorText`), then `finish` |
+| `turn_failed` | `error` (`errorText`: a generic message, never the provider's error), then `finish` |
 
-One step is one model call. Tool results are not on the live feed, so `output` carries only how long the tool took, and the error text is generic.
+One step is one model call. A tool's output is what the model sees, cut to its first 4,000 characters like the `tool_output` frame, so a tool that returns text the end user must not read should not be shown with this endpoint as is.
 
 The stream follows the turn that consumes the message. A message that arrives while a turn is running is steered into it (`policy: steer`), and the stream joins that running turn from its `turn_steered` frame: text and tool calls the turn produced before then are not repeated. If the running turn ends before it picks the message up, the message starts the next turn, and the stream follows that one. A second message sent while the first is still streaming opens a second stream on the same turn, and both end when it does.
 
 ### 5.8 `GET /healthz`
 
-No auth. Answers 200 while a `select 1` on Postgres succeeds and 503 (with `Retry-After`) when it fails, with the same JSON body either way:
+No auth, so keep the port off the public internet (5.10). Answers 200 while a `select 1` on Postgres succeeds and 503 (with `Retry-After`) when it fails, with the same JSON body either way:
 
 ```json
 { "ready": true, "running": 3, "waiting": 1, "max_sessions": 64, "oldest_wait_ms": 120 }
@@ -618,7 +618,7 @@ The body is optional and `turn` is optional. Without it, the request cancels wha
 | Status | `code` | Meaning |
 |---|---|---|
 | 202 `{ "turn": "<turn id>" }` | | The request is recorded for that turn and every instance was told. The turn stops at its next check, the live feed gets `turn_failed` with `"reason": "cancelled"`, and the lease is released. The answer does not wait for the turn to stop. A repeat for the same turn answers 202 again and still cancels the turn once. |
-| 404 | `session_not_found` | No such session. |
+| 404 | `not_found` | No such session. |
 | 409 | `turn_not_running` | No turn holds the session's lease right now (it is idle, between turns, or its owner died and the lease expired), or `turn` was given and is not the running turn. Nothing is recorded. |
 
 How it works: the request writes `cancel_turn` (the turn id) and `cancel_requested_at` on the session row and sends a Postgres notification on the `newt_cancel` channel. Every instance listens on that channel. The instance that runs the turn reads the flag, checks that the turn id is the one it is running under its current lease, and cancels the turn's token at once. A notification is not durable, so the owner also finds the flag at its next lease heartbeat, which returns it in the same statement that renews the lease (every `lease_ttl / 3`, 10 s by default): a request is acted on within one heartbeat even when the notification was lost, and no model call reads the database for it. The flag is cleared when the turn ends, however it ends (committed, dead-lettered), and the owner acts only when the flag's turn id is the turn it runs, so a stale flag never cancels a later turn.

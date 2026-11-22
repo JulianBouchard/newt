@@ -4,8 +4,8 @@
 
 ## What runs
 
-- **The fake model** (`newt-loadtest fake-model --cache-scope routed --machines 4`) speaks the OpenAI Responses stream. Its timings and tool use come from the profile of a production assistant, about 16 tool calls a turn. Prompt caching is simulated per `prompt_cache_key` and spread over four machines once a key passes 15 requests a minute, as OpenAI routes, so a key that is too busy or a rewritten history misses as it would against the real thing. A prompt is readable from the cache 1 second after it was sent: against OpenAI on 2026-11-12 a second request with the same prefix hit the cache every time it started 1.1 s or more after the first.
-- **The mock app** (`newt-loadtest mock-app`) is the agent's home MCP server: a production-sized prompt, workspace and skills, and tools with that assistant's latencies and error rates. `--stdio true` serves it over stdin and stdout, for newt to run itself.
+- **The fake model** (`newt-loadtest fake-model --cache-scope routed --machines 4`) speaks the OpenAI Responses stream. Its timings and tool use come from the profile of a real assistant, about 16 tool calls a turn. Prompt caching is simulated per `prompt_cache_key` and spread over four machines once a key passes 15 requests a minute, as OpenAI routes, so a key that is too busy or a rewritten history misses as it would against the real thing. A prompt is readable from the cache 1 second after it was sent: against OpenAI on 2026-11-12 a second request with the same prefix hit the cache every time it started 1.1 s or more after the first.
+- **The mock app** (`newt-loadtest mock-app`) is the agent's home MCP server: a prompt, workspace and skills the size of that assistant's, and tools with its latencies and error rates. `--stdio true` serves it over stdin and stdout, for newt to run itself.
 - **newt**, built in release mode, with default runner settings (`cache_key_buckets = "auto"`).
 - **The driver** (`newt-loadtest run`) follows each turn on the live feed. In the default `steady` scenario sessions start at random over 60 seconds and a person pauses 20 to 90 seconds between messages, so each session makes a few model calls a minute, as people do. The `burst` scenario starts every session at once and sends the next message 2 seconds after a turn ends: about 20 model calls a minute per session, past what one cache key holds, and every turn start at the same moment. It is the worst case for the database pool and the cache, not what people do.
 
@@ -18,6 +18,23 @@
 - Time spent waiting for a database connection when accepting an event, claiming the session and loading history, in `newt-report --summary`.
 
 Turn duration is dominated by the fake model's simulated latency and the mock tools, so it says whether newt adds waiting, not how fast a real model is. The numbers that are newt's own are time to read receipt, time to turn start, the cached share and the miss causes, and CPU and memory per session.
+
+## Comparing runtimes
+
+`scripts/bench-compare.sh newt|eve [sessions] [turns] [speed]` runs the same workload against newt or against eve, and answers how long turns take at real speed from a run that takes seconds. Defaults: 20 sessions, 3 turns, speed 50. Besides Postgres it needs Docker (it creates a fresh database per run in the container that publishes port 55432); the eve side also needs Node, `rsync`, and eve's Docker sandbox image.
+
+- **newt** runs in release mode with a pool of 5 database connections and `live_stream` on.
+- **eve** is the agent in `bench/eve`, built for production (`eve build`, then `eve start`) on the Postgres workflow world, with its tools served by the same mock app over MCP.
+- **Speed.** The fake model and the mock app run every delay `speed` times faster, and both log when they were busy on each turn's behalf (`--interval-log`). `newt-loadtest decompose` splits each turn into the runtime's own time and that simulated wait, and gives the turn at real speed as `own + wait * speed`. The runtime's own time is never scaled, so a runtime that is slow under load stays slow in the report.
+- **Time to first sign of life** (`first_sign_ms`): when a chat would first show the turn is alive. On newt the first `tool_started`, `text_delta` or `tool_input_delta` frame; on eve the first `actions.requested`, `action.input.appended` or `message.appended`.
+
+Every run gets its own ports and databases (`BENCH_PORT_OFFSET`), so several can run at once. The script header lists the other `BENCH_*` knobs: a workload profile per runtime, `require_end_turn`, the prompt size, a newt binary to compare against.
+
+### Replaying recorded turns
+
+`BENCH_REPLAY=turns.jsonl` replays recorded turns instead of the random workload. Each line is one turn: its `model_calls` (start, first token, end, model) and `tool_calls` (name, start, end), in milliseconds from the turn's event, plus optionally when the request arrived and the turn started. The fake model replays each call with its recorded time to first token and stream time, and releases each tool call at its recorded moment; the mock app holds each host tool for its recorded latency. A tool call belongs to the model call that started last before it.
+
+`decompose` then compares every turn with its recorded time: the model and tool time the replay produced against the recording (a check of the replay itself), and the runtime's own time against what the recording's runtime spent. Record turns from the runtime you want to compare against, and the gap between the recorded turn and the replayed one is the difference between the runtimes on that exact work.
 
 ## Reading a result
 

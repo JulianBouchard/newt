@@ -56,7 +56,10 @@ function mcp(): Promise<Client> {
     const client = new Client({ name: "bench-eve", version: "1" });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${mockUrl()}/mcp`)));
     return client;
-  })();
+  })().catch((error: unknown) => {
+    connected = undefined;
+    throw error;
+  });
   return connected;
 }
 
@@ -103,7 +106,11 @@ export function afterPages<Definition extends { execute: (input: never, ctx: nev
   return {
     ...definition,
     async execute(input: never, ctx: { session: { id: string } }) {
-      await pagesLoading.get(ctx.session.id);
+      const loading = pagesLoading.get(ctx.session.id);
+      await loading;
+      if (pagesLoading.get(ctx.session.id) === loading) {
+        pagesLoading.delete(ctx.session.id);
+      }
       return definition.execute(input, ctx as never);
     },
   };

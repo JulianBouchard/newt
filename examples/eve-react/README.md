@@ -4,7 +4,7 @@ Serves the HTTP API that eve's `useEveAgent` hook (`eve/react`) talks to, backed
 
 - `translate.ts`: newt live frames to eve `MessageStreamEvent`s. Pure and stateful: the same frames always give the same events and `meta.id`s, which is what makes `startIndex` resume work.
 - `server.ts`: `createEveHandlers({ newtUrl, agent, token })` returns `Request` to `Response` handlers for the eve session routes.
-- `check.mjs`, `run.sh`: starts newt on the repo's fake model and drives the handlers with eve's own `Client` and `defaultMessageReducer`.
+- `check.mjs`, run by `examples/check.sh eve-react`: starts newt on the repo's fake model and drives the handlers with eve's own `Client` and `defaultMessageReducer`.
 
 ## newt agent config
 
@@ -50,13 +50,13 @@ The handlers do not authenticate callers. Check your own session in the route be
 
 ## Limits
 
-- Tool results are not on newt's live feed, so `action.result` carries `{ ms }` and a generic error message.
+- `action.result` carries the tool output as the model sees it, cut to its first 4,000 characters like newt's `tool_output` frame.
 - No cancel, clear, compact, reset, input requests or attachments: those routes answer 404, and a message must be text.
 - Each stream request re-reads the session's live feed from its first frame, because indexes are counted from there. Frames older than `[retention] live_days` are gone, so older sessions start mid-way.
 
 ## Run
 
 ```
-examples/eve-react/run.sh
+examples/check.sh eve-react
 npm test --prefix examples/eve-react
 ```

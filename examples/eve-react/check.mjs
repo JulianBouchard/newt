@@ -79,7 +79,7 @@ async function runTurn(sessionOrFirst, text) {
   return { session, events, snapshots, toolStates, endedAt, state };
 }
 
-const first = await runTurn("load message 1-1: any news on the role?");
+const first = await runTurn("load message 1-1: anything new today?");
 const { session, events, snapshots, toolStates } = first;
 
 const growing = [];
@@ -115,7 +115,7 @@ assert.ok([...toolStates.values()].some((states) => states.partialInput), "a too
 assert.deepEqual(types.slice(0, 2), ["turn.started", "message.received"], "turn starts with the user message");
 assert.equal(types.at(-1), "session.waiting", "the turn ends at session.waiting");
 const asked = events.find((event) => event.type === "message.received");
-assert.equal(asked.data.message, "load message 1-1: any news on the role?", "message.received carries the user's text");
+assert.equal(asked.data.message, "load message 1-1: anything new today?", "message.received carries the user's text");
 const results = events.filter((event) => event.type === "action.result");
 assert.ok(
   results.some((event) => typeof event.data.result.output === "string" && event.data.result.output.length > 0),

@@ -17,11 +17,6 @@ type Turn = {
   answered: Set<string>;
 };
 
-/** Builds the event `meta` that carries the user's text onto the live `received` frame (needs `live_meta = true`). */
-export function messageMeta(text: string): { eve: { message: string } } {
-  return { eve: { message: text } };
-}
-
 const FINISH_REASONS: Record<string, string> = {
   tool_use: "tool-calls",
   end_turn: "stop",
@@ -35,9 +30,7 @@ function text(frame: LiveFrame, field: string): string {
 }
 
 function receivedFrom(frame: LiveFrame): Received {
-  const meta = frame.meta as { eve?: { message?: unknown } } | undefined;
-  const message = typeof frame.text === "string" ? frame.text : meta?.eve?.message;
-  return { id: text(frame, "event_id"), text: typeof message === "string" ? message : "" };
+  return { id: text(frame, "event_id"), text: text(frame, "text") };
 }
 
 function eventId(seq: number, index: number): string {

@@ -91,13 +91,13 @@ curl localhost:4000/outbox/ana -H "Authorization: Bearer $ASSISTANT_TOKEN"
 
 To skip terminal 1, let newt run the demo itself: build it (`cargo build -p newt-demo`) and set `mcp = "stdio:target/debug/newt-demo --stdio"` for the agent. Newt starts it, talks to it over stdin and stdout, and stops it on exit; the code is the same.
 
-The event is accepted in a few milliseconds; the turn reads the workspace, adds the task and the note through MCP, sends a reply and ends. `newt-report newt-events.jsonl` breaks each turn down by model call. On a live run against gpt-6.1-terra, each turn took 6 to 8 seconds, of which newt itself spent about 20 ms.
+The event is accepted in a few milliseconds; the turn reads the workspace, adds the task and the note through MCP, sends a reply and ends. `newt-report newt-events.jsonl` breaks each turn down by model call. On a live run against a hosted model, each turn took 6 to 8 seconds, of which newt itself spent about 20 ms.
 
 ## Load testing without paying for tokens
 
 `newt-loadtest` runs load against newt with no real model behind it:
 
-- `fake-model` speaks the OpenAI Responses stream with random text. Its timings (response headers, thinking, token rate, prefill per uncached token) and its tool use come from the profile of a production assistant: about 16 tool calls per turn, picked with that assistant's real tool mix. Prompt caching is simulated per prefix: a request reuses the longest run of 128-token blocks an earlier request with the same `prompt_cache_key` wrote (at least 1,024 tokens, readable 2 seconds after the write, five-minute expiry), so a rewritten history misses just as it would against a real model.
+- `fake-model` speaks the OpenAI Responses stream with random text. Its timings (response headers, thinking, token rate, prefill per uncached token) and its tool use come from the profile of a real assistant: about 16 tool calls per turn, picked with that assistant's tool mix. Prompt caching is simulated per prefix: a request reuses the longest run of 128-token blocks an earlier request with the same `prompt_cache_key` wrote (at least 1,024 tokens, readable 1 second after the write, five-minute expiry), so a rewritten history misses just as it would against a real model.
 - `mock-app` is the agent's home MCP server: a production-sized prompt, workspace and skills, and tools with the latencies and error rates of that assistant's tools. `--stdio true` serves it over stdin and stdout, for newt to run itself.
 - `run` drives sessions against newt's events API and live feed and reports read receipt, time to turn start, turn duration, model calls, cache rate and tool calls.
 
@@ -109,7 +109,7 @@ LOADTEST_TOKEN=... newt-loadtest run --base http://127.0.0.1:7878 --agent assist
   --fake http://127.0.0.1:9100 --mock http://127.0.0.1:9200
 ```
 
-Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `mcp` at `http://127.0.0.1:9200/mcp`, or at `stdio:newt-loadtest mock-app --stdio true`. `scripts/bench.sh` does all of this in one command and adds newt's CPU, memory and cache report card; see [docs/benchmark.md](docs/benchmark.md).
+Point a route's `base_url` at `http://127.0.0.1:9100/v1` and the agent's `mcp` at `http://127.0.0.1:9200/mcp`, or at `stdio:newt-loadtest mock-app --stdio true`. `scripts/bench.sh` does all of this in one command and adds newt's CPU, memory and cache report card. `scripts/bench-compare.sh newt|eve` runs the same workload against newt or eve, sped up, and reports turns at real speed; see [docs/benchmark.md](docs/benchmark.md).
 
 ## Running the tests
 

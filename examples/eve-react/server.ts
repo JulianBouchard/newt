@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MessageStreamEvent } from "eve/client";
-import { createTranslator, messageMeta, STREAM_VERSION, type LiveFrame } from "./translate.ts";
+import { createTranslator, STREAM_VERSION, type LiveFrame } from "./translate.ts";
 
 /** Where newt runs, which agent answers, and that agent's bearer token. The agent needs `live_stream = true`. */
 export type EveAdapterConfig = { newtUrl: string; agent: string; token: string };
@@ -89,7 +89,6 @@ export function createEveHandlers({ newtUrl, agent, token }: EveAdapterConfig): 
         id: deliveryId,
         text,
         policy: body.turnPolicy === "queue" ? "queue" : "steer",
-        meta: messageMeta(text),
       }),
     });
     if (!response.ok) {

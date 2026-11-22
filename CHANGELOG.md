@@ -42,7 +42,7 @@ Operations:
 - **Cancel a running turn from any instance.** `POST .../cancel`, optionally naming `{"turn": "<id>"}` so a late cancel never hits the next turn.
   - The request is recorded on the session row (migration `0010`) and announced on `newt_cancel`.
   - The instance holding the lease cancels at once, or at its next lease heartbeat if the notification was lost.
-  - Answers: 202 `{"turn"}` (also on a repeat); 409 `turn_not_running`; 404 `session_not_found`.
+  - Answers: 202 `{"turn"}` (also on a repeat); 409 `turn_not_running`; 404 `not_found`.
   - The turn ends with `turn_failed` and `reason: "cancelled"`. Its events are dead-lettered when no outward call had run, so it is not retried. Protocol 5.9.
 - **`GET /metrics`** in Prometheus text format: events by outcome, turns by outcome, fenced commits, dead letters, retries, running and waiting turns, and a histogram of the wait for a slot. Protocol 5.10.
 - **`max_waiting` in `[runner]`** (default `4 * max_sessions`) bounds the woken sessions that wait for a slot. A wake past it is dropped and left for the next sweep, and `newt_wakes_dropped_total` counts it.

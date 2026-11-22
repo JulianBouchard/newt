@@ -4,12 +4,8 @@
   "frame": {
    "event_id": "m-1",
    "inbox_id": 1,
-   "meta": {
-    "eve": {
-     "message": "load message 1-1: any news on the role?"
-    }
-   },
-   "type": "received"
+   "type": "received",
+   "text": "load message 1-1: anything new today?"
   }
  },
  {
@@ -199,7 +195,7 @@
   "frame": {
    "at": "2026-11-21T23:12:21.905247Z",
    "session": "bench/record-1",
-   "text": "interview ledger yes sounds Thursday interview remote hiring interview Lisbon startup good remote ",
+   "text": "meeting ledger yes sounds Thursday meeting remote shipping meeting Lisbon project good remote ",
    "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
    "type": "text_delta"
   }
@@ -209,7 +205,7 @@
   "frame": {
    "at": "2026-11-21T23:12:21.956916Z",
    "session": "bench/record-1",
-   "text": "fit salary Thursday Lisbon Thursday rust yes offer backend fit fit yes role ",
+   "text": "plan budget Thursday Lisbon Thursday rust yes draft backend plan plan yes task ",
    "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
    "type": "text_delta"
   }
@@ -219,7 +215,7 @@
   "frame": {
    "at": "2026-11-21T23:12:22.010747Z",
    "session": "bench/record-1",
-   "text": "good founder good interview manager offer remote equity yes thanks team next fit startup ",
+   "text": "good owner good meeting release draft remote review yes thanks team next plan project ",
    "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
    "type": "text_delta"
   }
@@ -229,7 +225,7 @@
   "frame": {
    "at": "2026-11-21T23:12:22.061069Z",
    "session": "bench/record-1",
-   "text": "Berlin remote offer Lisbon founder intro startup startup salary equity interview interview series ",
+   "text": "Berlin remote draft Lisbon owner note project project budget review meeting meeting series ",
    "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
    "type": "text_delta"
   }
@@ -239,7 +235,7 @@
   "frame": {
    "at": "2026-11-21T23:12:22.114025Z",
    "session": "bench/record-1",
-   "text": "week series fit stack fit remote founder Lisbon intro stack Thursday rust rust ",
+   "text": "week series plan stack plan remote owner Lisbon note stack Thursday rust rust ",
    "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
    "type": "text_delta"
   }
@@ -249,7 +245,7 @@
   "frame": {
    "at": "2026-11-21T23:12:22.164416Z",
    "session": "bench/record-1",
-   "text": "call yes backend role backend equity thanks rust Thursday Thursday fit fit backend ",
+   "text": "call yes backend task backend review thanks rust Thursday Thursday plan plan backend ",
    "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
    "type": "text_delta"
   }
@@ -259,7 +255,7 @@
   "frame": {
    "at": "2026-11-21T23:12:22.215222Z",
    "session": "bench/record-1",
-   "text": "interview startup interview Berlin good backend Thursday backend fit interview week remote hiring ",
+   "text": "meeting project meeting Berlin good backend Thursday backend plan meeting week remote shipping ",
    "turn": "01a20061-b5cc-726b-8845-3ccf647e320d",
    "type": "text_delta"
   }

@@ -6,7 +6,7 @@ import { DefaultChatTransport, readUIMessageStream } from "ai";
 const base = process.env.NEWT_URL ?? "http://127.0.0.1:7878";
 const agent = process.env.NEWT_AGENT ?? "bench";
 const token = process.env.NEWT_TOKEN ?? "bench-token";
-const text = process.env.NEWT_MESSAGE ?? "load message 1-1: any news on the role?";
+const text = process.env.NEWT_MESSAGE ?? "load message 1-1: anything new today?";
 const aiVersion = JSON.parse(
   readFileSync(new URL("node_modules/ai/package.json", import.meta.url), "utf8"),
 ).version;

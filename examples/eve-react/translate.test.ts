@@ -27,7 +27,7 @@ const received = (id: string, message?: string): LiveFrame => ({
   type: "received",
   event_id: id,
   inbox_id: 1,
-  ...(message === undefined ? {} : { meta: { eve: { message } } }),
+  ...(message === undefined ? {} : { text: message }),
 });
 
 test("a recorded turn becomes eve events in order", () => {
@@ -54,7 +54,7 @@ test("a recorded turn becomes eve events in order", () => {
     "session.waiting",
   ]);
   const received = events.find((event) => event.type === "message.received");
-  assert.equal(received?.data.message, "load message 1-1: any news on the role?");
+  assert.equal(received?.data.message, "load message 1-1: anything new today?");
 });
 
 test("the first tool event is an empty delta, then the streamed input, then the call", () => {
@@ -127,7 +127,7 @@ test("eve's reducer shows the tool as input-streaming on the empty delta, then i
   assert.deepEqual(states, ["input-streaming", "input-available", "output-available"]);
   const assistant = state.messages.find((message) => message.role === "assistant");
   const text = assistant?.parts.find((part) => part.type === "text");
-  assert.ok(text && text.type === "text" && text.text.startsWith("Berlin interview"));
+  assert.ok(text && text.type === "text" && text.text.startsWith("Berlin meeting"));
 });
 
 test("a failed tool call becomes a failed action.result that eve shows as an error", () => {
