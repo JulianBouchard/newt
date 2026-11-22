@@ -95,6 +95,7 @@ pub(super) async fn chat(
         key,
         cursor,
         buffer: VecDeque::new(),
+        must_read: true,
         shutdown: state.shutdown,
         gap: None,
     };

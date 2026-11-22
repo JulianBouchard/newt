@@ -315,6 +315,7 @@ async fn live(
         key,
         cursor,
         buffer: VecDeque::new(),
+        must_read: true,
         shutdown: state.shutdown,
         gap,
     };
@@ -329,6 +330,10 @@ struct LiveFeed {
     cursor: i64,
     receiver: Watch,
     buffer: VecDeque<LiveEvent>,
+    /// Whether rows may have arrived since the last read. A read that returns a
+    /// short page has caught up; the watch then wakes the feed for anything
+    /// appended after it, so the feed waits instead of reading again.
+    must_read: bool,
     shutdown: CancellationToken,
     gap: Option<(i64, i64)>,
 }
@@ -356,22 +361,27 @@ impl LiveFeed {
                 self.cursor = event.seq;
                 return Some(event);
             }
-            match self
-                .store
-                .live_since(&self.agent, &self.key, self.cursor, LIVE_PAGE)
-                .await
-            {
-                Ok(events) if !events.is_empty() => {
-                    self.buffer.extend(events);
-                    continue;
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::error!(%error, "live feed could not read events, closing");
-                    return None;
+            if self.must_read {
+                match self
+                    .store
+                    .live_since(&self.agent, &self.key, self.cursor, LIVE_PAGE)
+                    .await
+                {
+                    Ok(events) if !events.is_empty() => {
+                        self.must_read =
+                            i64::try_from(events.len()).unwrap_or(i64::MAX) >= LIVE_PAGE;
+                        self.buffer.extend(events);
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(%error, "live feed could not read events, closing");
+                        return None;
+                    }
                 }
             }
             self.wait_for_topic().await;
+            self.must_read = true;
         }
     }
 
