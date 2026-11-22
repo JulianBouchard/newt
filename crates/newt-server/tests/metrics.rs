@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use newt_core::workspace::Workspace;
 use newt_server::backend::StaticBackend;
 use newt_server::http::{AppState, router};
-use newt_server::live::Topics;
+use newt_server::live::spawn_listener;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::Store;
 use newt_server::testing::GatedModel;
@@ -19,11 +19,13 @@ struct Harness {
     base: String,
     model: GatedModel,
     runner: Runner<StaticBackend, GatedModel>,
+    notifications: tokio::task::JoinHandle<()>,
 }
 
 async fn start(pool: &PgPool) -> Harness {
     let store = Store::new(pool.clone()).with_max_pending(HashMap::from([("assistant".into(), 2)]));
     let model = GatedModel::closed();
+    let (live, notifications) = spawn_listener(pool.clone()).await.unwrap();
     let runner = Runner::new(
         store.clone(),
         StaticBackend {
@@ -39,7 +41,7 @@ async fn start(pool: &PgPool) -> Harness {
             ..RunnerConfig::default()
         },
         None,
-        Topics::default(),
+        live.clone(),
     );
     let _loops = runner.spawn_loops();
     let state = AppState {
@@ -48,7 +50,7 @@ async fn start(pool: &PgPool) -> Harness {
             "assistant".to_owned(),
             "secret".to_owned(),
         )])),
-        live: Topics::default(),
+        live,
         shutdown: CancellationToken::new(),
         instrumentation: None,
         live_meta: Arc::default(),
@@ -62,6 +64,7 @@ async fn start(pool: &PgPool) -> Harness {
         base: format!("http://{address}"),
         model,
         runner,
+        notifications,
     }
 }
 
@@ -106,6 +109,14 @@ impl Harness {
                 "timed out waiting for {what}: {scraped:?}"
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    async fn model_calls(&self, what: &str, wanted: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.model.calls_started() < wanted {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 }
@@ -161,6 +172,18 @@ async fn metrics_count_events_turns_cancels_and_slot_waits(pool: PgPool) {
             .await,
         409
     );
+    harness
+        .until(
+            "the turn to start",
+            "newt_turns_total{outcome=\"started\"}",
+            1.0,
+        )
+        .await;
+    let busy = harness.scrape().await;
+    assert_eq!(busy["newt_running_turns"], 1.0);
+    assert_eq!(busy["newt_waiting_turns"], 0.0);
+
+    harness.model_calls("the first model call", 1).await;
     assert_eq!(
         harness
             .post("s", "events", &json!({ "id": "e2", "text": "hi" }))
@@ -173,17 +196,7 @@ async fn metrics_count_events_turns_cancels_and_slot_waits(pool: PgPool) {
             .await,
         429
     );
-
-    harness
-        .until(
-            "the turn to start",
-            "newt_turns_total{outcome=\"started\"}",
-            1.0,
-        )
-        .await;
-    let busy = harness.scrape().await;
-    assert_eq!(busy["newt_running_turns"], 1.0);
-    assert_eq!(busy["newt_waiting_turns"], 0.0);
+    harness.model_calls("e2 to steer the turn", 2).await;
 
     assert_eq!(harness.post("s", "cancel", &json!({})).await, 202);
     harness
@@ -208,7 +221,9 @@ async fn metrics_count_events_turns_cancels_and_slot_waits(pool: PgPool) {
             1.0,
         )
         .await;
-    harness.runner.idle().await;
+    tokio::time::timeout(Duration::from_secs(10), harness.runner.idle())
+        .await
+        .unwrap();
 
     let scraped = harness.scrape().await;
     assert_eq!(scraped["newt_events_total{outcome=\"accepted\"}"], 3.0);
@@ -218,7 +233,7 @@ async fn metrics_count_events_turns_cancels_and_slot_waits(pool: PgPool) {
     assert_eq!(scraped["newt_turns_total{outcome=\"started\"}"], 2.0);
     assert_eq!(scraped["newt_turns_total{outcome=\"failed\"}"], 0.0);
     assert_eq!(scraped["newt_retries_total"], 0.0);
-    assert!(scraped["newt_dead_letters_total"] >= 1.0);
+    assert_eq!(scraped["newt_dead_letters_total"], 2.0);
     assert_eq!(scraped["newt_commits_fenced_total"], 0.0);
     assert_eq!(scraped["newt_running_turns"], 0.0);
     assert_eq!(scraped["newt_max_sessions"], 16.0);
@@ -235,4 +250,5 @@ async fn metrics_count_events_turns_cancels_and_slot_waits(pool: PgPool) {
         "{buckets:?}"
     );
     harness.runner.shutdown().await;
+    harness.notifications.abort();
 }
