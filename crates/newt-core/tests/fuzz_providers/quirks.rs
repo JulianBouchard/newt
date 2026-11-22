@@ -123,6 +123,36 @@ fn chat_readies_every_call_when_the_stream_ends_without_a_finish_reason() {
     assert_eq!(readied, 2);
 }
 
+#[test]
+fn chat_keeps_parallel_calls_apart_when_the_host_omits_the_index() {
+    let outcome = chat(
+        &[
+            delta(
+                call_delta(None, Some("call_1"), Some("read_file"), "{\"paths\":[]}"),
+                Value::Null,
+            ),
+            delta(
+                call_delta(None, Some("call_2"), Some("end_turn"), "{}"),
+                Value::Null,
+            ),
+            delta(json!({}), json!("tool_calls")),
+        ],
+        true,
+    );
+    let calls = tool_calls(&outcome);
+    assert_eq!(
+        calls,
+        vec![
+            (
+                "call_1".to_owned(),
+                "read_file".to_owned(),
+                json!({ "paths": [] })
+            ),
+            ("call_2".to_owned(), "end_turn".to_owned(), json!({})),
+        ]
+    );
+}
+
 fn message_start() -> (&'static str, Value) {
     (
         "message_start",
