@@ -45,6 +45,7 @@ fn retention() -> HashMap<String, Retention> {
     HashMap::from([
         ("send_message".to_owned(), Retention::Outward),
         ("save_note".to_owned(), Retention::Durable),
+        (BATCH.to_owned(), Retention::Ephemeral),
     ])
 }
 
@@ -90,6 +91,21 @@ fn two_prefixed_outward_calls_are_still_refused() {
         &retention(),
     );
     assert!(expanded.preset["b1"].is_error);
+}
+
+#[test]
+fn a_batch_call_when_batch_is_off_is_left_for_the_unknown_tool_error() {
+    let mut retention = retention();
+    retention.remove(BATCH);
+    let expanded = expand(
+        &[batch_call(
+            json!({ "calls": [{ "name": "save_note", "arguments": {} }] }),
+        )],
+        &retention,
+    );
+    assert_eq!(expanded.calls.len(), 1);
+    assert_eq!(expanded.calls[0].name, BATCH);
+    assert!(expanded.preset.is_empty());
 }
 
 #[test]
