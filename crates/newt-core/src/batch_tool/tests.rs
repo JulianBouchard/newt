@@ -108,3 +108,16 @@ fn invalid_batches_become_errors_without_running_anything() {
         assert!(expanded.preset["b1"].is_error);
     }
 }
+
+#[test]
+fn arguments_sent_as_a_json_string_become_the_object() {
+    let expanded = expand(
+        &[batch_call(json!({ "calls": [
+            { "name": "save_note", "arguments": "{\"text\":\"x\"}" },
+            { "name": "save_note", "arguments": "not json" },
+        ] }))],
+        &retention(),
+    );
+    assert_eq!(expanded.calls[0].arguments, json!({ "text": "x" }));
+    assert!(expanded.calls[1].invalid_arguments().is_some());
+}

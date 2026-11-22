@@ -221,7 +221,7 @@ pub(super) fn decode<T: DeserializeOwned>(event: &SseEvent) -> Result<T, Provide
     })
 }
 
-pub(super) fn tool_arguments(raw: &str) -> Value {
+pub(crate) fn tool_arguments(raw: &str) -> Value {
     if raw.trim().is_empty() {
         return json!({});
     }

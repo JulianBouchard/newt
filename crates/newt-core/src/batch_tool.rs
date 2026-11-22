@@ -7,6 +7,7 @@ use crate::checkpoint::CHECKPOINT;
 use crate::commit::{UNSUMMARIZED_RESULT_LIMIT, truncate};
 use crate::message::{ToolCall, ToolResult};
 use crate::prompt::ToolSpec;
+use crate::provider::tool_arguments;
 use crate::tools::{END_TURN, Retention, ToolDef, ToolOutput};
 
 pub const BATCH: &str = "batch";
@@ -109,7 +110,7 @@ pub(crate) fn expand(tool_calls: &[ToolCall], retention: &HashMap<String, Retent
                     expanded.calls.push(ToolCall {
                         id: format!("{}.{index}", call.id),
                         name: args.name,
-                        arguments: args.arguments,
+                        arguments: inner_arguments(args.arguments),
                     });
                     slots.push(slot);
                 }
@@ -128,6 +129,15 @@ pub(crate) fn expand(tool_calls: &[ToolCall], retention: &HashMap<String, Retent
         }
     }
     expanded
+}
+
+fn inner_arguments(arguments: Value) -> Value {
+    match arguments {
+        Value::Object(_) => arguments,
+        Value::Null => json!({}),
+        Value::String(raw) => tool_arguments(&raw),
+        other => tool_arguments(&other.to_string()),
+    }
 }
 
 fn parse(

@@ -7,7 +7,8 @@ mod stream;
 mod types;
 
 pub use client::ProviderClient;
-use stream::{Decoded, Decoder, Emitter, decode, tool_arguments};
+pub(crate) use stream::tool_arguments;
+use stream::{Decoded, Decoder, Emitter, decode};
 pub use types::{
     CallTiming, Model, ModelResponse, Protocol, ProviderError, StopReason, StreamEvent, Usage,
 };
