@@ -153,6 +153,28 @@ fn chat_keeps_parallel_calls_apart_when_the_host_omits_the_index() {
     );
 }
 
+#[test]
+fn chat_never_returns_a_call_without_an_id_or_a_name() {
+    let outcome = chat(
+        &[
+            delta(
+                call_delta(Some(0), None, Some("read_file"), "{}"),
+                Value::Null,
+            ),
+            delta(call_delta(Some(1), Some("call_2"), None, "{}"), Value::Null),
+            delta(json!({}), json!("tool_calls")),
+        ],
+        true,
+    );
+    if let Ok(summary) = &outcome.result {
+        for part in &summary.parts {
+            if let Part::ToolCall(call) = part {
+                assert!(!call.id.is_empty() && !call.name.is_empty(), "{call:?}");
+            }
+        }
+    }
+}
+
 fn message_start() -> (&'static str, Value) {
     (
         "message_start",
