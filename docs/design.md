@@ -91,4 +91,4 @@ Newt is one binary plus Postgres. A session's state, its inbox of unprocessed ev
 
 ## Not in the design
 
-No cross-session memory, no sandboxed code execution, no multi-agent orchestration, no scheduler for timers, no policing of what an added MCP server says. The crates are not published to crates.io. What 1.x keeps stable is listed under Stability in the README.
+No cross-session memory, no sandboxed code execution, no multi-agent orchestration, no scheduler for timers, no policing of what an added MCP server says. The crates are not published to crates.io. What each major version keeps stable is listed under Stability in the README.
