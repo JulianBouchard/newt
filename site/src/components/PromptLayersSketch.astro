@@ -1,0 +1,46 @@
+---
+import { PROMPT_LAYERS_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(401);
+const { box, line, arrow } = sketch;
+
+box(120, 80, 260, 70);
+box(380, 80, 330, 70);
+box(710, 80, 230, 70, { stroke: ACCENT }, true);
+
+box(120, 260, 260, 70);
+box(380, 260, 460, 70);
+box(840, 260, 230, 70, { stroke: ACCENT }, true);
+
+arrow([[825, 154], [790, 205], [775, 256]], ACCENT);
+
+line(120, 352, 840, 352, { stroke: ACCENT });
+line(120, 342, 120, 362, { stroke: ACCENT });
+line(840, 342, 840, 362, { stroke: ACCENT });
+
+const labels: SketchLabel[] = [
+  { x: 20, y: 124, text: "turn 1", size: 24, weight: 700 },
+  { x: 20, y: 304, text: "turn 2", size: 24, weight: 700 },
+
+  { x: 250, y: 112, text: "fixed part", size: 24, weight: 700, anchor: "middle" },
+  { x: 250, y: 138, text: "instructions · tools", size: 18, tone: "muted", anchor: "middle" },
+  { x: 545, y: 112, text: "history", size: 24, weight: 700, anchor: "middle" },
+  { x: 545, y: 138, text: "past turns", size: 18, tone: "muted", anchor: "middle" },
+  { x: 825, y: 112, text: "this turn", size: 24, weight: 700, tone: "accent", anchor: "middle" },
+  { x: 825, y: 138, text: "new work", size: 18, tone: "muted", anchor: "middle" },
+
+  { x: 250, y: 292, text: "fixed part", size: 24, weight: 700, anchor: "middle" },
+  { x: 610, y: 292, text: "history", size: 24, weight: 700, anchor: "middle" },
+  { x: 610, y: 318, text: "past turns, plus what turn 1 kept", size: 18, tone: "muted", anchor: "middle" },
+  { x: 955, y: 292, text: "this turn", size: 24, weight: 700, tone: "accent", anchor: "middle" },
+  { x: 955, y: 318, text: "new work", size: 18, tone: "muted", anchor: "middle" },
+
+  { x: 820, y: 212, text: "kept when it commits", size: 20, tone: "accent" },
+  { x: 480, y: 392, text: "same bytes as last turn, read from the cache", size: 21, tone: "accent", anchor: "middle" },
+  { x: 955, y: 392, text: "new", size: 21, tone: "muted", anchor: "middle" },
+];
+---
+
+<SketchCanvas viewBox="0 50 1200 370" strokes={sketch.strokes} labels={labels} description={PROMPT_LAYERS_DESCRIPTION} captionId="newt-layers-caption" />

@@ -3,7 +3,7 @@ import Default from "@astrojs/starlight/components/Search.astro";
 import { Icon } from "@astrojs/starlight/components";
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, "");
-const isQuickstart = Astro.locals.starlightRoute.entry.id === "quickstart";
+const isFirstDocsPage = Astro.locals.starlightRoute.entry.id === "overview";
 const page = (path: string) => `${base}/${path}`;
 
 const groups = [
@@ -11,9 +11,9 @@ const groups = [
     label: "Start here",
     items: [
       { title: "Quickstart", hint: "Run the demo with Docker and no API key", href: page("quickstart/") },
-      { title: "How a turn works", hint: "From event to commit, step by step", href: page("how-a-turn-works/") },
-      { title: "The home server", hint: "The MCP server that is your agent", href: page("home-server/") },
-      { title: "Tools over MCP", hint: "Retention, invalidation, exactly-once calls", href: page("tools/") },
+      { title: "What happens when a message comes in", hint: "One turn, step by step", href: page("how-a-turn-works/") },
+      { title: "Build your agent", hint: "Your agent is an MCP server", href: page("agent-core/") },
+      { title: "Write tools", hint: "What a tool keeps, what it changes, sending once", href: page("tools/") },
     ],
   },
   {
@@ -21,7 +21,7 @@ const groups = [
     items: [
       { title: "Configuration", hint: "Every server.toml key and its default", href: page("configuration/") },
       { title: "Protocol", hint: "The full contract, field by field", href: page("protocol/") },
-      { title: "Sending events", hint: "Event API and live feed", href: page("events/") },
+      { title: "Send events from your app", hint: "Event API and live feed", href: page("events/") },
       { title: "Changelog", hint: "What changed in each release", href: page("changelog/") },
     ],
   },
@@ -37,8 +37,8 @@ const groups = [
 ---
 
 <Default {...Astro.props} />
-<a href={page("quickstart/")} class="newt-header-cta" aria-current={isQuickstart ? "page" : undefined}>
-  Quickstart <Icon name="right-arrow" size="0.9em" />
+<a href={page("overview/")} class="newt-header-cta" aria-current={isFirstDocsPage ? "page" : undefined}>
+  Docs <Icon name="right-arrow" size="0.9em" />
 </a>
 
 <template id="newt-search-suggestions">

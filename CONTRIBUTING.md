@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking. newt is early and changes quickly, so open an issue before starting anything large.
+Thanks for looking. newt is young and moves fast, so open an issue before you start on anything big.
 
 ## Setup
 
@@ -21,7 +21,7 @@ Run the server against the example config:
 NEWT_CONFIG=server.example.toml cargo run -p newt-server
 ```
 
-The example config also needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `ASSISTANT_TOKEN` set (any value works until a turn calls the model). The README walks through the demo.
+The example config also needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `ASSISTANT_TOKEN` set (any value works until a turn calls the model). The [Quickstart](https://newt.julianbouchard.com/quickstart/) walks through the demo.
 
 ## Checks
 
@@ -62,13 +62,13 @@ These come from `[workspace.lints]` in `Cargo.toml`. With `-D warnings`, every w
 
 ## Tests
 
-Tests assert behaviour on inputs. A bug fix comes with a test that fails without the fix. See the README's "Running the tests" section.
+Tests check behaviour on inputs. A bug fix comes with a test that fails without the fix. No test calls a real model, and the `newt-core` tests don't need Postgres.
 
 ## Pull requests
 
 - One change per pull request, with a description of what changed and why.
 - Rebase on `main` and run the checks above first.
-- If you change the context-provider protocol, the MCP `_meta` fields or a config key, update `docs/protocol.md` or `docs/config.md` in the same pull request.
+- If you change the `newt` MCP extension, a `_meta` field or a config key, update `docs/protocol.md` or `docs/config.md` and the matching guide under `site/` in the same pull request.
 - By contributing you agree your work is licensed as `Apache-2.0 OR MIT`, like the rest of the project.
 
 For security issues, see `SECURITY.md`. Please follow `CODE_OF_CONDUCT.md`.

@@ -1,0 +1,37 @@
+---
+import { PIECES_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(521);
+const { box, arrow } = sketch;
+
+box(480, 30, 240, 70);
+arrow([[560, 104], [560, 184]]);
+arrow([[640, 184], [640, 104]]);
+box(440, 190, 320, 110, { stroke: ACCENT, strokeWidth: 2.2 });
+
+const pieces = [
+  { x: 30, title: "model", sub: "" },
+  { x: 330, title: "agent core", sub: "prompt · tools · pages" },
+  { x: 640, title: "extra servers", sub: "more tools and pages" },
+  { x: 940, title: "Postgres", sub: "history · journal · leases" },
+];
+const starts = [470, 560, 640, 730];
+const labels: SketchLabel[] = [
+  { x: 600, y: 74, text: "your app", size: 26, weight: 700, anchor: "middle" },
+  { x: 492, y: 152, text: "events", size: 20 },
+  { x: 652, y: 152, text: "live feed", size: 20 },
+  { x: 600, y: 246, text: "newt", size: 34, weight: 700, tone: "accent", anchor: "middle" },
+  { x: 600, y: 280, text: "runs every turn", size: 19, tone: "muted", anchor: "middle" },
+];
+pieces.forEach((piece, index) => {
+  const center = piece.x + 115;
+  box(piece.x, 400, 230, 80);
+  arrow([[starts[index], 304], [center, 396]]);
+  labels.push({ x: center, y: piece.sub ? 434 : 448, text: piece.title, size: 25, weight: 700, anchor: "middle" });
+  if (piece.sub) labels.push({ x: center, y: 464, text: piece.sub, size: 18, tone: "muted", anchor: "middle" });
+});
+---
+
+<SketchCanvas viewBox="0 10 1200 490" strokes={sketch.strokes} labels={labels} description={PIECES_DESCRIPTION} captionId="newt-pieces-caption" />

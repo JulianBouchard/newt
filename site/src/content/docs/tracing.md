@@ -1,11 +1,11 @@
 ---
-title: Tracing
-description: Read every turn from a local JSONL file with newt-report, or export one OTLP trace per turn to Langfuse or any collector.
+title: "See what each turn did"
+description: See what every turn did. Locally from a JSONL file with newt-report, or in production as one OTLP trace per turn in Langfuse or any collector.
 ---
 
-Every turn emits one typed event stream. Sinks read it: a local JSONL file, the live feed, and OTLP traces.
+Every turn emits one stream of events, and newt can write it to a local file, to the live feed, and out as OTLP traces.
 
-## Locally: the JSONL file and `newt-report`
+## See why the cache missed: `newt-report`
 
 ```toml
 [events]
@@ -13,19 +13,19 @@ jsonl = "newt-events.jsonl"
 capture_content = false
 ```
 
-The file leaves out message content unless `capture_content = true`. Run `newt-report newt-events.jsonl` for timing and flags per turn, and a **cache report card**: the cached share of all input and, for every call that read under half from cache, what broke it.
+Leave `capture_content` off and the file has no message text. Run `newt-report newt-events.jsonl` to get timings per turn and a **cache report card**: how much of all input came from the cache, and for every call that read less than half from it, what broke it.
 
-| Miss cause | Example |
+| What broke the cache | Example |
 |---|---|
-| First call of the session | Expected once |
-| A changed piece of the prefix | `tool \`search\` changed, about 6120 bytes into the prefix` |
-| History rewritten from message n | Usually compaction |
-| An idle gap past the cache lifetime | The person came back later |
-| Routing | Prefix and history unchanged, no gap: the provider sent it to a machine without the cache |
+| The session's first call | Expected, once |
+| Something in the fixed part changed | `tool \`search\` changed, about 6120 bytes into the prefix` |
+| History was rewritten from message n | Usually compaction |
+| A long pause | The person came back after the cache expired |
+| Routing | Nothing changed and no pause, the provider just sent it to a machine without the cache |
 
-`--prices input,cached,output` adds the cost.
+Add `--prices input,cached,output` to see what it cost.
 
-## In production: OTLP traces
+## Send traces to Langfuse or any OTLP collector
 
 ```toml
 [tracing]
@@ -35,21 +35,15 @@ headers_env = "NEWT_OTLP_HEADERS"
 capture_content = true
 ```
 
-newt exports one trace per turn over OTLP/HTTP JSON:
+newt sends one trace per turn: an `invoke_agent` span for the turn, a `chat` span per model call (tokens, timings and the new messages), and an `execute_tool` span per tool call. A session's turns share `gen_ai.conversation.id`, and the `langfuse` profile also fills in Langfuse's session and usage fields. Sending the same turn twice overwrites it instead of duplicating it.
 
-- an `invoke_agent` root span;
-- a `chat` span per model call, with token usage, timings and the messages new to that call;
-- an `execute_tool` span per tool call.
-
-A session's turns share `gen_ai.conversation.id`. The `langfuse` profile also sets the Langfuse session, observation types and usage details. Span ids derive from session, turn and call, so a re-export overwrites rather than duplicates.
-
-:::caution[Content is exported by default]
-`[tracing] capture_content` defaults to `true`, unlike `[events]`. Set it to `false` to export only timings, token counts and tool names, with the session key hashed and error text replaced by `failed`.
+:::caution[Message text is exported by default]
+Unlike the local file, `[tracing]` sends message text unless you set `capture_content = false`. Then it only sends timings, token counts and tool names, hashes the session key, and replaces error text with `failed`.
 :::
 
-## Your spans under the turn
+## Add your own spans
 
-Every tool call carries a `traceparent` in its `_meta`. Parent your own spans on it to see them inside the turn's trace. Library users can add an `Enricher` (extra attributes per session) and a `Redactor` (runs over every captured message before it leaves the process).
+Every tool call carries a `traceparent`, so your servers can put their own spans under the turn's trace. If you use newt as a library, an `Enricher` adds attributes per session and a `Redactor` runs over every captured message before it leaves the process.
 
 ## Next
 

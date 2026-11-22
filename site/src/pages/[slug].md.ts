@@ -1,6 +1,19 @@
 import type { APIRoute, GetStaticPaths } from "astro";
 import { type CollectionEntry, getCollection } from "astro:content";
-import { ARCHITECTURE_DESCRIPTION, NEWT_PLUS_MCP_DESCRIPTION, UNIFIED_MODEL_DESCRIPTION } from "../components/sketch-descriptions";
+import * as descriptions from "../components/sketch-descriptions";
+
+const SKETCHES: Record<string, string> = {
+  ArchitectureSketch: descriptions.ARCHITECTURE_DESCRIPTION,
+  NewtPlusMcp: descriptions.NEWT_PLUS_MCP_DESCRIPTION,
+  UnifiedModelSketch: descriptions.UNIFIED_MODEL_DESCRIPTION,
+  PromptLayersSketch: descriptions.PROMPT_LAYERS_DESCRIPTION,
+  RetentionSketch: descriptions.RETENTION_DESCRIPTION,
+  WorkspaceSketch: descriptions.WORKSPACE_DESCRIPTION,
+  CompactionSketch: descriptions.COMPACTION_DESCRIPTION,
+  JournalSketch: descriptions.JOURNAL_DESCRIPTION,
+  RunnerSketch: descriptions.RUNNER_DESCRIPTION,
+  PiecesSketch: descriptions.PIECES_DESCRIPTION,
+};
 
 export const getStaticPaths = (async () => {
   const docs = await getCollection("docs", (entry) => entry.id !== "404");
@@ -10,9 +23,13 @@ export const getStaticPaths = (async () => {
 function mdxToMarkdown(body: string) {
   return body
     .replace(/^import .+$/gm, "")
-    .replace("<ArchitectureSketch />", ARCHITECTURE_DESCRIPTION)
-    .replace("<NewtPlusMcp />", NEWT_PLUS_MCP_DESCRIPTION)
-    .replace("<UnifiedModelSketch />", UNIFIED_MODEL_DESCRIPTION)
+    .replace(/^<(\w+) \/>$/gm, (_, name: string) => {
+      const description = SKETCHES[name];
+      if (!description) throw new Error(`[slug].md: no text version for <${name} />`);
+      return description;
+    })
+    .replace(/^<TurnGroup label="(\w+)">$/gm, (_, label: string) => `**${label[0].toUpperCase()}${label.slice(1)}**`)
+    .replace(/^<\/TurnGroup>$/gm, "")
     .replace(/<\/?CardGrid>/g, "\n")
     .replace(/^<\/?div[^>]*>$/gm, "")
     .replace(/<Card title="([^"]+)"[^>]*>/g, "### $1\n")

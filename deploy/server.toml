@@ -1,6 +1,6 @@
-# The config `docker compose up` runs: newt, the demo assistant twice (once
-# through its context provider, once as nothing but its MCP server), and the
-# loadtest's fake model, so it works without an API key.
+# The config `docker compose up` runs: newt, the demo assistant (its agent
+# core is one MCP server), and the loadtest's fake model, so it works without
+# an API key.
 #
 # For a real model, set OPENAI_API_KEY in your shell and change the chain of
 # [models.default] to ["openai"].

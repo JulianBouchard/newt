@@ -1,0 +1,161 @@
+---
+title: "Build your agent"
+description: Your agent is an MCP server. Its instructions, settings, tools and pages become the agent, and two optional requests let it steer each turn.
+---
+
+import NewtPlusMcp from "../../components/NewtPlusMcp.astro";
+
+<NewtPlusMcp />
+
+Your agent is an MCP server, the agent core. You build it with any MCP SDK, and whatever it serves becomes the agent: its instructions, tools, pages and skills. If it needs tools it doesn't have itself, it can pull in [extra servers](../extra-servers/). There's nothing else for your app to implement.
+
+```toml title="server.toml"
+[agents.assistant]
+mcp = "https://app.example.com/mcp"
+token_env = "ASSISTANT_TOKEN"
+```
+
+The token works both ways. Your app sends it to newt, and newt sends it to the agent core when it reaches it over HTTP.
+
+## Hosted, next to newt, or run by newt
+
+The same server code runs three ways, and switching is this one line:
+
+| `mcp =` | Who runs it |
+|---|---|
+| `"https://agent.example.com/mcp"` | Someone else, as its own deploy |
+| `"http://localhost:4000/mcp"` | You, next to newt in the same deploy |
+| `"stdio:node ./agent/server.js"` | newt. It starts the command, talks MCP over stdin and stdout, and restarts it if it exits. No network and no token. |
+
+Since it's a normal MCP server, you can also open it in MCP Inspector or Claude Code and poke at it without newt.
+
+## What newt reads from your server
+
+| The agent's | Comes from |
+|---|---|
+| System prompt | The server's `instructions` |
+| Model and settings | The `newt` extension it declares |
+| Tools | `tools/list` |
+| [Add skills](../skills/) | `skills/list` |
+| Pages | Its resources, read per session |
+| Guidance for each turn | `newt/turn`, if it asks for it |
+| A call after each turn | `newt/turn_end`, if it asks for it |
+
+## Pick the model and settings
+
+The agent core declares its settings in its capabilities, as the `newt` extension:
+
+```json title="server/discover result"
+{
+  "instructions": "You are a personal assistant for one person, reached by chat.",
+  "capabilities": {
+    "tools": {}, "resources": { "subscribe": true },
+    "extensions": {
+      "newt": { "model": "default", "effort": "medium", "turn": true, "turn_end": true }
+    }
+  }
+}
+```
+
+`model` is an alias from `server.toml`. The agent picks the alias and `server.toml` decides which providers it means. There are more optional settings, like `history_budget` or the [extra servers](../extra-servers/), all listed in [Protocol 1.2](../protocol/#12-the-newt-extension-the-agents-settings). newt refuses fields it doesn't know, so a typo fails loudly.
+
+Changing the instructions, tools or skills costs one prompt cache miss on the next turn (see [How newt works](../design/#why-most-of-every-prompt-comes-from-the-cache)). newt reads the declaration again whenever it reconnects, for example when the server restarts or says its tools changed.
+
+## Give the agent your data as pages
+
+At the start of each turn newt reads the session's resources in the background and turns each one into a page the agent can read with `read_file`, `glob` and `grep`. Every request carries the session key in `_meta`, so one server can serve every session.
+
+Give each resource a key in `_meta["newt/key"]`, like `["tasks"]`. Tools use those keys to say what they changed, and newt reads stale pages again (see [How newt works](../design/#how-pages-stay-up-to-date)). The server can also mark pages stale itself with the usual MCP resource notifications.
+
+:::tip
+MCP resource notifications travel on their own stream, so one can arrive after the tool result that caused it. If a tool changes a page, have it say so in its result too (`newt/invalidate` or `newt/pages`, see [Write tools](../tools/#what-a-result-can-send-back)), so the very next read is current.
+:::
+
+## Tell the agent what's new each turn: `newt/turn`
+
+Declare `"turn": true` and newt asks the agent core before every turn. It sends the events the turn answers and the state you saved last time:
+
+```json title="newt/turn params"
+{
+  "session": "ana",
+  "events": [{ "id": "m1", "meta": { "channel": "whatsapp" } }],
+  "state": { "last_seen_task": 12 }
+}
+```
+
+You answer with whatever this turn needs. Every field is optional:
+
+```json title="newt/turn result"
+{
+  "pinned": "Write for WhatsApp: no markdown, two short paragraphs at most.",
+  "instructions": "It is 2026-11-12T09:30:00Z.",
+  "constraints": ["Do not message the person before Monday: they are on holiday."]
+}
+```
+
+- `pinned` is text that stays the same for this session, like the writing guide for the person's channel. It goes with the instructions, so it's free while it doesn't change.
+- `instructions` and `constraints` are for this turn only and never reach history. Use them for things like the time or what's new.
+- `state` saves something for the next turn (see [Session state](#remember-things-between-turns)).
+- `turn_state` is a starting value the turn's tools share (see [Write tools](../tools/#share-state-between-tools-in-one-turn)).
+- `model`, `effort`, `first_call_effort` and `reset` change how this one turn runs (below).
+
+If you don't declare `turn`, newt never asks and goes straight from the event to the model.
+
+:::caution
+Constraints are text the model reads, they don't block a tool call. If a rule has to hold, enforce it in your tool handler too.
+:::
+
+### Use a different model for one turn
+
+Return `model`, `effort` or `first_call_effort` and they apply to this turn, and to the compaction right after it if there is one. The next turn goes back to the declared settings. Switching models costs a cache miss on this turn and on the next one, so keep it for turns that need it.
+
+### Start the conversation over
+
+Return `"reset": true` and the turn runs as if the session had no history. The person, the session key, the inbox and the state all stay. Use it when a conversation has gone cold, or your prompt has moved on and the old history doesn't fit anymore.
+
+Nothing gets deleted. [History and fork](../replay/) still see every old message, they just never go into the prompt again. And if the turn doesn't commit, nothing is reset.
+
+## Remember things between turns
+
+newt keeps one small JSON value per session for your agent and sends it back with every request. So the agent core doesn't need its own session store, and any copy of it can answer any request. Use it for things like what the agent saw last turn, so this turn can say what changed.
+
+```json title="newt/turn result"
+{
+  "instructions": "New since the last turn: task #13, Renew passport.",
+  "state": { "last_seen_task": 13 }
+}
+```
+
+`newt/turn` sets it, and page reads and tool results can patch single keys with a JSON merge patch (`newt/state_patch`). newt saves it when the turn commits, so the state never gets ahead of the history. Keep it to a few kilobytes.
+
+:::caution
+A patch is lost if the turn doesn't commit, or if the turn resumes after a crash. Keep things in the state that you can work out again, and keep anything that must not happen twice in your own data.
+:::
+
+## Do something after each turn: `newt/turn_end`
+
+Declare `"turn_end": true` and newt calls the agent core after every committed turn. It's the place for bookkeeping: mark messages handled, stop a typing indicator, log the run, bill usage.
+
+```json title="newt/turn_end params"
+{
+  "agent": "assistant",
+  "session": "ana",
+  "turn": "0198f2a4-6b1e-7c3d-9a10-5e7d2c8b4f01",
+  "outcome": "completed",
+  "events": [{ "id": "m1", "meta": { "channel": "whatsapp" } }],
+  "state": { "last_seen_task": 13 },
+  "turn_state": { "sent": true },
+  "reply": "Done: the bank call is on your list for tomorrow at 9."
+}
+```
+
+`reply` is what the agent said when it finished. If you post it to a chat or a thread from here, the agent doesn't need a send tool at all.
+
+newt delivers this at least once, and keeps retrying for about two hours until you answer. So deduplicate by `turn`, and expect calls to arrive late or out of order. The outcomes and the retry timing are in [Protocol 1.6](../protocol/#16-newtturn_end).
+
+## Next
+
+- [Add more MCP servers](../extra-servers/): tools and pages from other MCP servers.
+- [Write tools](../tools/): what newt sends with every call, and what a result can send back.
+- [Protocol, section 1](../protocol/#1-the-agent-core): every field and rule.
+- `crates/newt-demo` is a complete agent core. Run it with the [Quickstart](../quickstart/).

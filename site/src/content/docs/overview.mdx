@@ -1,0 +1,49 @@
+---
+title: What is newt
+description: An agent runtime for products. One long-lived agent per customer, your backend as its world, and a prompt that stays clean for months.
+---
+
+import PiecesSketch from "../../components/PiecesSketch.astro";
+
+newt runs one long-lived agent for each customer of your product. Your app tells it when something happens ("the person wrote", "the order shipped"), and newt runs a turn: the agent reads your app's data, calls your tools and acts. A conversation can go on for months and the prompt stays clean.
+
+It's one Rust binary plus Postgres.
+
+## What you write, what newt handles
+
+| You bring | newt does |
+|---|---|
+| An **agent core**: an MCP server with the agent's instructions, settings, tools, and the customer's data as pages | Builds every prompt, keeps it cacheable, and reads pages again when they change |
+| **Tools**, on the agent core and any extra servers, each saying what it leaves behind | Runs the turn, decides what goes into history, and sends outward calls exactly once |
+| **Events**, whenever something happens | Queues them, adds them to a running turn, and spreads sessions across instances |
+| A **model**: Anthropic, OpenAI, or anything that speaks Chat Completions | Streams, retries, falls back to the next provider, and tells you every cache miss |
+
+## What newt talks to
+
+<PiecesSketch />
+
+## Why long conversations don't get worse
+
+Most runtimes let the prompt grow and hope for the best. Old tool results pile up and the model acts on them, and any edit to earlier text throws away the prompt cache. newt only ever adds to the end of the prompt, drops what the agent read once the turn is over, and reads it fresh from your app next time. [How newt works](../design/) walks through how.
+
+## Is newt right for you?
+
+newt fits a product where each customer has one agent that talks to them, or works for them, over weeks. An assistant, a concierge, an account manager, a support agent that remembers.
+
+It leaves out, on purpose:
+
+- memory shared between sessions
+- running code in a sandbox
+- several agents working together
+- a timer scheduler (your app sends the event when it's time)
+
+## Is it ready?
+
+newt is stable, follows semantic versioning, and ships binaries for Linux and macOS plus a Docker image. [What's stable](../stability/) says what's stable and what's still experimental.
+
+## Next
+
+- [Why is newt](../motivation/): what started it.
+- [Quickstart](../quickstart/): run the demo with Docker, no API key needed.
+- [What happens when a message comes in](../how-a-turn-works/): one turn, step by step.
+- [Build your agent](../agent-core/): build your agent.

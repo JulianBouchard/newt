@@ -1,0 +1,37 @@
+---
+import { WORKSPACE_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(441);
+const { box, arrow } = sketch;
+
+box(40, 120, 280, 150);
+box(460, 70, 300, 270, {}, true);
+box(500, 130, 220, 56, { stroke: ACCENT, strokeWidth: 2 }, true);
+box(500, 222, 220, 56);
+box(900, 120, 260, 150);
+
+arrow([[1030, 116], [600, 24], [180, 116]]);
+arrow([[322, 160], [496, 152]], ACCENT);
+arrow([[896, 176], [724, 164]]);
+arrow([[496, 176], [322, 236]], ACCENT);
+
+const labels: SketchLabel[] = [
+  { x: 180, y: 190, text: "your MCP server", size: 26, weight: 700, anchor: "middle" },
+  { x: 180, y: 222, text: "renders the pages", size: 19, tone: "muted", anchor: "middle" },
+  { x: 610, y: 108, text: "workspace", size: 24, weight: 700, anchor: "middle" },
+  { x: 520, y: 166, text: "tasks.md", size: 22, weight: 600, tone: "accent" },
+  { x: 640, y: 166, text: "stale", size: 19, tone: "accent" },
+  { x: 520, y: 258, text: "notes.md", size: 22 },
+  { x: 1030, y: 190, text: "model", size: 26, weight: 700, anchor: "middle" },
+
+  { x: 600, y: 46, text: "1  calls complete_task(7)", size: 20, anchor: "middle" },
+  { x: 330, y: 136, text: "2  tasks changed", size: 19, tone: "accent" },
+  { x: 760, y: 150, text: "3  read_file", size: 19 },
+  { x: 330, y: 280, text: "4  read again", size: 19, tone: "accent" },
+  { x: 600, y: 384, text: "a stale page is read again, so the agent never acts on an old copy", size: 21, tone: "accent", anchor: "middle" },
+];
+---
+
+<SketchCanvas viewBox="0 10 1200 400" strokes={sketch.strokes} labels={labels} description={WORKSPACE_DESCRIPTION} captionId="newt-workspace-caption" />

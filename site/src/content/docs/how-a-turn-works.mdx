@@ -1,0 +1,58 @@
+---
+sidebar:
+  label: "When a message comes in"
+title: "What happens when a message comes in"
+description: One turn, start to finish. From your app sending an event to newt committing what the agent did.
+---
+
+import TurnGroup from "../../components/TurnGroup.astro";
+
+When something new comes in for a conversation, the agent handles it in one go: it reads, acts and replies. That's a turn. Here's one, step by step.
+
+<TurnGroup label="before">
+
+## 1. Your app sends an event
+
+Someone wrote, or an order shipped. Your app posts it, and newt stores it and answers `202` right away. More in [Send events from your app](../events/).
+
+## 2. An instance picks it up
+
+The first newt instance to grab the session runs the turn. Two never run the same session at once. More in [Running several instances](../design/#running-several-instances).
+
+## 3. newt asks your agent core what's new
+
+Through `newt/turn`, for things like the time, rules for right now, or a different model. The person's pages load in the background meanwhile. More in [`newt/turn`](../agent-core/#tell-the-agent-whats-new-each-turn-newtturn).
+
+</TurnGroup>
+
+<TurnGroup label="during">
+
+## 4. The model works
+
+It reads pages, calls your [tools](../tools/) and writes replies. If the person writes again in the meantime, the new message joins between model calls.
+
+## 5. Changed pages go stale
+
+When a tool changes something, it says which pages it touched. Those go stale, so the next read gets the new version. More in [How pages stay up to date](../design/#how-pages-stay-up-to-date).
+
+## 6. Messages and payments get written down first
+
+newt saves them in Postgres before they go out, so a crash can't send them twice. More in [How a message never gets sent twice](../design/#how-a-message-never-gets-sent-twice).
+
+</TurnGroup>
+
+<TurnGroup label="after">
+
+## 7. The turn commits
+
+What the agent did goes into history, and what it only read is dropped. That's why each turn's prompt is the last one plus something new at the end, and almost all of it comes from the prompt cache. More in [What a turn keeps](../design/#what-a-turn-keeps-in-history).
+
+## 8. Your app hears about it
+
+Through `newt/turn_end`, with the outcome and the agent's reply. More in [`newt/turn_end`](../agent-core/#do-something-after-each-turn-newtturn_end).
+
+## 9. Long history gets compacted
+
+Once history passes the budget, the agent writes a checkpoint and later turns start from it. More in [What happens when history gets long](../design/#what-happens-when-history-gets-long).
+
+</TurnGroup>

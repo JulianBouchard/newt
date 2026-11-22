@@ -1,0 +1,115 @@
+---
+import "@fontsource/caveat/700.css";
+
+interface Props {
+  label: string;
+}
+
+const { label } = Astro.props;
+---
+
+<section class="newt-turn-group">
+  <div class="newt-turn-group-mark">
+    <span class="newt-turn-group-label">{label}</span>
+    <div class="newt-turn-brace" aria-hidden="true">
+      <svg class="cap" viewBox="0 0 24 16"><path d="M22 1.5 Q12 1 12.5 12 L12 16" /></svg>
+      <svg class="stretch" viewBox="0 0 24 100" preserveAspectRatio="none"><path d="M12 0 C11 30 13.2 65 12 100" vector-effect="non-scaling-stroke" /></svg>
+      <svg class="tip" viewBox="0 0 24 24"><path d="M12 0 Q12.5 10 2 12 Q12 13.5 12 24" /></svg>
+      <svg class="stretch" viewBox="0 0 24 100" preserveAspectRatio="none"><path d="M12 0 C13 35 11 70 12 100" vector-effect="non-scaling-stroke" /></svg>
+      <svg class="cap" viewBox="0 0 24 16"><path d="M12 0 L12.5 4 Q12 15 22 14.5" /></svg>
+    </div>
+  </div>
+  <div class="newt-turn-group-body">
+    <slot />
+  </div>
+</section>
+
+<style>
+  .newt-turn-group {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    gap: 0.75rem;
+    margin-block: 2.5rem;
+  }
+
+  .newt-turn-group-mark {
+    display: grid;
+    grid-template-columns: 1fr 1.5rem;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .newt-turn-group-label {
+    font-family: "Caveat", cursive;
+    font-weight: 700;
+    font-size: 1.7rem;
+    color: var(--sl-color-accent);
+    text-align: right;
+    line-height: 1;
+  }
+
+  .newt-turn-brace {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .newt-turn-brace svg {
+    display: block;
+    width: 1.5rem;
+    overflow: visible;
+  }
+
+  .newt-turn-brace .cap {
+    height: 1rem;
+  }
+
+  .newt-turn-brace .tip {
+    height: 1.5rem;
+  }
+
+  .newt-turn-brace .stretch {
+    flex: 1;
+    height: auto;
+  }
+
+  .newt-turn-brace path {
+    fill: none;
+    stroke: var(--sl-color-accent);
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+
+  .newt-turn-group-body > :global(:first-child),
+  .newt-turn-group-body > :global(:first-child h2) {
+    margin-top: 0;
+  }
+
+  .newt-turn-group-body :global(h2) {
+    font-size: 1.35rem;
+    margin-top: 1.75rem;
+  }
+
+  .newt-turn-group-body :global(h2 + p) {
+    margin-top: 0.4rem;
+  }
+
+  @media (max-width: 40rem) {
+    .newt-turn-group {
+      grid-template-columns: 1fr;
+      gap: 0;
+    }
+
+    .newt-turn-group-mark {
+      display: block;
+    }
+
+    .newt-turn-group-label {
+      text-align: left;
+    }
+
+    .newt-turn-brace {
+      display: none;
+    }
+  }
+</style>
