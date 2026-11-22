@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::live::{Channel, Notification, Topics};
-use crate::store::{Store, live_topic};
+use crate::live::Topics;
+use crate::store::{LiveEvent, Store, live_topic};
 
 const LIVE_BUFFER: usize = 256;
 const LIVE_BATCH: usize = 256;
@@ -73,6 +73,7 @@ async fn write_live(
     let mut batch = Vec::with_capacity(LIVE_BATCH);
     let mut last_remote: Option<Instant> = None;
     let mut owed = false;
+    let mut newest = 0;
     loop {
         let drained = if owed {
             let since = last_remote.map_or(REMOTE_NOTIFY_EVERY, |at| at.elapsed());
@@ -85,7 +86,7 @@ async fn write_live(
         };
         match drained {
             None => {
-                if let Err(error) = store.notify_live(&agent, &key).await {
+                if let Err(error) = store.notify_live(&agent, &key, newest).await {
                     tracing::error!(%error, %agent, %key, "could not announce live events");
                 }
                 last_remote = Some(Instant::now());
@@ -95,12 +96,15 @@ async fn write_live(
             Some(_) => {
                 let remote = last_remote.is_none_or(|at| at.elapsed() >= REMOTE_NOTIFY_EVERY);
                 let encoded = encode(&mut batch);
-                match store.append_live_batch(&agent, &key, encoded, remote).await {
-                    Ok(()) => {
-                        local.publish(Notification {
-                            channel: Channel::Live,
-                            topic: topic.clone(),
-                        });
+                match store
+                    .append_live_batch(&agent, &key, encoded.clone(), remote)
+                    .await
+                {
+                    Ok(last) => {
+                        if let Some(last) = last {
+                            newest = last;
+                            local.append_live(&topic, numbered(encoded, last));
+                        }
                         if remote {
                             last_remote = Some(Instant::now());
                         }
@@ -113,9 +117,19 @@ async fn write_live(
             }
         }
     }
-    if owed && let Err(error) = store.notify_live(&agent, &key).await {
+    if owed && let Err(error) = store.notify_live(&agent, &key, newest).await {
         tracing::error!(%error, %agent, %key, "could not announce live events");
     }
+}
+
+/// Frames with the sequence numbers the append gave them, the last one `last`.
+fn numbered(frames: Vec<serde_json::Value>, last: i64) -> Vec<LiveEvent> {
+    let first = last + 1 - i64::try_from(frames.len()).unwrap_or(i64::MAX);
+    frames
+        .into_iter()
+        .zip(first..)
+        .map(|(event, seq)| LiveEvent { seq, event })
+        .collect()
 }
 
 fn is_live(kind: &EventKind, stream: bool) -> bool {

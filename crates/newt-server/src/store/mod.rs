@@ -100,6 +100,13 @@ pub fn live_topic(agent: &str, key: &str) -> String {
     format!("{agent}/{key}")
 }
 
+/// A live notification's payload: the session's topic and the sequence number
+/// of its newest frame, so an instance can tell its own frames from others'.
+/// Session keys never contain `/`, so the last segment is always the number.
+pub fn live_payload(agent: &str, key: &str, seq: i64) -> String {
+    format!("{agent}/{key}/{seq}")
+}
+
 /// A connection from `pool`, and the milliseconds spent waiting for it.
 pub async fn timed_connection(
     pool: &PgPool,

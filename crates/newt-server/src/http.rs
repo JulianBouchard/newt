@@ -316,6 +316,7 @@ async fn live(
         cursor,
         buffer: VecDeque::new(),
         must_read: true,
+        seen_remote: 0,
         shutdown: state.shutdown,
         gap,
     };
@@ -330,10 +331,12 @@ struct LiveFeed {
     cursor: i64,
     receiver: Watch,
     buffer: VecDeque<LiveEvent>,
-    /// Whether rows may have arrived since the last read. A read that returns a
-    /// short page has caught up; the watch then wakes the feed for anything
-    /// appended after it, so the feed waits instead of reading again.
+    /// Whether the database may hold frames the feed has not served: at the
+    /// start, after a full page, after a wait ran out, or when memory does not
+    /// hold them (see [`Watch::live_after`]). A short page has caught up.
     must_read: bool,
+    /// The count of other instances' notifications already acted on.
+    seen_remote: u64,
     shutdown: CancellationToken,
     gap: Option<(i64, i64)>,
 }
@@ -361,6 +364,12 @@ impl LiveFeed {
                 self.cursor = event.seq;
                 return Some(event);
             }
+            let (held, must_read) = self.receiver.live_after(self.cursor, &mut self.seen_remote);
+            self.must_read |= must_read;
+            if !held.is_empty() {
+                self.buffer.extend(held);
+                continue;
+            }
             if self.must_read {
                 match self
                     .store
@@ -373,23 +382,26 @@ impl LiveFeed {
                         self.buffer.extend(events);
                         continue;
                     }
-                    Ok(_) => {}
+                    Ok(_) => self.must_read = false,
                     Err(error) => {
                         tracing::error!(%error, "live feed could not read events, closing");
                         return None;
                     }
                 }
             }
-            self.wait_for_topic().await;
-            self.must_read = true;
+            if self.wait_for_topic().await {
+                self.must_read = true;
+            }
         }
     }
 
-    async fn wait_for_topic(&mut self) {
+    /// Waits for a wake, and says whether the wait ran out instead: the feed
+    /// then reads the database in case a notification was lost.
+    async fn wait_for_topic(&mut self) -> bool {
         tokio::select! {
-            () = tokio::time::sleep(LIVE_POLL) => {}
-            () = self.shutdown.cancelled() => {}
-            () = self.receiver.changed() => {}
+            () = tokio::time::sleep(LIVE_POLL) => true,
+            () = self.shutdown.cancelled() => false,
+            () = self.receiver.changed() => false,
         }
     }
 }

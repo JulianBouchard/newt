@@ -1,7 +1,8 @@
-use super::{LIVE_CHANNEL, Store, live_topic};
+use super::{LIVE_CHANNEL, Store, live_payload};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::Row as _;
 use sqlx::types::Json;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -19,7 +20,8 @@ const APPEND_LIVE: &str = "with relaxed as (select set_config('synchronous_commi
        select $1, $2, (select next_live_seq from bumped) - $3 + ordinality, event \
        from unnest($4::jsonb[]) with ordinality as batch(event, ordinality) \
        returning 1) \
-     select (select count(*) from relaxed), (select count(*) from added)";
+     select (select count(*) from relaxed), (select count(*) from added), \
+       (select next_live_seq from bumped)";
 
 const APPEND_LIVE_AND_NOTIFY: &str = "with relaxed as (select set_config('synchronous_commit', 'off', true)), \
      bumped as ( \
@@ -30,18 +32,22 @@ const APPEND_LIVE_AND_NOTIFY: &str = "with relaxed as (select set_config('synchr
        select $1, $2, (select next_live_seq from bumped) - $3 + ordinality, event \
        from unnest($4::jsonb[]) with ordinality as batch(event, ordinality) \
        returning 1) \
-     select (select count(*) from relaxed), (select count(*) from added), pg_notify($5, $6)";
+     select (select count(*) from relaxed), (select count(*) from added), \
+       (select next_live_seq from bumped), \
+       pg_notify($5, $6 || '/' || (select next_live_seq from bumped)::text)";
 
 impl Store {
+    /// Appends frames to a session's live feed and returns the sequence number
+    /// of the last one, or `None` when there was nothing to append.
     pub async fn append_live_batch(
         &self,
         agent: &str,
         key: &str,
         events: Vec<Value>,
         notify_remote: bool,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<Option<i64>, sqlx::Error> {
         if events.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let count = i64::try_from(events.len()).unwrap_or(i64::MAX);
         let events: Vec<Json<Value>> = events.into_iter().map(Json).collect();
@@ -56,16 +62,17 @@ impl Store {
             .bind(count)
             .bind(events);
         if notify_remote {
-            query = query.bind(LIVE_CHANNEL).bind(live_topic(agent, key));
+            query = query.bind(LIVE_CHANNEL).bind(super::live_topic(agent, key));
         }
-        query.execute(&self.pool).await?;
-        Ok(())
+        let last: i64 = query.fetch_one(&self.pool).await?.try_get(2)?;
+        Ok(Some(last))
     }
 
-    pub async fn notify_live(&self, agent: &str, key: &str) -> Result<(), sqlx::Error> {
+    /// Tells other instances that a session's live feed has frames up to `seq`.
+    pub async fn notify_live(&self, agent: &str, key: &str, seq: i64) -> Result<(), sqlx::Error> {
         sqlx::query("select pg_notify($1, $2)")
             .bind(LIVE_CHANNEL)
-            .bind(live_topic(agent, key))
+            .bind(live_payload(agent, key, seq))
             .execute(&self.pool)
             .await?;
         Ok(())

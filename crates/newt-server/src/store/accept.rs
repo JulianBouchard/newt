@@ -36,7 +36,9 @@ const ACCEPT: &str = "with gate as (select newt_locked_pending_events($1, $2) as
                 then jsonb_build_object('meta', $7::jsonb -> 'meta') else '{}'::jsonb end \
            || case when $14 then jsonb_build_object('text', $7::jsonb -> 'text') else '{}'::jsonb end \
        from session, added returning 1), \
-     notified as (select pg_notify($8, $10), pg_notify($9, $10) from added) \
+     notified as ( \
+       select pg_notify($8, $10), pg_notify($9, $10 || '/' || session.next_live_seq::text) \
+       from added, session) \
      select coalesce((select id from added), (select id from existing)), \
        exists (select 1 from added), (select count(*) from received), \
        (select count(*) from notified), \
