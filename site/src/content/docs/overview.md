@@ -74,7 +74,7 @@ Experimental features work and are tested, including end to end against `newt-de
 
 ## Next
 
-- [Why newt](../motivation/): what started it, and the model it is built for.
+- [Why is newt](../motivation/): what started it, and the model it is built for.
 - [Quickstart](../quickstart/): run the demo assistant with Docker and no API key.
 - [How a turn works](../how-a-turn-works/): the loop, step by step.
 - [The home server](../home-server/): the MCP server that is your agent.

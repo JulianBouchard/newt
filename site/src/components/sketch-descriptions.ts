@@ -11,11 +11,11 @@ Postgres holds history, the journal and leases. An outward call such as send_mes
 export const NEWT_PLUS_MCP_DESCRIPTION =
   "newt plus an MCP server equals an agent. Point newt at an MCP server, or let newt run it over stdio, and the server's instructions, tools and resources become the agent.";
 
-export const UNIFIED_MODEL_DESCRIPTION = `One API behind every client:
+export const UNIFIED_MODEL_DESCRIPTION = `One API behind every client, in three tiers:
 
-1. The frontend calls a route, other people's agents call the public MCP server, and newt's agent calls tools on its home MCP server.
-2. Routes and the public MCP server wrap the public API; the home MCP server wraps the private one, with the context and internal tools only your own agent should have.
-3. All three reach the same core API. complete_task does the work and says which keys changed: tasks.
+1. The core API is exposed as public (anyone browsing), authenticated (a logged-in user) and private (an admin, or your own backend). Each tier is wrapped as routes for the frontend and as an MCP server for agents.
+2. The frontend calls public and authenticated routes. Other people's agents call the public and authenticated MCP servers, anonymously or as the user. newt's agent calls tools on its home MCP server, the private tier.
+3. All of them reach the same core API. complete_task does the work and says which keys changed: tasks.
 4. The frontend refetches the tasks query in the background, and the agent's tasks.md page goes stale, so its next read is current.
 
 One API, and one way to say what changed, for the UI and the agent.`;
