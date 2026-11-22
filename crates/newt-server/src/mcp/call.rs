@@ -19,9 +19,9 @@ use rmcp::{RoleClient, ServiceError};
 use serde_json::Value;
 
 use super::{
-    META_IDEMPOTENCY_KEY, META_INVALIDATE, META_PAGES, META_PAGES_READ, META_SESSION,
-    META_SKILLS_LOADED, META_STATE, META_STATE_PATCH, META_SUMMARY, META_TURN_STATE, McpHost,
-    Owner, Remote, meta_field,
+    META_ENDS_TURN, META_IDEMPOTENCY_KEY, META_INVALIDATE, META_PAGES, META_PAGES_READ,
+    META_SESSION, META_SKILLS_LOADED, META_STATE, META_STATE_PATCH, META_SUMMARY, META_TURN_STATE,
+    McpHost, Owner, Remote, meta_field,
 };
 
 const META_TRACEPARENT: &str = "traceparent";
@@ -289,6 +289,7 @@ fn tool_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
     let meta = meta.as_deref();
     let summary = meta_field::<String>(meta, META_SUMMARY);
     let invalidate = meta_field::<Vec<PageKey>>(meta, META_INVALIDATE);
+    let ends_turn = meta_field::<bool>(meta, META_ENDS_TURN);
     let pages = meta_field::<Vec<Page>>(meta, META_PAGES).and_then(|pages| {
         if let Some(pages) = &pages {
             super::check_pages(pages)?;
@@ -308,9 +309,10 @@ fn tool_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
         }
         Ok(pages)
     });
-    match (summary, invalidate, pages) {
-        (Ok(summary), Ok(invalidate), Ok(pages)) => {
+    match (summary, invalidate, pages, ends_turn) {
+        (Ok(summary), Ok(invalidate), Ok(pages), Ok(ends_turn)) => {
             output.summary = summary;
+            output.ends_turn = ends_turn;
             output.invalidate = invalidate
                 .unwrap_or_default()
                 .into_iter()
@@ -318,11 +320,16 @@ fn tool_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
                 .collect();
             output.pages = pages.unwrap_or_default();
         }
-        (summary, invalidate, pages) => {
-            let problems: Vec<String> = [summary.err(), invalidate.err(), pages.err()]
-                .into_iter()
-                .flatten()
-                .collect();
+        (summary, invalidate, pages, ends_turn) => {
+            let problems: Vec<String> = [
+                summary.err(),
+                invalidate.err(),
+                pages.err(),
+                ends_turn.err(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
             tracing::error!(problems = %problems.join("; "), "MCP result had invalid newt metadata");
             output.invalidate = vec![owner.key(Vec::new())];
             output.content.push('\n');
@@ -356,5 +363,36 @@ pub(super) async fn custom(
             error.message
         )),
         Err(error) => Err(format!("MCP server `{server}`: {method}: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rmcp::model::{CallToolResult, ContentBlock, MetaObject};
+    use serde_json::json;
+
+    use super::{Owner, tool_output};
+
+    fn result_with(meta: serde_json::Value) -> CallToolResult {
+        let mut fields = MetaObject::new();
+        if let serde_json::Value::Object(meta) = meta {
+            for (key, value) in meta {
+                fields.insert(key, value);
+            }
+        }
+        CallToolResult::success(vec![ContentBlock::text("ok")]).with_meta(Some(fields))
+    }
+
+    #[test]
+    fn a_result_can_say_whether_its_call_ends_the_turn() {
+        let ends = tool_output(result_with(json!({ "newt/ends_turn": true })), &Owner::HOME);
+        assert_eq!(ends.ends_turn, Some(true));
+        let keeps = tool_output(
+            result_with(json!({ "newt/ends_turn": false })),
+            &Owner::HOME,
+        );
+        assert_eq!(keeps.ends_turn, Some(false));
+        let silent = tool_output(result_with(json!({})), &Owner::HOME);
+        assert_eq!(silent.ends_turn, None);
     }
 }

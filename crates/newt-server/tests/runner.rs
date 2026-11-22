@@ -243,11 +243,11 @@ async fn a_failing_turn_backs_off_and_keeps_its_events(pool: PgPool) {
         .accept_event("assistant", "t3", &event("e1", "hi"), false)
         .await
         .unwrap();
-    let thinking_aloud = Message {
+    let silent = Message {
         role: Role::Assistant,
-        parts: vec![Part::text("Let me think about that...")],
+        parts: Vec::new(),
     };
-    let runner = runner(&pool, vec![thinking_aloud], false, Topics::default());
+    let runner = runner(&pool, vec![silent], false, Topics::default());
 
     runner.wake("assistant", "t3");
     runner.idle().await;

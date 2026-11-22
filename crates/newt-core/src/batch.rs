@@ -200,6 +200,9 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     {
         entry.0 = failure(END_TURN_BLOCKED);
     }
+    if end.is_none() && !batch_failed && context.compaction.is_none() {
+        end = ended_by_tool(tool_calls, &outputs, context);
+    }
 
     apply_workspace_changes(tool_calls, &mut outputs, context, replay);
     let mut batch = finish_batch(&expanded, outputs, end, context, deps.sink);
@@ -230,6 +233,25 @@ fn take_early<J: Journal>(
             false
         })
         .collect()
+}
+
+/// The end of the turn when a successful call of a tool that ends it (its
+/// definition's `ends_turn`, or its result's override) is in a batch with no failures.
+fn ended_by_tool(
+    tool_calls: &[ToolCall],
+    outputs: &[(ToolOutput, u64)],
+    context: &TurnContext<'_>,
+) -> Option<EndTurn> {
+    tool_calls
+        .iter()
+        .zip(outputs)
+        .find(|(call, (output, _))| {
+            !output.is_error
+                && output
+                    .ends_turn
+                    .unwrap_or_else(|| context.ends_turn.contains(&call.name))
+        })
+        .map(|(call, _)| EndTurn::by_tool(&call.name))
 }
 
 fn finish_batch(

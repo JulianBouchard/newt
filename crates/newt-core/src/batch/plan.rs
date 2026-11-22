@@ -97,7 +97,7 @@ pub(super) fn plan_calls(
                 }
                 end_slot = Some(slot);
                 return Plan::Done(
-                    match EndTurn::parse(&call.arguments) {
+                    match EndTurn::parse(&call.arguments, context.require_end_turn) {
                         Ok(parsed) => {
                             end = Some(parsed);
                             success("Turn ended.")

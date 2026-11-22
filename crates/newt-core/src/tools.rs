@@ -26,6 +26,8 @@ pub struct ToolDef {
     pub spec: ToolSpec,
     pub retention: Retention,
     pub invalidates: Vec<PageKey>,
+    /// A successful call ends the turn once every call of its batch succeeds.
+    pub ends_turn: bool,
 }
 
 impl ToolDef {
@@ -34,6 +36,7 @@ impl ToolDef {
             spec,
             retention,
             invalidates: Vec::new(),
+            ends_turn: false,
         }
     }
 }
@@ -47,6 +50,9 @@ pub struct ToolOutput {
     pub invalidate: Vec<PageKey>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Page>,
+    /// Overrides the tool's [`ToolDef::ends_turn`] for this one call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_turn: Option<bool>,
 }
 
 impl ToolOutput {
@@ -145,7 +151,9 @@ pub struct EndTurn {
 }
 
 impl EndTurn {
-    pub fn parse(arguments: &serde_json::Value) -> Result<Self, String> {
+    /// `strict` is the agent's `require_end_turn`: then every turn must say what it
+    /// recorded or why there was nothing to record. Otherwise both are optional.
+    pub fn parse(arguments: &serde_json::Value, strict: bool) -> Result<Self, String> {
         let end = Self::deserialize(arguments)
             .map_err(|error| format!("invalid end_turn arguments: {error}"))?;
         let recorded = end.recorded.iter().any(|item| !item.trim().is_empty());
@@ -153,7 +161,10 @@ impl EndTurn {
             .nothing_new
             .as_deref()
             .is_some_and(|reason| !reason.trim().is_empty());
-        if recorded == nothing_new {
+        if recorded && nothing_new {
+            return Err("end_turn takes `recorded` or `nothing_new`, not both".to_owned());
+        }
+        if strict && !recorded && !nothing_new {
             return Err(
                 "end_turn needs exactly one of `recorded` (what you saved this turn) or `nothing_new` (why there was nothing to save)"
                     .to_owned(),
@@ -161,9 +172,24 @@ impl EndTurn {
         }
         Ok(end)
     }
+
+    /// The end of a turn that a tool declared as ending it.
+    pub fn by_tool(name: &str) -> Self {
+        Self {
+            recorded: Vec::new(),
+            nothing_new: Some(format!("ended by `{name}`")),
+        }
+    }
 }
 
-pub fn builtin_tools() -> Vec<ToolDef> {
+/// Appended to the description of every tool that ends the turn.
+pub const ENDS_TURN_NOTE: &str = " Calling this tool ends your turn once every call in the same response succeeds, so put it in the same response as your last action.";
+
+const END_TURN_STRICT: &str = "End the turn. Every turn ends with this call. List what you recorded this turn, or say why there was nothing new to record.";
+
+const END_TURN_OPTIONAL: &str = "End the turn without a reply. A reply with no tool calls already ends the turn, so use this when you end on an action: put it in the same response as your last tool call to save a model call. Optionally list what you recorded this turn, or say why there was nothing new.";
+
+pub fn builtin_tools(require_end_turn: bool) -> Vec<ToolDef> {
     let ephemeral = |name: &str, description: &str, input_schema| {
         ToolDef::new(
             ToolSpec {
@@ -204,7 +230,11 @@ pub fn builtin_tools() -> Vec<ToolDef> {
         ),
         ephemeral(
             END_TURN,
-            "End the turn. Every turn ends with this call. List what you recorded this turn, or say why there was nothing new to record.",
+            if require_end_turn {
+                END_TURN_STRICT
+            } else {
+                END_TURN_OPTIONAL
+            },
             json!({
                 "type": "object",
                 "properties": {
@@ -418,11 +448,19 @@ mod tests {
     }
 
     #[test]
-    fn end_turn_needs_exactly_one_of_recorded_or_nothing_new() {
-        assert!(EndTurn::parse(&json!({ "recorded": ["prefers remote"] })).is_ok());
-        assert!(EndTurn::parse(&json!({ "nothing_new": "just a greeting" })).is_ok());
-        assert!(EndTurn::parse(&json!({})).is_err());
-        assert!(EndTurn::parse(&json!({ "recorded": ["x"], "nothing_new": "y" })).is_err());
-        assert!(EndTurn::parse(&json!({ "recorded": [" "] })).is_err());
+    fn strict_end_turn_needs_exactly_one_of_recorded_or_nothing_new() {
+        assert!(EndTurn::parse(&json!({ "recorded": ["prefers remote"] }), true).is_ok());
+        assert!(EndTurn::parse(&json!({ "nothing_new": "just a greeting" }), true).is_ok());
+        assert!(EndTurn::parse(&json!({}), true).is_err());
+        assert!(EndTurn::parse(&json!({ "recorded": ["x"], "nothing_new": "y" }), true).is_err());
+        assert!(EndTurn::parse(&json!({ "recorded": [" "] }), true).is_err());
+    }
+
+    #[test]
+    fn by_default_end_turn_takes_either_field_or_none_but_not_both() {
+        assert!(EndTurn::parse(&json!({}), false).is_ok());
+        assert!(EndTurn::parse(&json!({ "recorded": ["prefers remote"] }), false).is_ok());
+        assert!(EndTurn::parse(&json!({ "nothing_new": "just a greeting" }), false).is_ok());
+        assert!(EndTurn::parse(&json!({ "recorded": ["x"], "nothing_new": "y" }), false).is_err());
     }
 }

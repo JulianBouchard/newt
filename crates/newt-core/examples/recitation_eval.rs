@@ -375,7 +375,7 @@ async fn run_job(client: &ProviderClient, model: &str, job: &Job, run: u64) -> V
         max_model_calls: u32::try_from(job.length).unwrap_or(30) + 8,
         max_turn_tokens: None,
         recite: job.recite,
-        reply_ends_turn: false,
+        require_end_turn: false,
         lane: Lane::Interactive,
         reset: false,
         compaction: None,

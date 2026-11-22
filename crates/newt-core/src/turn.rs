@@ -17,7 +17,7 @@ use crate::provider::{
 use crate::sink::EventSink;
 use crate::skills::{Skill, load_skill_tool, with_index};
 use crate::steering::Steering;
-use crate::tools::{EndTurn, Retention, ToolDef, ToolHost, builtin_tools};
+use crate::tools::{ENDS_TURN_NOTE, EndTurn, Retention, ToolDef, ToolHost, builtin_tools};
 use crate::workspace::{PageKey, Workspace};
 
 mod call;
@@ -36,6 +36,8 @@ const OVER_BUDGET: &str = "This turn has spent its token budget. Finish now: sen
 const END_TURN_REMINDER: &str =
     "Every turn ends with a call to end_turn. Call it now if you are done, or keep working.";
 const CHECKPOINT_REMINDER: &str = "Compaction ends with a call to checkpoint. Call it now.";
+const EMPTY_RESPONSE_REMINDER: &str =
+    "Your last response had no text and no tool calls. Reply, or call a tool.";
 
 #[derive(Debug)]
 pub struct TurnInput<'a> {
@@ -72,8 +74,10 @@ pub struct TurnSettings<'a> {
     /// Restate the turn's events to the model on long turns (recitation).
     /// Internal while its effect is measured; the server always sets it.
     pub recite: bool,
-    /// A reply with no tool calls ends the turn, without a separate `end_turn` call.
-    pub reply_ends_turn: bool,
+    /// Every turn must end with `end_turn`, which must then say what was recorded:
+    /// a reply with no tool calls gets a reminder instead of ending the turn.
+    /// Off by default, when a reply with no tool calls ends the turn.
+    pub require_end_turn: bool,
     pub lane: Lane,
     pub reset: bool,
     pub compaction: Option<Compaction<'a>>,
@@ -160,6 +164,8 @@ pub(crate) struct TurnContext<'a> {
     specs: &'a [ToolSpec],
     pub(crate) retention: &'a HashMap<String, Retention>,
     pub(crate) invalidates: &'a HashMap<String, Vec<PageKey>>,
+    pub(crate) ends_turn: &'a HashSet<String>,
+    pub(crate) require_end_turn: bool,
     pub(crate) compaction: Option<Compaction<'a>>,
     pub(crate) skills: &'a [Skill],
     loaded_skills: Mutex<BTreeSet<String>>,
@@ -278,6 +284,20 @@ fn goal_of(events: &[Message]) -> String {
         .join("\n")
 }
 
+impl TurnFailure {
+    /// A turn that failed before its first model call: nothing ran, so its events are
+    /// handed back to be committed or retried.
+    fn before_start(error: TurnError, committed: Vec<Message>) -> Self {
+        Self {
+            error,
+            committed,
+            calls: Vec::new(),
+            steered: Vec::new(),
+            effects: false,
+        }
+    }
+}
+
 #[expect(
     clippy::result_large_err,
     reason = "a failed turn is rare and must hand back what it committed"
@@ -292,17 +312,14 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         specs,
         retention,
         invalidates,
-    } = match tool_table(input.external_tools, input.skills) {
+        ends_turn,
+    } = match tool_table(
+        input.external_tools,
+        input.skills,
+        settings.require_end_turn,
+    ) {
         Ok(table) => table,
-        Err(error) => {
-            return Err(TurnFailure {
-                error,
-                committed: input.events,
-                calls: Vec::new(),
-                steered: Vec::new(),
-                effects: false,
-            });
-        }
+        Err(error) => return Err(TurnFailure::before_start(error, input.events)),
     };
     let system = with_index(input.system, input.skills);
     let layers = Prompt {
@@ -325,6 +342,8 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         specs: &specs,
         retention: &retention,
         invalidates: &invalidates,
+        ends_turn: &ends_turn,
+        require_end_turn: settings.require_end_turn,
         compaction: settings.compaction,
         skills: input.skills,
         loaded_skills: Mutex::new(BTreeSet::new()),
@@ -398,8 +417,10 @@ fn remind_to_end(state: &mut TurnState, context: &TurnContext<'_>) {
         .scratch
         .push(Message::user_text(if context.compaction.is_some() {
             CHECKPOINT_REMINDER
-        } else {
+        } else if context.require_end_turn {
             END_TURN_REMINDER
+        } else {
+            EMPTY_RESPONSE_REMINDER
         }));
 }
 
@@ -408,7 +429,7 @@ fn finish_on_reply(
     context: &TurnContext<'_>,
     text: Option<&str>,
 ) -> Option<Finish> {
-    let reply = text.filter(|_| settings.reply_ends_turn && context.compaction.is_none())?;
+    let reply = text.filter(|_| !settings.require_end_turn && context.compaction.is_none())?;
     Some(Finish {
         end: EndTurn {
             recorded: Vec::new(),

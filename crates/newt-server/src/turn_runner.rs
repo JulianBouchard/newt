@@ -331,7 +331,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             max_model_calls: prepared.max_model_calls,
             max_turn_tokens: prepared.max_turn_tokens,
             recite: prepared.recite,
-            reply_ends_turn: prepared.reply_ends_turn,
+            require_end_turn: prepared.require_end_turn,
             lane,
             reset,
             compaction: None,

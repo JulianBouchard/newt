@@ -38,6 +38,7 @@ use crate::backend::{SessionState, TurnState};
 
 pub const META_RETENTION: &str = "newt/retention";
 pub const META_INVALIDATES: &str = "newt/invalidates";
+pub const META_ENDS_TURN: &str = "newt/ends_turn";
 pub const META_IDEMPOTENT: &str = "newt/idempotent";
 pub const META_SESSION: &str = "newt/session";
 pub const META_IDEMPOTENCY_KEY: &str = "newt/idempotency_key";
@@ -956,19 +957,20 @@ fn meta_field<T: DeserializeOwned>(
 /// retention and invalidations; any other server's tools are `durable` and
 /// invalidate nothing, whatever their `_meta` says.
 fn tool_def(tool: Tool, name: &str, speaks_newt: bool, owner: &Owner) -> Result<ToolDef, String> {
-    let (retention, invalidates) = if speaks_newt {
+    let (retention, invalidates, ends_turn) = if speaks_newt {
         let meta = tool.meta.as_deref();
         let retention: Retention = meta_field(meta, META_RETENTION)?.unwrap_or(Retention::Durable);
         let invalidates: Vec<PageKey> = meta_field(meta, META_INVALIDATES)?.unwrap_or_default();
         let idempotent: bool = meta_field(meta, META_IDEMPOTENT)?.unwrap_or(false);
+        let ends_turn: bool = meta_field(meta, META_ENDS_TURN)?.unwrap_or(false);
         if retention == Retention::Outward && !idempotent {
             return Err(format!(
                 "outward tools must set `_meta.{META_IDEMPOTENT}: true` and honour `_meta.{META_IDEMPOTENCY_KEY}`, or a crash could send twice"
             ));
         }
-        (retention, invalidates)
+        (retention, invalidates, ends_turn)
     } else {
-        (Retention::Durable, Vec::new())
+        (Retention::Durable, Vec::new(), false)
     };
     let mut def = ToolDef::new(
         ToolSpec {
@@ -982,12 +984,45 @@ fn tool_def(tool: Tool, name: &str, speaks_newt: bool, owner: &Owner) -> Result<
         retention,
     );
     def.invalidates = invalidates.into_iter().map(|key| owner.key(key)).collect();
+    def.ends_turn = ends_turn;
     Ok(def)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tool_with_meta(meta: serde_json::Value) -> Tool {
+        let mut schema = rmcp::model::JsonObject::new();
+        schema.insert("type".to_owned(), serde_json::json!("object"));
+        let mut fields = rmcp::model::MetaObject::new();
+        if let serde_json::Value::Object(meta) = meta {
+            for (key, value) in meta {
+                fields.insert(key, value);
+            }
+        }
+        Tool::new("no_reply", "Stay silent.", Arc::new(schema)).with_meta(fields)
+    }
+
+    #[test]
+    fn a_newt_server_can_declare_a_tool_that_ends_the_turn() {
+        let ends = |meta, speaks_newt| {
+            tool_def(tool_with_meta(meta), "no_reply", speaks_newt, &Owner::HOME)
+                .map(|def| def.ends_turn)
+        };
+        assert_eq!(
+            ends(serde_json::json!({ "newt/ends_turn": true }), true),
+            Ok(true)
+        );
+        assert_eq!(ends(serde_json::json!({}), true), Ok(false));
+        assert_eq!(
+            ends(serde_json::json!({ "newt/ends_turn": true }), false),
+            Ok(false),
+            "a server that does not speak newt cannot end turns"
+        );
+        let invalid = tool_with_meta(serde_json::json!({ "newt/ends_turn": "yes" }));
+        assert!(tool_def(invalid, "no_reply", true, &Owner::HOME).is_err());
+    }
 
     #[test]
     fn server_names_are_short_lowercase_words() {

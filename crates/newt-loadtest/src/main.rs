@@ -16,7 +16,7 @@ const USAGE: &str = "usage:
   newt-loadtest fake-model [--listen 127.0.0.1:9100] [--speed 1] [--failure-rate 0] [--seed 1]
                            [--cache-scope key|prefix|routed] [--machines 4]
                            [--dump-dir DIR] [--turn-marker TEXT] [--finish reply-then-end|reply-with-end|end-only] [--decision-log FILE] [--cache-log FILE] [--interval-log FILE] [--replay TURNS.jsonl] [--profile FILE]
-  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--reply-ends-turn false] [--prompt-bytes 30000] [--interval-log FILE] [--profile FILE]
+  newt-loadtest mock-app   [--listen 127.0.0.1:9200] [--speed 1] [--seed 2] [--render-ms 0] [--require-end-turn false] [--prompt-bytes 30000] [--interval-log FILE] [--profile FILE]
                            [--stdio true]   serve the agent over stdin and stdout instead
   newt-loadtest run [--runtime newt|eve] --base http://127.0.0.1:7878 --agent assistant --token-env TOKEN
                     [--sessions 20] [--turns 3] [--concurrency 20] [--think-ms 2000] [--think-max-ms THINK] [--ramp-s 0] [--timeout-s 300]
@@ -197,7 +197,7 @@ async fn main() -> anyhow::Result<()> {
                 flags.number("speed", 1.0)?,
                 flags.number("seed", 2)?,
                 flags.number("render-ms", 0.0)?,
-                flags.text("reply-ends-turn", "false") == "true",
+                flags.text("require-end-turn", "false") == "true",
                 flags.number("prompt-bytes", 30_000)?,
                 profile(&flags)?,
                 newt_loadtest::intervals::IntervalLog::open(

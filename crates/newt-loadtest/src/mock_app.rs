@@ -32,7 +32,7 @@ pub struct MockApp {
     rng: Rng,
     speed: f64,
     render: Spread,
-    reply_ends_turn: bool,
+    require_end_turn: bool,
     intervals: crate::intervals::IntervalLog,
     turns: std::sync::Mutex<std::collections::HashMap<String, usize>>,
     instructions: String,
@@ -49,7 +49,7 @@ impl MockApp {
         speed: f64,
         rng_seed: u64,
         render_ms: f64,
-        reply_ends_turn: bool,
+        require_end_turn: bool,
         prompt_bytes: usize,
         profile: Profile,
         intervals: crate::intervals::IntervalLog,
@@ -77,7 +77,7 @@ impl MockApp {
             rng,
             speed,
             render: Spread::new(render_ms, render_ms * 2.0),
-            reply_ends_turn,
+            require_end_turn,
             intervals,
             turns: std::sync::Mutex::new(std::collections::HashMap::new()),
             instructions,
@@ -109,8 +109,8 @@ impl MockApp {
         }) else {
             unreachable!("a JSON object literal")
         };
-        if self.reply_ends_turn {
-            settings.insert("reply_ends_turn".to_owned(), json!(true));
+        if self.require_end_turn {
+            settings.insert("require_end_turn".to_owned(), json!(true));
         }
         settings
     }
@@ -214,7 +214,9 @@ fn catalogue(profile: &Profile) -> Vec<Tool> {
                 Kind::Send => json!({ "newt/retention": "outward", "newt/idempotent": true }),
                 Kind::Read => json!({ "newt/retention": "ephemeral" }),
                 Kind::Write => json!({ "newt/retention": "durable", "newt/invalidates": [[]] }),
-                Kind::Workspace | Kind::Skill | Kind::End => return None,
+                Kind::End if tool.name == "end_turn" => return None,
+                Kind::End => json!({ "newt/retention": "ephemeral", "newt/ends_turn": true }),
+                Kind::Workspace | Kind::Skill => return None,
             };
             Some(
                 Tool::new(

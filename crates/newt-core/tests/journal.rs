@@ -136,6 +136,7 @@ fn tools() -> Vec<ToolDef> {
         },
         retention,
         invalidates: Vec::new(),
+        ends_turn: false,
     };
     vec![
         tool("save_note", Retention::Durable),
@@ -179,7 +180,7 @@ async fn run(
             max_model_calls: 6,
             max_turn_tokens: None,
             recite: true,
-            reply_ends_turn: false,
+            require_end_turn: true,
             lane: Lane::Interactive,
             reset: false,
             compaction: None,

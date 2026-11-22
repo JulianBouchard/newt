@@ -69,7 +69,7 @@ The home declares the agent in `capabilities.extensions.newt` of its `server/dis
 | `max_model_calls` | integer | no | 8 | Model calls per turn. The turn fails if it uses them all without ending. Must be at least 1. |
 | `max_turn_tokens` | integer | no | none | Input plus output tokens one turn may spend across its model calls. Past it, the model is told to send what it has and call `end_turn`; if its next call does not end the turn, the turn fails. |
 | `recite` | boolean | no | `false` | Recitation: on long turns, from the fifth model call and every fourth after, append a `<goal>` note quoting the turn's events. Lives in scratch only. Experimental. |
-| `reply_ends_turn` | boolean | no | `false` | A model response with text and no tool calls ends the turn, and its text is the reply. Saves the extra model call that would otherwise only call `end_turn`. The agent should save anything worth keeping before it answers. Compaction turns still need `checkpoint`. |
+| `require_end_turn` | boolean | no | `false` | Every turn must end with `end_turn`, which must say what the turn recorded (`recorded`) or why there was nothing new (`nothing_new`); a reply with no tool calls gets a reminder instead of ending the turn. Off: a reply with no tool calls ends the turn. See section 6. |
 | `history_budget` | integer | no | 60000 | Tokens of live history before compaction. Must be at least 1000. |
 | `turn` | boolean | no | `false` | Send `newt/turn` before each turn (1.3). |
 | `turn_end` | boolean | no | `false` | Send `newt/turn_end` after each committed turn (1.6). |
@@ -299,6 +299,7 @@ Set on each tool in the `tools/list` response of a server that speaks newt. All 
 | `newt/retention` | `"ephemeral"`, `"durable"` or `"outward"` | `"durable"` | What reaches history (section 3). |
 | `newt/invalidates` | array of page key | `[]` | Key prefixes of the server's own pages that every successful call makes stale. |
 | `newt/idempotent` | boolean | `false` | Must be `true` on an `outward` tool. Declares that the handler honours `newt/idempotency_key`. |
+| `newt/ends_turn` | boolean | `false` | A successful call ends the turn once every call of its response has succeeded, with no further model call (6). Newt adds a sentence saying so to the tool's description. |
 
 ```json
 {
@@ -363,6 +364,7 @@ Set on the `tools/call` result by a server that speaks newt; ignored from any ot
 |---|---|---|
 | `newt/summary` | string | What history keeps instead of the full result (section 3). |
 | `newt/invalidate` | array of page key | More key prefixes of the server's own pages to mark stale, in addition to the tool's `newt/invalidates`. |
+| `newt/ends_turn` | boolean | Overrides the tool's `newt/ends_turn` for this call: `true` ends the turn after a tool that does not declare it, `false` keeps going after one that does (6). |
 | `newt/pages` | array of page | Fresh page data for the server's own pages: `{ key, path, version, content }`, with the path as the server names it (newt puts an added server's under its folder). Newt puts these pages in the workspace and clears their stale flag, so the next read needs no refetch. |
 | `newt/state_patch` | object | A JSON merge patch (RFC 7396) applied to the session's state (1.3), saved when the turn commits (see 1.3 for when a patch is lost). Applied whether or not the result is an error. A patch that is not an object is ignored, and the tool output tells the model so. |
 | `newt/turn_state` | any JSON | Replaces the turn state that later calls in this turn receive (2.3). Applied whether or not the result is an error, so a refusal can be counted. Calls that run at the same time (a `batch`) each see the state from before them, and the last result to arrive wins. Starts each turn as `newt/turn`'s `turn_state`, or empty. A turn resumed after a crash replays its journaled tool results without their turn state, so it starts from `newt/turn`'s value there too. |
@@ -648,3 +650,15 @@ Prometheus text format (`text/plain; version=0.0.4`). No auth, like `/healthz`: 
 | `newt_oldest_wait_seconds` | gauge | How long the longest-waiting session has waited. |
 | `newt_slot_wait_seconds` | histogram | Time from a session's wake to getting a turn slot (buckets 1 ms to 120 s). |
 
+## 6. How a turn ends
+
+A turn ends at the first of these:
+
+- **A reply.** A model response with text and no tool calls ends the turn, and its text is the turn's reply. With `require_end_turn` (1.2) it gets a reminder instead, and the turn fails if the next response also calls no tool.
+- **An ending call.** After a response's tool calls have run, the turn ends if one of them is an ending call and every call of the response succeeded. If any call failed, the turn goes on and the model sees the errors. The ending call can sit in the same response as the last action (a send and the end together), which saves the model call that would otherwise only say it is done. Ending calls are:
+  - the built-in `end_turn`. Its `recorded` and `nothing_new` are optional, and required (one of them) only with `require_end_turn`;
+  - a call to a tool that declares `newt/ends_turn: true` (2.2), unless its result says `newt/ends_turn: false` (2.4);
+  - a call whose result says `newt/ends_turn: true`.
+- **The limits.** `max_model_calls` and `max_turn_tokens` (1.2) fail a turn that has not ended.
+
+A response with no text and no tool calls gets one reminder and then fails the turn. A compaction turn ends only with `checkpoint`.

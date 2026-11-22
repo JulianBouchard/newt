@@ -56,9 +56,10 @@ pub struct Settings {
     pub max_turn_tokens: Option<u64>,
     #[serde(default)]
     pub recite: bool,
-    /// A reply with no tool calls ends the turn, without a separate `end_turn` call.
+    /// Every turn must end with `end_turn` saying what it recorded; otherwise a reply
+    /// with no tool calls ends the turn.
     #[serde(default)]
-    pub reply_ends_turn: bool,
+    pub require_end_turn: bool,
     #[serde(default = "default_history_budget")]
     pub history_budget: u32,
     /// Ask the home with `newt/turn` before each turn.
@@ -371,7 +372,7 @@ impl HomeBackend {
             max_model_calls: settings.max_model_calls,
             max_turn_tokens: settings.max_turn_tokens,
             recite: settings.recite,
-            reply_ends_turn: settings.reply_ends_turn,
+            require_end_turn: settings.require_end_turn,
             history_budget: settings.history_budget,
             choice: turn.choice(settings),
             turn_end: settings.turn_end,
