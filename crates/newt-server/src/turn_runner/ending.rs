@@ -193,7 +193,12 @@ pub(super) async fn finish_turn<B: Backend, M: Model>(
         return Ok(true);
     };
     tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn failed");
-    let attempts = retry_later(inner, lease).await?;
+    let attempts = if cancelled && !effects {
+        inner.store.release(lease).await?;
+        0
+    } else {
+        retry_later(inner, lease).await?
+    };
     if !effects && (cancelled || attempts >= inner.config.max_attempts) {
         tracing::error!(attempts, cancelled, agent = %lease.agent, key = %lease.key, "giving up on the turn, dead-lettering its events");
         inner

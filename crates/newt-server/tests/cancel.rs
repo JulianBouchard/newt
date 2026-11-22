@@ -230,6 +230,11 @@ async fn cancelling_a_running_turn_fails_it_as_cancelled_and_does_not_retry_it(p
         (None, false),
         "the flag outlived the turn"
     );
+    assert_eq!(
+        node.runner.metrics().counted(Counter::Retries),
+        0,
+        "a cancel is not a retry"
+    );
 
     node.model.release(1);
     node.send("e2").await;

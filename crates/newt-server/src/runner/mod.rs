@@ -182,11 +182,20 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         }
     }
 
+    /// Turns on `live_stream` for these agents.
+    ///
+    /// # Panics
+    ///
+    /// If the runner was already cloned or started.
     #[must_use]
     pub fn with_live_stream(mut self, agents: HashSet<String>) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.live_stream = agents;
-        }
+        #[expect(
+            clippy::expect_used,
+            reason = "a setup mistake, caught by the first test that builds a runner"
+        )]
+        let inner = Arc::get_mut(&mut self.inner)
+            .expect("with_live_stream is called before the runner is shared");
+        inner.live_stream = agents;
         self
     }
 

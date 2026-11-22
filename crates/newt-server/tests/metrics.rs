@@ -217,7 +217,7 @@ async fn metrics_count_events_turns_cancels_and_slot_waits(pool: PgPool) {
     assert_eq!(scraped["newt_events_total{outcome=\"limited\"}"], 1.0);
     assert_eq!(scraped["newt_turns_total{outcome=\"started\"}"], 2.0);
     assert_eq!(scraped["newt_turns_total{outcome=\"failed\"}"], 0.0);
-    assert_eq!(scraped["newt_retries_total"], 1.0);
+    assert_eq!(scraped["newt_retries_total"], 0.0);
     assert!(scraped["newt_dead_letters_total"] >= 1.0);
     assert_eq!(scraped["newt_commits_fenced_total"], 0.0);
     assert_eq!(scraped["newt_running_turns"], 0.0);
