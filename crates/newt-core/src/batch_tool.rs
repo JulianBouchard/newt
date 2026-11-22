@@ -347,4 +347,6 @@ pub(crate) fn fold(
 }
 
 #[cfg(test)]
+mod props;
+#[cfg(test)]
 mod tests;
