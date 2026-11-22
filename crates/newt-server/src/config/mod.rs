@@ -136,6 +136,9 @@ fn is_http_url(value: &str) -> bool {
 }
 
 #[cfg(test)]
+mod props;
+
+#[cfg(test)]
 mod regressions;
 
 #[cfg(test)]
