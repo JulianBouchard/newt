@@ -51,7 +51,7 @@ export default defineConfig({
             "Every page is also served as Markdown at its path plus `.md`, for example `/quickstart/` at `/quickstart.md`.",
             "Start with Overview and Quickstart. Protocol and Configuration are the complete reference: when a guide and the Protocol differ, the Protocol is right.",
           ].join("\n\n"),
-          promote: ["index", "overview", "quickstart", "how-a-turn-works", "home-server", "tools"],
+          promote: ["index", "overview", "motivation", "quickstart", "how-a-turn-works", "home-server", "tools"],
           demote: ["changelog", "contributing", "running-tests", "benchmark", "security"],
           exclude: ["404"],
           customSets: [
@@ -70,7 +70,7 @@ export default defineConfig({
         }),
       ],
       sidebar: [
-        { label: "Start", items: ["overview", "quickstart", "how-a-turn-works", "design"] },
+        { label: "Start", items: ["overview", "motivation", "quickstart", "how-a-turn-works", "design"] },
         { label: "Build", items: ["home-server", "servers", "tools", "skills", "memory", "events"] },
         { label: "Run", items: ["configuration", "tracing", "replay", "load-testing", "benchmark"] },
         { label: "Reference", items: ["protocol", "stability", "changelog"] },

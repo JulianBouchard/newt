@@ -1,6 +1,6 @@
 import type { APIRoute, GetStaticPaths } from "astro";
 import { type CollectionEntry, getCollection } from "astro:content";
-import { ARCHITECTURE_DESCRIPTION, NEWT_PLUS_MCP_DESCRIPTION } from "../components/sketch-descriptions";
+import { ARCHITECTURE_DESCRIPTION, NEWT_PLUS_MCP_DESCRIPTION, UNIFIED_MODEL_DESCRIPTION } from "../components/sketch-descriptions";
 
 export const getStaticPaths = (async () => {
   const docs = await getCollection("docs", (entry) => entry.id !== "404");
@@ -12,6 +12,7 @@ function mdxToMarkdown(body: string) {
     .replace(/^import .+$/gm, "")
     .replace("<ArchitectureSketch />", ARCHITECTURE_DESCRIPTION)
     .replace("<NewtPlusMcp />", NEWT_PLUS_MCP_DESCRIPTION)
+    .replace("<UnifiedModelSketch />", UNIFIED_MODEL_DESCRIPTION)
     .replace(/<\/?CardGrid>/g, "\n")
     .replace(/^<\/?div[^>]*>$/gm, "")
     .replace(/<Card title="([^"]+)"[^>]*>/g, "### $1\n")
