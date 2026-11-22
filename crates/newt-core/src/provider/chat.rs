@@ -130,7 +130,7 @@ struct Delta {
 #[derive(Debug, Deserialize)]
 struct CallDelta {
     #[serde(default)]
-    index: usize,
+    index: Option<usize>,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -258,8 +258,15 @@ impl super::Decoder for Decoder {
                 self.text.push_str(&refusal);
             }
             for delta in choice.delta.tool_calls.unwrap_or_default() {
-                self.release_calls_before(delta.index, emit);
-                let call = self.calls.entry(delta.index).or_default();
+                let last = self.calls.keys().next_back().copied();
+                let index = match (delta.index, last) {
+                    (Some(index), _) => index,
+                    (None, Some(last)) if delta.id.is_none() => last,
+                    (None, Some(last)) => last.saturating_add(1),
+                    (None, None) => 0,
+                };
+                self.release_calls_before(index, emit);
+                let call = self.calls.entry(index).or_default();
                 if let Some(id) = delta.id {
                     call.id = id;
                 }
