@@ -34,6 +34,12 @@ proptest! {
     }
 
     #[test]
+    fn non_objects_are_refused(value in json_value(), strict in any::<bool>()) {
+        prop_assume!(!value.is_object());
+        prop_assert!(EndTurn::parse(&value, strict).is_err());
+    }
+
+    #[test]
     fn end_turn_follows_the_protocol_for_well_typed_arguments(
         recorded in prop::option::of(prop::collection::vec(text(), 0..4)),
         nothing_new in prop::option::of(text()),
