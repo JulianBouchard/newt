@@ -30,7 +30,7 @@ Chat and streaming:
   - `model_call_started` and `model_call_finished` mark the steps of a turn.
 
   Deltas are batched to about every 50 ms or a line or sentence end, and flushed before the model call ends. Reasoning is never streamed. None of these frames reach history, the journal, the JSONL event file or OTLP. All three provider protocols pass text and arguments through.
-- **`POST .../chat` for the Vercel AI SDK.** It takes the body `DefaultChatTransport` sends, posts the last user message as an event (the message `id` is the event id, so retries deduplicate), and streams that turn as a UI message stream, so `useChat` shows text, tool input and tool results as they arrive. It needs `live_stream`. Protocol 5.7 and `examples/ai-sdk-chat`; that example's check drives the real `ai` client.
+- **`POST .../chat` for the Vercel AI SDK.** It takes the body `DefaultChatTransport` sends, posts the last user message as an event (the message `id` is the event id, so retries deduplicate), and streams that turn as a UI message stream, so `useChat` shows text, tool input and tool results as they arrive. A failed turn shows a generic error, never the provider's text. It needs `live_stream`. Protocol 5.7 and `examples/ai-sdk-chat`; that example's check drives the real `ai` client.
 - **`examples/eve-react`** turns newt's live feed into eve's message stream and serves the session endpoints `eve/react` calls, so a UI built for eve runs against newt: streamed text, tool input and results, and resume by index with no gaps or duplicates. Its check drives eve's own client and reducer.
 
 Ending turns:
@@ -50,7 +50,7 @@ Operations:
 
 Speed:
 
-- **Read-only tool calls start while the model is still writing.** A workspace read, or a call to an `ephemeral` tool, starts as soon as its arguments have finished streaming instead of after the whole response. Writes and sends still wait for the complete response, so a crash can never repeat them.
+- **Read-only tool calls start while the model is still writing.** A workspace read, or a call to an `ephemeral` tool, starts as soon as its arguments have finished streaming instead of after the whole response. Writes and sends still wait for the complete response, so a crash can never repeat them. Works on all three provider protocols.
 
 Benchmarking (`newt-loadtest`):
 
