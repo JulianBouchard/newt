@@ -1,4 +1,8 @@
 export const RELEASE_HIGHLIGHTS = {
+  "2.2.0": {
+    title: "Only the tools your agent needs",
+    body: "`builtin_tools` in your agent core's settings turns newt's own tools off, all of them or one by one. Every tool the model sees is one more it can pick, so an agent that only answers and calls its own tools can run with none. [Tools](../tools/#tools-every-agent-gets)",
+  },
   "2.1.0": {
     title: "Stream into any chat UI, end turns like everyone else",
     body: "With `live_stream`, text and tool-call input stream on the live feed as the model writes them: `POST .../chat` speaks the Vercel AI SDK's UI message stream, and `examples/eve-react` serves eve's React client. A reply now ends the turn, and any tool can end it with `newt/ends_turn`. Cancel from any instance, `/metrics`, an inbox cap and slots held back for live chats round it out. [Events](../events/)",
