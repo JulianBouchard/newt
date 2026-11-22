@@ -48,7 +48,7 @@ pub const META_STATE: &str = "newt/state";
 /// data newt sends and the `newt/*` fields it reads back. The home server
 /// declares it with the agent's settings; an added server declares it empty.
 pub const NEWT_EXTENSION: &str = "newt";
-/// Between an added server's name and its tool's name: `paraform__search_jobs`.
+/// Between an added server's name and its tool's name: `partner__search_orders`.
 pub const TOOL_SEPARATOR: &str = "__";
 /// The longest tool name the model APIs accept.
 pub const MAX_TOOL_NAME: usize = 64;
@@ -226,9 +226,9 @@ mod tests {
 
     #[test]
     fn server_names_are_short_lowercase_words() {
-        assert!(check_server_name("paraform").is_ok());
+        assert!(check_server_name("partner").is_ok());
         assert!(check_server_name("crm-2").is_ok());
-        for bad in ["", "Paraform", "-x", "a/b", "a__b", &"x".repeat(33)] {
+        for bad in ["", "Partner", "-x", "a/b", "a__b", &"x".repeat(33)] {
             assert!(check_server_name(bad).is_err(), "{bad:?} should be refused");
         }
     }
@@ -245,18 +245,18 @@ mod tests {
     #[test]
     fn an_added_server_owns_a_folder_and_a_key_scope() {
         let home = Owner::HOME;
-        let added = Owner::added("paraform");
+        let added = Owner::added("partner");
         assert_eq!(home.path("tasks.md"), "tasks.md");
-        assert_eq!(added.path("jobs/sre.md"), "paraform/jobs/sre.md");
+        assert_eq!(added.path("orders/sre.md"), "partner/orders/sre.md");
         assert_eq!(home.key(vec!["tasks".into()]), vec!["tasks".to_owned()]);
         assert_eq!(
-            added.key(vec!["jobs".into()]),
-            vec!["\u{0}paraform".to_owned(), "jobs".to_owned()]
+            added.key(vec!["orders".into()]),
+            vec!["\u{0}partner".to_owned(), "orders".to_owned()]
         );
-        let scoped = added.key(vec!["jobs".into()]);
+        let scoped = added.key(vec!["orders".into()]);
         assert!(added.may_own(&scoped));
         assert!(!home.may_own(&scoped));
-        assert!(!added.may_own(&["paraform".to_owned()]));
+        assert!(!added.may_own(&["partner".to_owned()]));
         assert!(home.may_own(&[]) && added.may_own(&[]));
     }
 }

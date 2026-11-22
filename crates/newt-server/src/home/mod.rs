@@ -268,9 +268,9 @@ mod tests {
     #[test]
     fn an_unavailable_server_is_named_in_the_turn_context() {
         let rendered = TurnContext::default()
-            .render(&["paraform".to_owned()])
+            .render(&["partner".to_owned()])
             .unwrap();
-        assert!(rendered.contains("<unavailable_servers>\nparaform: unavailable"));
+        assert!(rendered.contains("<unavailable_servers>\npartner: unavailable"));
         assert_eq!(TurnContext::default().render(&[]), None);
     }
 }

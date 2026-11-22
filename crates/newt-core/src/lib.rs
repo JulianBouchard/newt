@@ -17,6 +17,7 @@ mod commit;
 pub mod event;
 pub mod journal;
 pub mod message;
+mod nul;
 pub mod otlp;
 pub mod prompt;
 pub mod provider;

@@ -106,7 +106,7 @@ pub(super) async fn call_model<M: Model, H: ToolHost, S: Steering, J: Journal>(
     };
     let mut on_event = |event: StreamEvent| {
         output_started.store(true, Ordering::Relaxed);
-        match event {
+        match crate::nul::clean_event(event) {
             StreamEvent::TextDelta(delta) => text.push(&delta, &emit_text),
             StreamEvent::ToolCallStarted { id, name } => {
                 text.flush(&emit_text);
@@ -183,7 +183,8 @@ fn call_outcome(
     result: Result<ModelResponse, crate::provider::ProviderError>,
 ) -> Result<ModelResponse, TurnError> {
     match result {
-        Ok(response) => {
+        Ok(mut response) => {
+            response.message = crate::nul::clean_message(response.message);
             sink.emit(Event::now(EventKind::ModelCallFinished {
                 session: ids.session.to_owned(),
                 turn: ids.turn.to_owned(),

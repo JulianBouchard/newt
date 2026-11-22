@@ -79,14 +79,14 @@ impl App {
     /// metadata newt must ignore and one page for everyone.
     fn plain() -> Self {
         let app = Self {
-            tools: vec![("search_jobs", json!({ "newt/retention": "ephemeral" }))],
+            tools: vec![("search_orders", json!({ "newt/retention": "ephemeral" }))],
             result_meta: Some(json!({
                 "newt/summary": "should be ignored",
                 "newt/pages": [{ "key": ["x"], "path": "tasks.md", "version": "1", "content": "hijacked" }],
             })),
             ..Self::default()
         };
-        app.set("jobs://acme-sre", "# Acme SRE\nRemote.\n");
+        app.set("orders://order-17", "# Order 17\nShipped.\n");
         app
     }
 
@@ -251,7 +251,7 @@ impl ServerHandler for App {
                 let name = uri
                     .trim_start_matches(&prefix)
                     .trim_end_matches('/')
-                    .replace("jobs://", "jobs/")
+                    .replace("orders://", "orders/")
                     + if prefix.is_empty() { ".md" } else { "" };
                 Resource::new(uri, name)
             })
@@ -602,7 +602,7 @@ async fn eventually(check: impl Fn() -> bool) {
     .unwrap();
 }
 
-/// A home that adds `paraform`, a plain server, and `notes`, a server that
+/// A home that adds `partner`, a plain server, and `notes`, a server that
 /// speaks newt.
 async fn home_with_servers() -> (HomeBackend, App, App) {
     let plain = App::plain();
@@ -615,7 +615,7 @@ async fn home_with_servers() -> (HomeBackend, App, App) {
     home.settings(json!({
         "model": "default",
         "servers": [
-            { "name": "paraform", "url": serve(plain.clone()).await },
+            { "name": "partner", "url": serve(plain.clone()).await },
             { "name": "notes", "url": serve(speaking.clone()).await },
         ],
     }));
@@ -651,7 +651,7 @@ async fn added_servers_tools_are_prefixed_and_only_a_newt_server_decides_retenti
         BTreeMap::from([
             ("complete_task", Retention::Durable),
             ("notes__add_note", Retention::Ephemeral),
-            ("paraform__search_jobs", Retention::Durable),
+            ("partner__search_orders", Retention::Durable),
         ])
     );
 }
@@ -664,7 +664,7 @@ async fn a_plain_server_gets_no_session_data_and_its_newt_fields_are_ignored() {
 
     let output = prepared
         .host
-        .call(&call("paraform__search_jobs"), &context())
+        .call(&call("partner__search_orders"), &context())
         .await;
     assert_eq!(output.content, "done");
     assert_eq!(output.summary, None);
@@ -675,7 +675,7 @@ async fn a_plain_server_gets_no_session_data_and_its_newt_fields_are_ignored() {
         .find(|(what, _)| what.starts_with("call"))
         .unwrap();
     assert_eq!(
-        what, "call search_jobs",
+        what, "call search_orders",
         "the server sees its own tool name"
     );
     let meta = meta.as_ref().unwrap();
@@ -713,15 +713,15 @@ async fn an_added_servers_pages_live_under_its_folder() {
     assert_eq!(
         prepared
             .workspace
-            .read("paraform/jobs/acme-sre.md")
+            .read("partner/orders/order-17.md")
             .await
             .unwrap()
             .as_deref(),
-        Some("# Acme SRE\nRemote.\n")
+        Some("# Order 17\nShipped.\n")
     );
     assert_eq!(
         prepared.workspace.paths(),
-        ["notes.md", "paraform/jobs/acme-sre.md", "tasks.md"]
+        ["notes.md", "partner/orders/order-17.md", "tasks.md"]
     );
     let seen = plain.seen_meta.lock().unwrap().clone();
     assert!(
@@ -739,21 +739,21 @@ async fn an_unreachable_added_server_leaves_the_agent_running_without_it() {
     let home = App::home();
     home.settings(json!({
         "model": "default",
-        "servers": [{ "name": "paraform", "url": "http://127.0.0.1:9/mcp" }],
+        "servers": [{ "name": "partner", "url": "http://127.0.0.1:9/mcp" }],
     }));
     let prepared = prepare(&backend(home).await, "ana").await;
     assert!(
         prepared
             .tools
             .iter()
-            .all(|tool| !tool.spec.name.starts_with("paraform__"))
+            .all(|tool| !tool.spec.name.starts_with("partner__"))
     );
     assert!(
         prepared
             .context
             .as_deref()
             .unwrap()
-            .contains("<unavailable_servers>\nparaform: unavailable"),
+            .contains("<unavailable_servers>\npartner: unavailable"),
     );
     assert_eq!(
         prepared
@@ -783,7 +783,7 @@ async fn an_added_server_with_a_bad_name_or_a_missing_token_fails_loudly() {
     home.settings(json!({
         "model": "default",
         "servers": [{
-            "name": "paraform",
+            "name": "partner",
             "url": "http://127.0.0.1:9/mcp",
             "auth_env": "NEWT_TEST_SURELY_UNSET_SERVER_TOKEN",
         }],
@@ -840,13 +840,13 @@ async fn an_added_server_going_down_leaves_the_homes_pages_readable() {
     let home = App::home();
     home.settings(json!({
         "model": "default",
-        "servers": [{ "name": "paraform", "url": url }],
+        "servers": [{ "name": "partner", "url": url }],
     }));
     let prepared = prepare(&backend(home).await, "ana").await;
     prepared.workspace.read("tasks.md").await.unwrap();
     assert_eq!(
         prepared.workspace.paths(),
-        ["notes.md", "paraform/jobs/acme-sre.md", "tasks.md"]
+        ["notes.md", "partner/orders/order-17.md", "tasks.md"]
     );
     stop.cancel();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -863,7 +863,7 @@ async fn an_added_server_going_down_leaves_the_homes_pages_readable() {
     assert_eq!(
         prepared
             .workspace
-            .read("paraform/jobs/acme-sre.md")
+            .read("partner/orders/order-17.md")
             .await
             .unwrap(),
         None,
@@ -874,10 +874,10 @@ async fn an_added_server_going_down_leaves_the_homes_pages_readable() {
 #[tokio::test]
 async fn a_home_page_inside_an_added_servers_folder_fails_loudly() {
     let home = App::home();
-    home.set("app://ana/paraform/jobs.md", "mine");
+    home.set("app://ana/partner/orders.md", "mine");
     home.settings(json!({
         "model": "default",
-        "servers": [{ "name": "paraform", "url": serve(App::plain()).await }],
+        "servers": [{ "name": "partner", "url": serve(App::plain()).await }],
     }));
     let prepared = prepare(&backend(home).await, "ana").await;
     let error = prepared
@@ -887,7 +887,7 @@ async fn a_home_page_inside_an_added_servers_folder_fails_loudly() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("inside the folder of added server `paraform`"),
+        error.contains("inside the folder of added server `partner`"),
         "{error}"
     );
 }
@@ -912,7 +912,7 @@ async fn a_server_that_changes_its_tools_is_listed_again_without_touching_the_ot
     let home = App::home();
     home.settings(json!({
         "model": "default",
-        "servers": [{ "name": "paraform", "url": serve(plain.clone()).await }],
+        "servers": [{ "name": "partner", "url": serve(plain.clone()).await }],
     }));
     let backend = backend(home.clone()).await;
     prepare(&backend, "ana").await;
@@ -941,12 +941,12 @@ async fn a_server_that_changes_its_tools_is_listed_again_without_touching_the_ot
 #[tokio::test]
 async fn an_added_server_with_two_pages_at_one_path_leaves_the_home_readable() {
     let clashing = App::default();
-    clashing.set("jobs://acme-sre", "one");
-    clashing.set("jobs://acme-sre/", "two");
+    clashing.set("orders://order-17", "one");
+    clashing.set("orders://order-17/", "two");
     let home = App::home();
     home.settings(json!({
         "model": "default",
-        "servers": [{ "name": "paraform", "url": serve(clashing).await }],
+        "servers": [{ "name": "partner", "url": serve(clashing).await }],
     }));
     let prepared = prepare(&backend(home).await, "ana").await;
     assert_eq!(

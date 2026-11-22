@@ -12,7 +12,7 @@ use crate::turn::TurnContext;
 pub(super) async fn timed_read(context: &TurnContext<'_>, call: &ToolCall) -> (ToolOutput, u64) {
     let started = Instant::now();
     let output = run_workspace_tool(call, context.workspace).await;
-    (output, elapsed_ms(started))
+    (crate::nul::clean_output(output), elapsed_ms(started))
 }
 
 /// Runs one host call, passing the progress it reports to the sink.
@@ -50,7 +50,7 @@ pub(super) async fn timed_call<H: ToolHost>(
     while let Ok(message) = reports.try_recv() {
         report(message);
     }
-    (output, elapsed_ms(started))
+    (crate::nul::clean_output(output), elapsed_ms(started))
 }
 
 pub(super) async fn timed_skill_load<H: ToolHost>(
@@ -62,7 +62,7 @@ pub(super) async fn timed_skill_load<H: ToolHost>(
     let output = host
         .load_skill(skill, crate::skills::requested_file(call))
         .await;
-    (output, elapsed_ms(started))
+    (crate::nul::clean_output(output), elapsed_ms(started))
 }
 
 pub(super) fn call_context(context: &TurnContext<'_>, call: &ToolCall) -> CallContext {
