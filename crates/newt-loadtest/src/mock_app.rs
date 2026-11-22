@@ -13,9 +13,9 @@ use rmcp::model::{
     ListResourcesResult, ListSkillsResult, ListToolsResult, MetaObject, PaginatedRequestParams,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
     ResourceContents, ServerCapabilities, ServerConfig, Skill, SkillFrontmatter, SkillResource,
-    SkillResources, Tool,
+    SkillResources, SubscriptionFilter, Tool,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -204,6 +204,7 @@ impl ServerHandler for Home {
         let mut capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
+            .enable_resources_subscribe()
             .enable_skills()
             .build();
         capabilities
@@ -211,6 +212,20 @@ impl ServerHandler for Home {
             .get_or_insert_with(Default::default)
             .insert("newt".to_owned(), MockApp::settings());
         ServerConfig::new(capabilities).with_instructions(self.0.instructions.clone())
+    }
+
+    /// Accepts newt's subscriptions so it does not log a refusal every turn.
+    /// The mock app never changes a page or a tool, so it sends nothing on them.
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        Some(requested.clone())
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        context.cancelled().await;
+        Ok(())
     }
 
     /// Every session sees the same pages. Listing them costs the render time

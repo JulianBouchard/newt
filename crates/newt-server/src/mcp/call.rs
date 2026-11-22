@@ -96,7 +96,7 @@ impl McpHost {
                     error,
                     ServiceError::TransportSend(_) | ServiceError::TransportClosed
                 ) {
-                    self.stale.store(true, Ordering::Relaxed);
+                    remote.stale.store(true, Ordering::Relaxed);
                 }
                 tracing::warn!(server = %remote.server, tool = %call.name, %error, "MCP call lost its connection");
                 ToolOutput::error(format!(
