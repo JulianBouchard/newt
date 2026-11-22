@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::Json;
@@ -11,139 +10,20 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures_util::stream;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::audit::Audit;
-use crate::cache::{CacheRules, CacheScope, Lookup, PrefixCache, Router, prompt_bytes};
+use crate::cache::prompt_bytes;
 pub use crate::plan::Finish;
-use crate::plan::{Call, Turn, finish, pick_tools, read_turn, seed_of};
-use crate::profile::{ModelTiming, Profile};
+use crate::plan::{finish, pick_tools, read_turn, seed_of};
 use crate::sample::Rng;
 
-const CACHE_TTL: Duration = Duration::from_mins(5);
+mod model;
+mod request;
+mod step;
 
-#[derive(Debug, Default)]
-pub struct Stats {
-    pub calls: AtomicU64,
-    pub input_tokens: AtomicU64,
-    pub cached_tokens: AtomicU64,
-    pub output_tokens: AtomicU64,
-    pub tool_calls: AtomicU64,
-    pub failures: AtomicU64,
-    pub instructions_bytes: AtomicU64,
-    pub tools_bytes: AtomicU64,
-    pub input_bytes: AtomicU64,
-}
-
-impl Stats {
-    pub fn snapshot(&self) -> Value {
-        json!({
-            "calls": self.calls.load(Ordering::Relaxed),
-            "input_tokens": self.input_tokens.load(Ordering::Relaxed),
-            "cached_tokens": self.cached_tokens.load(Ordering::Relaxed),
-            "output_tokens": self.output_tokens.load(Ordering::Relaxed),
-            "tool_calls": self.tool_calls.load(Ordering::Relaxed),
-            "failures": self.failures.load(Ordering::Relaxed),
-            "instructions_bytes": self.instructions_bytes.load(Ordering::Relaxed),
-            "tools_bytes": self.tools_bytes.load(Ordering::Relaxed),
-            "input_bytes": self.input_bytes.load(Ordering::Relaxed),
-        })
-    }
-}
-
-#[derive(Debug)]
-pub struct FakeModel {
-    rng: Rng,
-    timing: ModelTiming,
-    speed: f64,
-    failure_rate: f64,
-    cache: PrefixCache,
-    ids: AtomicU64,
-    scope: CacheScope,
-    router: Router,
-    audit: Audit,
-    dump_dir: Option<std::path::PathBuf>,
-    turn_marker: Option<String>,
-    finish: Finish,
-    replay: Option<crate::replay::Replay>,
-    replay_progress: std::sync::Mutex<HashMap<u64, usize>>,
-    intervals: crate::intervals::IntervalLog,
-    profile: Profile,
-    pub stats: Stats,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct FakeOptions {
-    pub speed: f64,
-    pub failure_rate: f64,
-    pub seed: u64,
-    pub cache_scope: CacheScope,
-    pub dump_dir: Option<std::path::PathBuf>,
-    pub turn_marker: Option<String>,
-    pub decision_log: Option<std::path::PathBuf>,
-    pub cache_log: Option<std::path::PathBuf>,
-    pub finish: Finish,
-    pub interval_log: Option<std::path::PathBuf>,
-    pub replay: Option<std::path::PathBuf>,
-    pub profile: Profile,
-}
-
-const DUMP_LIMIT: u64 = 400;
-/// What the load driver's messages start with, so a harness reminder mid-turn is never read as a new turn.
-const DRIVER_MARKER: &str = "load message";
-
-impl FakeModel {
-    pub fn new(timing: ModelTiming, options: FakeOptions) -> std::io::Result<Arc<Self>> {
-        let FakeOptions {
-            speed,
-            failure_rate,
-            seed: rng_seed,
-            cache_scope,
-            dump_dir,
-            turn_marker,
-            decision_log,
-            cache_log,
-            finish,
-            interval_log,
-            replay,
-            profile,
-        } = options;
-        let replay = replay
-            .map(|path| crate::replay::Replay::load(&path.to_string_lossy()))
-            .transpose()
-            .map_err(std::io::Error::other)?;
-        let machines = match cache_scope {
-            CacheScope::Routed { machines } => machines,
-            CacheScope::Key | CacheScope::Prefix => 1,
-        };
-        Ok(Arc::new(Self {
-            rng: Rng::new(rng_seed),
-            timing,
-            speed,
-            failure_rate,
-            cache: PrefixCache::new(CacheRules {
-                ttl: CACHE_TTL.div_f64(speed.max(0.001)),
-                readable_after: timing.cache_readable_after.div_f64(speed.max(0.001)),
-            }),
-            ids: AtomicU64::new(rng_seed),
-            scope: cache_scope,
-            router: Router::new(machines),
-            audit: Audit::new(decision_log.as_deref(), cache_log.as_deref())?,
-            dump_dir,
-            turn_marker: turn_marker.or_else(|| Some(DRIVER_MARKER.to_owned())),
-            finish,
-            replay,
-            replay_progress: std::sync::Mutex::new(HashMap::new()),
-            intervals: crate::intervals::IntervalLog::open(interval_log.as_deref())?,
-            profile,
-            stats: Stats::default(),
-        }))
-    }
-
-    pub(crate) fn next_id(&self) -> u64 {
-        self.ids.fetch_add(1, Ordering::Relaxed)
-    }
-}
+pub use model::{FakeModel, FakeOptions, Stats};
+use request::{look_up, record_shape, tool_schemas};
+use step::{audit_reply, call_rng, calls_json, replay_step, tail_tokens};
 
 pub fn router(model: Arc<FakeModel>) -> axum::Router {
     axum::Router::new()
@@ -159,92 +39,6 @@ async fn stats(State(model): State<Arc<FakeModel>>) -> Json<Value> {
         totals.extend(audit);
     }
     Json(snapshot)
-}
-
-async fn record_shape(model: &FakeModel, body: &Value) {
-    let size = |field: &str| {
-        u64::try_from(body.get(field).map_or(0, |value| value.to_string().len())).unwrap_or(0)
-    };
-    model
-        .stats
-        .instructions_bytes
-        .fetch_add(size("instructions"), Ordering::Relaxed);
-    model
-        .stats
-        .tools_bytes
-        .fetch_add(size("tools"), Ordering::Relaxed);
-    model
-        .stats
-        .input_bytes
-        .fetch_add(size("input"), Ordering::Relaxed);
-    let number = model.stats.calls.load(Ordering::Relaxed);
-    if let Some(dir) = &model.dump_dir
-        && number <= DUMP_LIMIT
-        && let Err(error) =
-            tokio::fs::write(dir.join(format!("{number:03}.json")), body.to_string()).await
-    {
-        tracing::warn!(%error, "could not dump a request");
-    }
-}
-
-fn cache_key(body: &Value) -> String {
-    body.get("prompt_cache_key")
-        .and_then(Value::as_str)
-        .map_or_else(
-            || {
-                seed_of(
-                    &body
-                        .get("instructions")
-                        .map(Value::to_string)
-                        .unwrap_or_default(),
-                )
-                .to_string()
-            },
-            str::to_owned,
-        )
-}
-
-fn tool_schemas(body: &Value) -> HashMap<String, Value> {
-    body.get("tools")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|tool| {
-            let name = tool.get("name").and_then(Value::as_str)?;
-            Some((
-                name.to_owned(),
-                tool.get("parameters").cloned().unwrap_or(Value::Null),
-            ))
-        })
-        .collect()
-}
-
-/// Routes the request to a cache, looks its prompt up, and logs where it
-/// went and what the machine held.
-fn look_up(model: &FakeModel, body: &Value, prompt: &[u8]) -> Lookup {
-    let mut route = None;
-    let key = match model.scope {
-        CacheScope::Key => cache_key(body),
-        CacheScope::Prefix => "shared".to_owned(),
-        CacheScope::Routed { .. } => {
-            let requested = body.get("prompt_cache_key").and_then(Value::as_str);
-            route = Some(model.router.route(requested, prompt, model.rng.next_u64()));
-            format!("machine-{}", route.map_or(0, |route| route.machine))
-        }
-    };
-    let lookup = model.cache.lookup_and_store(&key, prompt);
-    model.audit.log_cache(&json!({
-        "cache_key": body.get("prompt_cache_key"),
-        "machine": route.map(|route| route.machine),
-        "home": route.map(|route| route.home),
-        "per_minute": route.map(|route| route.per_minute),
-        "input_tokens": lookup.input_tokens,
-        "cached_tokens": lookup.cached_tokens,
-        "blocks": lookup.blocks,
-        "held": lookup.held,
-        "readable": lookup.readable,
-    }));
-    lookup
 }
 
 #[expect(
@@ -388,77 +182,4 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         },
     );
     Sse::new(paced).into_response()
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a sampled wait of a few hundred milliseconds as a small token count"
-)]
-fn tail_tokens(timing: &ModelTiming, rng: &Rng) -> usize {
-    let tail_ms = rng.lognormal(timing.completion_tail_ms.p50, timing.completion_tail_ms.p90);
-    (tail_ms / 1000.0 * timing.tokens_per_second)
-        .round()
-        .max(0.0) as usize
-}
-
-fn replay_step(
-    model: &FakeModel,
-    tag: Option<u64>,
-    turn: &Turn,
-    tools: &HashMap<String, Value>,
-    rng: &Rng,
-) -> Option<crate::replay::Planned> {
-    let replay = model.replay.as_ref()?;
-    if turn.replied || turn.compacting {
-        return None;
-    }
-    let key = tag?;
-    let mut progress = model.replay_progress.lock().ok()?;
-    let index = progress.entry(key).or_insert(0);
-    let planned = replay.plan(key, *index, tools, &model.profile, rng)?;
-    *index += 1;
-    Some(planned)
-}
-
-fn call_rng(last_user: &str, done_calls: usize) -> Rng {
-    let step = u64::try_from(done_calls).unwrap_or(u64::MAX);
-    Rng::new(seed_of(last_user) ^ step.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
-}
-
-fn audit_reply(
-    model: &FakeModel,
-    body: &Value,
-    tools: &HashMap<String, Value>,
-    turn: &Turn,
-    target: usize,
-    calls: &[Call],
-) {
-    for call in calls {
-        model.audit.check_call(
-            &call.name,
-            tools.get(&call.name).unwrap_or(&Value::Null),
-            &call.arguments,
-        );
-    }
-    model.audit.log_decision(&json!({
-        "cache_key": body.get("prompt_cache_key"),
-        "turn": turn.last_user,
-        "done": turn.done_calls,
-        "target": target,
-        "returned": calls.iter().map(|call| call.name.as_str()).collect::<Vec<_>>(),
-    }));
-}
-
-fn calls_json(model: &FakeModel, calls: &[Call]) -> Vec<(String, String, String)> {
-    calls
-        .iter()
-        .map(|call| {
-            (
-                call.name.clone(),
-                call.arguments.to_string(),
-                format!("call_{:016x}", model.next_id()),
-            )
-        })
-        .collect()
 }
