@@ -11,6 +11,7 @@ use crate::tools::{END_TURN, Retention, ToolDef, ToolOutput};
 
 pub const BATCH: &str = "batch";
 const MAX_CALLS: usize = 10;
+const MODEL_NAMESPACE: &str = "functions.";
 
 pub(crate) fn batch_tool() -> ToolDef {
     ToolDef::new(
@@ -29,7 +30,7 @@ pub(crate) fn batch_tool() -> ToolDef {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": { "type": "string" },
+                                "name": { "type": "string", "description": "The tool's name exactly as listed, with no namespace." },
                                 "arguments": { "type": "object" },
                                 "fields": { "type": "array", "items": { "type": "string" } },
                                 "limit": { "type": "integer", "minimum": 1 },
@@ -133,8 +134,16 @@ fn parse(
     call: &ToolCall,
     retention: &HashMap<String, Retention>,
 ) -> Result<Vec<InnerArgs>, String> {
-    let args = BatchArgs::deserialize(&call.arguments)
+    let mut args = BatchArgs::deserialize(&call.arguments)
         .map_err(|error| format!("invalid arguments for batch: {error}"))?;
+    for inner in &mut args.calls {
+        if let Some(bare) = inner.name.strip_prefix(MODEL_NAMESPACE)
+            && !retention.contains_key(&inner.name)
+            && retention.contains_key(bare)
+        {
+            inner.name = bare.to_owned();
+        }
+    }
     if args.calls.is_empty() || args.calls.len() > MAX_CALLS {
         return Err(format!("a batch holds between 1 and {MAX_CALLS} calls"));
     }
@@ -392,6 +401,35 @@ mod tests {
         assert_eq!(ids, vec!["b1.0", "b1.1"]);
         assert!(expanded.projections.contains_key(&1));
         assert!(expanded.preset.is_empty());
+    }
+
+    #[test]
+    fn a_namespace_prefix_the_model_adds_resolves_to_the_tool() {
+        let expanded = expand(
+            &[batch_call(json!({ "calls": [
+                { "name": "functions.save_note", "arguments": { "text": "x" } },
+                { "name": "functions.unknown", "arguments": {} },
+            ] }))],
+            &retention(),
+        );
+        let names: Vec<&str> = expanded
+            .calls
+            .iter()
+            .map(|call| call.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["save_note", "functions.unknown"]);
+    }
+
+    #[test]
+    fn two_prefixed_outward_calls_are_still_refused() {
+        let expanded = expand(
+            &[batch_call(json!({ "calls": [
+                { "name": "functions.send_message", "arguments": {} },
+                { "name": "functions.send_message", "arguments": {} },
+            ] }))],
+            &retention(),
+        );
+        assert!(expanded.preset["b1"].is_error);
     }
 
     #[test]
