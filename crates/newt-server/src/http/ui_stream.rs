@@ -32,6 +32,9 @@ impl UiStream {
         }
         let text = |name: &str| frame[name].as_str().unwrap_or_default();
         match text("type") {
+            "tool_started" | "tool_input_delta" | "tool_input" | "tool_output"
+            | "tool_finished"
+                if text("call_id").is_empty() => {}
             "model_call_started" => {
                 self.close_step(&mut out);
                 self.open_step(&mut out);
