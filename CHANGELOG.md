@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Added
+
+- **`builtin_tools` turns newt's built-in tools off.** In the agent core's `newt` settings: `true` (all, the default), `false` (none) or the names of the ones to keep. A built-in that is off is left out of the tool list and a call to it is an unknown tool, including inside `batch` and for calls started early. Without `load_skill` the skills index leaves the system prompt too. A compaction turn always gets `checkpoint`. `require_end_turn` without `end_turn`, or a name that is not a built-in, is refused at connect. Protocol section 1.2.
+
 ## [2.1.1] - 2026-11-21
 
 Fixes from a real model in a deployed demo and from fuzzing every surface that parses model output, tool input or client requests. The fuzz properties stay in the test suite.

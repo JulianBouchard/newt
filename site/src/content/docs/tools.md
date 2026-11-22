@@ -107,7 +107,7 @@ So the next `send_message` in the same turn sees `"sent": true` and can refuse t
 
 ## Tools every agent gets
 
-newt gives every agent a few tools of its own, so your servers can't use these names:
+newt gives every agent a few tools of its own, so your servers can't use these names unless you turn that tool off:
 
 | Tool | What it's for |
 |---|---|
@@ -117,6 +117,14 @@ newt gives every agent a few tools of its own, so your servers can't use these n
 | `batch` | Running several tool calls at once |
 | `end_turn` | Ending the turn |
 | `checkpoint` | Writing the checkpoint during [compaction](../design/#what-happens-when-history-gets-long) |
+
+Every tool the model sees is one more thing it can pick, so turn off the ones your agent doesn't need. `builtin_tools` in your agent core's `newt` settings is `false` for none, or a list of the ones to keep:
+
+```json
+{ "model": "default", "builtin_tools": ["end_turn"] }
+```
+
+A reply already ends the turn, so an agent that only answers and calls its own tools can do without all of them. Compaction still gets `checkpoint` when it runs. Turning off `load_skill` hides your skills too.
 
 newt doesn't check arguments against your `inputSchema`, so validate them in the handler.
 
