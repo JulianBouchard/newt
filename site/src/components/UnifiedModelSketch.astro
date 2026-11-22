@@ -1,0 +1,72 @@
+---
+import { UNIFIED_MODEL_DESCRIPTION } from "./sketch-descriptions";
+import { ACCENT, createSketch, type SketchLabel } from "./rough-sketch";
+import SketchCanvas from "./SketchCanvas.astro";
+
+const sketch = createSketch(311);
+const { box, arrow } = sketch;
+
+box(50, 80, 300, 150);
+box(450, 80, 300, 150);
+box(850, 80, 300, 150, { stroke: ACCENT, strokeWidth: 2.2 });
+box(880, 160, 150, 36, { stroke: ACCENT, strokeWidth: 2 });
+
+box(36, 300, 732, 124, {}, true);
+box(836, 300, 328, 124, { stroke: ACCENT }, true);
+box(80, 336, 240, 64);
+box(480, 336, 240, 64);
+box(880, 336, 240, 64, { stroke: ACCENT, strokeWidth: 2 });
+
+box(80, 510, 1040, 116, { fill: "var(--sk-fill-soft)", fillStyle: "hachure", hachureGap: 12, fillWeight: 1 });
+
+arrow([[200, 232], [200, 334]]);
+arrow([[600, 232], [600, 334]]);
+arrow([[1000, 232], [1000, 334]], ACCENT);
+arrow([[200, 402], [200, 508]]);
+arrow([[600, 402], [600, 508]]);
+arrow([[1000, 402], [1000, 508]], ACCENT);
+
+arrow([[80, 600], [22, 420], [46, 200]], ACCENT);
+arrow([[1120, 600], [1178, 420], [1150, 200], [1034, 178]], ACCENT);
+
+const labels: SketchLabel[] = [
+  { x: 72, y: 124, text: "frontend", size: 30, weight: 700 },
+  { x: 72, y: 160, text: "a person clicks", size: 20, tone: "muted" },
+  { x: 72, y: 200, text: "query key: tasks", size: 20 },
+
+  { x: 472, y: 124, text: "other agents", size: 30, weight: 700 },
+  { x: 472, y: 160, text: "Claude, ChatGPT, …", size: 20, tone: "muted" },
+  { x: 472, y: 200, text: "call your public tools", size: 20 },
+
+  { x: 872, y: 124, text: "newt", size: 30, tone: "accent", weight: 700 },
+  { x: 950, y: 122, text: "your agent", size: 20, tone: "muted" },
+  { x: 896, y: 185, text: "tasks.md", size: 20, tone: "accent", weight: 600 },
+  { x: 884, y: 220, text: "a workspace page", size: 17, tone: "muted" },
+
+  { x: 52, y: 324, text: "public API", size: 21, tone: "muted", weight: 600 },
+  { x: 852, y: 324, text: "private API", size: 21, tone: "accent", weight: 600 },
+  { x: 200, y: 376, text: "routes", size: 24, weight: 700, anchor: "middle" },
+  { x: 600, y: 376, text: "public MCP", size: 24, weight: 700, anchor: "middle" },
+  { x: 1000, y: 368, text: "home MCP", size: 24, tone: "accent", weight: 700, anchor: "middle" },
+  { x: 1000, y: 392, text: "context · internal tools", size: 17, tone: "muted", anchor: "middle" },
+
+  { x: 228, y: 272, text: "call route", size: 19 },
+  { x: 628, y: 272, text: "call tool", size: 19 },
+  { x: 1028, y: 272, text: "call tool", size: 19 },
+
+  { x: 600, y: 558, text: "your core API", size: 30, weight: 700, anchor: "middle" },
+  { x: 600, y: 594, text: "complete_task(7): done, and the key tasks changed", size: 21, anchor: "middle" },
+
+  { x: 30, y: 668, text: ["the UI refetches tasks", "in the background"], size: 21, tone: "accent" },
+  { x: 900, y: 668, text: ["tasks.md goes stale,", "the agent reads it again"], size: 21, tone: "accent" },
+  { x: 600, y: 690, text: "one API · one way to say what changed", size: 21, tone: "accent", anchor: "middle" },
+];
+---
+
+<SketchCanvas
+  viewBox="0 60 1200 680"
+  strokes={sketch.strokes}
+  labels={labels}
+  description={UNIFIED_MODEL_DESCRIPTION}
+  captionId="newt-unified-caption"
+/>

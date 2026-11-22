@@ -1,0 +1,46 @@
+---
+title: Why newt
+description: What started newt. Agents rewritten for every framework, products split into a frontend, an API and an MCP server that drift apart, and a model for keeping a UI and an agent on the same data.
+---
+
+import UnifiedModelSketch from "../../components/UnifiedModelSketch.astro";
+
+I started newt while building customer-facing agents for a product. The same problems kept coming back, and none of the runtimes I tried treated them as the main problem.
+
+## Every framework wants its own agent
+
+Each agent framework and hosted runtime has its own way to define an agent: its own tool format, its own prompt and state conventions, its own idea of where context comes from. Moving an agent to another runtime means rewriting it, and trying a runtime means committing to it first.
+
+MCP already describes the parts of an agent in a way no vendor owns: instructions, tools, resources and skills. So in newt the agent is an MCP server, written with any MCP SDK, and newt only runs it. To try another runtime, point it at the same server. To test the agent, open it in any MCP client.
+
+## A product is one API, not three
+
+Putting an agent into a product today usually means building the same thing several times: the backend API, the frontend, an MCP server for other people's agents, and the agent itself. They are built separately and drift apart. The UI shows a field the agent cannot read; the agent changes something the UI never notices.
+
+They should be one thing:
+
+- **The core API** does the work.
+- **A public surface** wraps it for everyone: routes for your frontend, and a public MCP server for other people's agents.
+- **A private surface** wraps what only your own agent should have: internal context, internal operations, anything the public MCP server must not expose. That private MCP server is the agent's [home](../home-server/).
+
+A frontend already has this split between its public and private API. An agent is one more client of the same API.
+
+## One way to say what changed
+
+Frontends solved stale data with query keys: a mutation says which keys it changed, and React Query refetches those queries in the background. newt's workspace works the same way. Every page has a key, and a tool's result says which keys it changed.
+
+Put the two together:
+
+1. A person clicks in the UI, so the frontend calls a route. Or the agent calls a tool.
+2. Both reach the same API, which does the work and returns the keys it changed: `invalidate ['tasks']`.
+3. The UI refetches the tasks in the background. The agent's `tasks.md` page goes stale, so its next read gets the new list.
+
+The UI and the agent always read the same data, kept current the same way. This is what I want agentic UI to mean: the app and the agent as two clients of one API, with no chat box bolted onto the side.
+
+<UnifiedModelSketch />
+
+## The other reasons
+
+- **Context that does not rot.** Most runtimes let the prompt grow until stale tool results crowd it and every edit breaks the prompt cache. In newt reads are ephemeral, history keeps what the agent did, and each turn's prompt is the last one plus a suffix. See [How a turn works](../how-a-turn-works/).
+- **A workspace that stays current.** The agent reads your data as pages that go stale the moment something changes them, so it never acts on a copy it knows is old. See [the home server](../home-server/#resources-are-the-workspace).
+- **Tools are the only way to write.** The agent changes your production system only through the tools you give it. A tool that acts outside your system, such as sending a message or charging a card, is written to a journal first, so a crash cannot make it happen twice. See [Tools over MCP](../tools/#make-outward-calls-exactly-once).
