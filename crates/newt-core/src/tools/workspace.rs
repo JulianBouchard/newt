@@ -99,6 +99,9 @@ async fn grep(workspace: &Workspace, args: &GrepArgs) -> Result<String, String> 
 }
 
 #[cfg(test)]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
