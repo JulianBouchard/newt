@@ -4,6 +4,16 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-22
+
+Fewer database round trips for the live feed. In the agent-runtime bench (one session, four turns, 21 model calls and 73 tool calls), statements per turn drop from 536 to 315 with `live_stream` and from 196 to 131 without; turn time and time to first answer text are unchanged.
+
+### Changed
+
+- **Live feeds on the instance that runs the turn take frames from memory.** The live writer hands each batch of frames, with their sequence numbers, to that session's open feeds. A feed reads `live_events` only to start or resume, to fill a gap, for frames another instance wrote, when its 5-second poll runs out, and after the listener reconnects. Reads of `live_events` per run went from 909 to 25.
+- **A live feed that has caught up waits instead of reading again.** Every read that returned frames was followed by one that returned none.
+- **A live notification carries the sequence number of its newest frame** (`agent/key/seq` on `newt_live`), so an instance's own notification coming back wakes no feed. A notification without the number still makes feeds read. During a rolling upgrade, instances older than 2.2.1 don't recognize the new payload: their feeds pick up frames written by newer instances on the 5-second poll until every instance runs 2.2.1.
+
 ## [2.2.0] - 2026-11-21
 
 ### Added
