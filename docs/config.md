@@ -26,7 +26,7 @@ At startup newt connects to Postgres and applies the files in `migrations/`, the
 |---|---|---|---|
 | `url_env` | string | none | Name of the environment variable that holds the Postgres connection URL. |
 | `embedded` | path | none | Run newt's own Postgres with its data in this directory instead. |
-| `max_connections` | integer | `10` | Size of the connection pool. newt opens every connection at startup, so a burst of sessions does not wait for the pool to grow. |
+| `max_connections` | integer, at least 1 | `10` | Size of the connection pool. newt opens every connection at startup, so a burst of sessions does not wait for the pool to grow. |
 
 Set exactly one of `url_env` and `embedded`. With `embedded`, newt downloads the Postgres 18 binaries for this platform once (zonky's builds from Maven Central, which bring their own libraries; into `~/.theseus/postgresql`, checked against their published hash), creates the database in `<embedded>/data` on the first start, runs the server on a free local port while newt runs and stops it on exit. A server left running by a newt that was killed is stopped and restarted. It is meant for one machine: several newt instances share a Postgres you run, through `url_env`. Postgres refuses to run as root, so neither does `embedded`; the Docker setup in `deploy/` uses its own Postgres container. Builds without the default `embedded-postgres` feature reject `embedded`.
 

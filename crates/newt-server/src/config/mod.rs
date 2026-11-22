@@ -46,6 +46,9 @@ impl ServerConfig {
         if config.database.url_env.is_some() == config.database.embedded.is_some() {
             bail!("database needs exactly one of url_env and embedded");
         }
+        if config.database.max_connections == 0 {
+            bail!("database max_connections must be at least 1");
+        }
         if config.runner.cache_key_buckets == Buckets::Fixed(0) {
             bail!("runner cache_key_buckets must be at least 1");
         }
