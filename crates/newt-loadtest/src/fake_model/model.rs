@@ -13,7 +13,6 @@ use crate::sample::Rng;
 
 const CACHE_TTL: Duration = Duration::from_mins(5);
 /// What the load driver's messages start with, so a harness reminder mid-turn is never read as a new turn.
-const DRIVER_MARKER: &str = "load message";
 
 #[derive(Debug, Default)]
 pub struct Stats {
@@ -119,7 +118,7 @@ impl FakeModel {
             router: Router::new(machines),
             audit: Audit::new(decision_log.as_deref(), cache_log.as_deref())?,
             dump_dir,
-            turn_marker: turn_marker.or_else(|| Some(DRIVER_MARKER.to_owned())),
+            turn_marker: turn_marker.or_else(|| Some(crate::driver::TURN_MARKER.to_owned())),
             finish,
             replay,
             replay_progress: std::sync::Mutex::new(HashMap::new()),

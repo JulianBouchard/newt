@@ -121,7 +121,10 @@ impl MockApp {
     fn turn_of_listing(&self, session: Option<&str>) -> Option<u64> {
         let session = session?;
         let index = session.rsplit('-').next()?;
-        let mut turns = self.turns.lock().ok()?;
+        let mut turns = self
+            .turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let count = turns.entry(session.to_owned()).or_insert(0);
         let tag = crate::plan::seed_of(&format!("{index}-{count}"));
         *count += 1;

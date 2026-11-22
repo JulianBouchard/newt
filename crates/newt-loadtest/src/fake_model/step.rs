@@ -31,7 +31,10 @@ pub(super) fn replay_step(
         return None;
     }
     let key = tag?;
-    let mut progress = model.replay_progress.lock().ok()?;
+    let mut progress = model
+        .replay_progress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let index = progress.entry(key).or_insert(0);
     let planned = replay.plan(key, *index, tools, &model.profile, rng)?;
     *index += 1;

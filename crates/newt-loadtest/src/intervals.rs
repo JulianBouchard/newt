@@ -76,8 +76,11 @@ impl IntervalLog {
             "start_ms": start,
             "end_ms": start + busy.as_secs_f64() * 1000.0,
         });
-        if let Ok(mut file) = file.lock() {
-            let _ = writeln!(file, "{line}");
+        let mut file = file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = writeln!(file, "{line}") {
+            tracing::warn!(%error, "could not write an interval");
         }
     }
 }

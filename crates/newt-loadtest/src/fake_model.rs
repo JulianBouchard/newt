@@ -68,7 +68,12 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
     let arrived = std::time::SystemTime::now();
     let tag = crate::intervals::turn_key(&turn.last_user);
     let tools = tool_schemas(&body);
-    let replayed = replay_step(&model, tag, &turn, &tools, &rng);
+    let fails = model.rng.chance(model.failure_rate);
+    let replayed = if fails {
+        None
+    } else {
+        replay_step(&model, tag, &turn, &tools, &rng)
+    };
     let wait = match &replayed {
         Some(step) => {
             Duration::from_secs_f64(step.first_token_ms / 1000.0 / model.speed.max(0.001))
@@ -76,7 +81,7 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         None => timing.headers_ms.millis(&rng, model.speed) + prefill,
     };
     tokio::time::sleep(wait).await;
-    if model.rng.chance(model.failure_rate) {
+    if fails {
         if let Some(tag) = tag {
             model.intervals.record(tag, "model", arrived, wait);
         }
@@ -92,7 +97,7 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
             .tool_calls_per_turn
             .count(&Rng::new(seed_of(&turn.last_user))),
     };
-    let stream_ms = replayed.as_ref().map(|step| step.stream_ms);
+    let replaying = replayed.is_some();
     let schedule = replayed.as_ref().map(|step| crate::stream::Schedule {
         call_ready_ms: step
             .ready_ms
@@ -151,15 +156,16 @@ async fn respond(State(model): State<Arc<FakeModel>>, Json(body): Json<Value>) -
         .stats
         .tool_calls
         .fetch_add(u64::try_from(calls.len()).unwrap_or(0), Ordering::Relaxed);
-    let (thinking, per_token) = match stream_ms {
-        Some(_) => (
+    let (thinking, per_token) = if replaying {
+        (
             Duration::ZERO,
             Duration::from_secs_f64(1e-6 / model.speed.max(0.001)),
-        ),
-        None => (
+        )
+    } else {
+        (
             timing.thinking_ms.millis(&rng, model.speed),
             Duration::from_secs_f64(1.0 / timing.tokens_per_second / model.speed.max(0.001)),
-        ),
+        )
     };
     if let Some(tag) = tag {
         let tokens: usize = events.iter().map(|(tokens, _)| *tokens).sum();
