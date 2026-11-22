@@ -26,8 +26,6 @@ jobs:
           --health-interval 2s
           --health-retries 15
     steps:
-      - name: Free disk space
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
@@ -53,8 +51,8 @@ jobs:
           ANTHROPIC_API_KEY: unused
           ASSISTANT_TOKEN: unused
         run: |
-          cargo build --release -p newt-server
-          ./target/release/newt &
+          cargo build -p newt-server
+          ./target/debug/newt &
           pid=$!
           for _ in $(seq 1 300); do
             curl -sf localhost:7878/healthz && break
