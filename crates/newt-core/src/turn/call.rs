@@ -1,9 +1,21 @@
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::coalesce::{TextCoalescer, ToolInputs};
-use super::{
-    AtomicBool, BTreeMap, CallResult, CallTiming, Event, EventKind, Journal, JournalEntry, Message,
-    Model, ModelRequest, ModelResponse, Ordering, Part, Replay, Steering, StreamEvent, ToolHost,
-    TurnContext, TurnDeps, TurnError, TurnState,
-};
+use super::state::TurnState;
+use super::{TurnContext, TurnDeps, TurnError};
+use crate::event::{Event, EventKind};
+use crate::journal::{Journal, JournalEntry, Replay};
+use crate::message::{Message, Part};
+use crate::prompt::ModelRequest;
+use crate::provider::{CallTiming, Model, ModelResponse, StreamEvent};
+use crate::steering::Steering;
+use crate::tools::ToolHost;
+
+pub(super) enum CallResult {
+    Response(Box<ModelResponse>, crate::batch::Early),
+    Interrupted,
+}
 
 pub(super) async fn take_arrivals<M, H, S: Steering, J: Journal>(
     deps: &TurnDeps<'_, M, H, S, J>,
