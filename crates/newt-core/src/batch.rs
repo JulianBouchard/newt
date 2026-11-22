@@ -1,26 +1,27 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use futures_util::future::join_all;
 use futures_util::stream::{self, StreamExt};
 
-use crate::batch_tool::{BATCH, Expanded, expand, fold, project};
+use crate::batch_tool::{expand, project};
 use crate::checkpoint::Checkpoint;
-use crate::event::{Event, EventKind};
-use crate::journal::{Journal, JournalEntry, Replay};
+use crate::journal::{Journal, Replay};
 use crate::message::{ToolCall, ToolResult};
-use crate::sink::EventSink;
-use crate::skills::Skill;
-use crate::tools::{
-    CallContext, END_TURN, EndTurn, REMEMBER, Retention, ToolHost, ToolOutput, run_workspace_tool,
-};
+use crate::tools::{CallContext, END_TURN, EndTurn, ToolHost, ToolOutput};
 use crate::turn::{TurnContext, TurnDeps};
 
+mod calls;
+mod early;
+mod finish;
+mod outward;
 mod plan;
 
-use plan::{
-    END_TURN_BLOCKED, OUTWARD_CANCELLED, OUTWARD_SKIPPED, Plan, Planned, failure, plan_calls,
-};
+use calls::{call_context, record_output, timed_call, timed_read, timed_skill_load};
+pub(crate) use early::start_early;
+use early::take_early;
+use finish::{apply_workspace_changes, ended_by_tool, finish_batch};
+use outward::run_outward;
+use plan::{END_TURN_BLOCKED, Plan, Planned, failure, plan_calls};
 
 pub(crate) struct Batch {
     pub(crate) results: Vec<ToolResult>,
@@ -37,39 +38,6 @@ pub(crate) type Timed = (ToolOutput, u64);
 
 /// Outputs of calls that started while the model was still streaming, by call id.
 pub(crate) type Early = HashMap<String, Timed>;
-
-/// Starts a call before its model response has finished streaming, if running it
-/// early is safe: a workspace read, or a host tool whose retention is `ephemeral`.
-/// Writes and sends wait for the whole response, so a crash before the response is
-/// journaled can never repeat them.
-pub(crate) fn start_early<'a, M, H: ToolHost, S, J>(
-    call: ToolCall,
-    context: &'a TurnContext<'a>,
-    deps: &'a TurnDeps<'a, M, H, S, J>,
-) -> Option<futures_util::future::BoxFuture<'a, (String, Timed)>>
-where
-    M: Sync,
-    S: Sync,
-    J: Sync,
-{
-    if call.invalid_arguments().is_some() {
-        return None;
-    }
-    if crate::tools::is_workspace_tool(&call.name) {
-        return Some(Box::pin(async move {
-            let output = timed_read(context, &call).await;
-            (call.id, output)
-        }));
-    }
-    if context.retention.get(&call.name) != Some(&Retention::Ephemeral) {
-        return None;
-    }
-    let call_context = call_context(context, &call);
-    Some(Box::pin(async move {
-        let output = timed_call(deps.host, &call, &call_context, context, deps.sink).await;
-        (call.id, output)
-    }))
-}
 
 /// Which slots run where: done already, workspace reads, served skill loads
 /// (with the skill's index), concurrent host calls, and outward calls in order.
@@ -208,295 +176,4 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     let mut batch = finish_batch(&expanded, outputs, end, context, deps.sink);
     batch.checkpoint = checkpoint;
     batch
-}
-
-/// Fills the slots of calls that already ran while the model was streaming and
-/// returns the ones still to run. Host calls are journaled as they would be after
-/// running; workspace reads are not journaled.
-fn take_early<J: Journal>(
-    tool_calls: &[ToolCall],
-    lane: Vec<usize>,
-    slots: &mut [Option<Timed>],
-    early: &mut Early,
-    journal: Option<&J>,
-) -> Vec<usize> {
-    lane.into_iter()
-        .filter(|&slot| {
-            let call = &tool_calls[slot];
-            let Some(output) = early.remove(&call.id) else {
-                return true;
-            };
-            if let Some(journal) = journal {
-                record_output(journal, call, &output.0);
-            }
-            slots[slot] = Some(output);
-            false
-        })
-        .collect()
-}
-
-/// The end of the turn when a successful call of a tool that ends it (its
-/// definition's `ends_turn`, or its result's override) is in a batch with no failures.
-fn ended_by_tool(
-    tool_calls: &[ToolCall],
-    outputs: &[(ToolOutput, u64)],
-    context: &TurnContext<'_>,
-) -> Option<EndTurn> {
-    tool_calls
-        .iter()
-        .zip(outputs)
-        .find(|(call, (output, _))| {
-            !output.is_error
-                && output
-                    .ends_turn
-                    .unwrap_or_else(|| context.ends_turn.contains(&call.name))
-        })
-        .map(|(call, _)| EndTurn::by_tool(&call.name))
-}
-
-fn finish_batch(
-    expanded: &Expanded,
-    outputs: Vec<(ToolOutput, u64)>,
-    end: Option<EndTurn>,
-    context: &TurnContext<'_>,
-    sink: &dyn EventSink,
-) -> Batch {
-    let tool_calls = expanded.calls.as_slice();
-    let mut summaries = HashMap::new();
-    let mut results = Vec::with_capacity(outputs.len());
-    let durations: Vec<u64> = outputs.iter().map(|(_, ms)| *ms).collect();
-    let effects = tool_calls.iter().zip(&outputs).any(|(call, (output, _))| {
-        !output.is_error
-            && call.name != REMEMBER
-            && matches!(
-                context.retention.get(&call.name),
-                Some(Retention::Durable | Retention::Outward)
-            )
-    });
-    for (call, (output, ms)) in tool_calls.iter().zip(outputs) {
-        sink.emit(Event::now(EventKind::ToolOutput {
-            session: context.ids.session.to_owned(),
-            turn: context.ids.turn.to_owned(),
-            call_id: call.id.clone(),
-            name: call.name.clone(),
-            output: crate::event::live_excerpt(
-                &output.content,
-                crate::event::TOOL_OUTPUT_LIVE_CHARS,
-            ),
-            is_error: output.is_error,
-        }));
-        sink.emit(Event::now(EventKind::ToolFinished {
-            session: context.ids.session.to_owned(),
-            turn: context.ids.turn.to_owned(),
-            call_id: call.id.clone(),
-            name: call.name.clone(),
-            retention: context
-                .retention
-                .get(&call.name)
-                .copied()
-                .unwrap_or(Retention::Ephemeral),
-            is_error: output.is_error,
-            ms,
-        }));
-        if !output.is_error
-            && let Some(summary) = output.summary
-        {
-            summaries.insert(call.id.clone(), summary);
-        }
-        results.push(Some(ToolResult {
-            call_id: call.id.clone(),
-            content: output.content,
-            is_error: output.is_error,
-        }));
-    }
-    let folded = fold(expanded, results, summaries, context.retention, &durations);
-    for result in &folded.results {
-        if let Some(inner) = folded.batch_ms.get(&result.call_id) {
-            sink.emit(Event::now(EventKind::ToolFinished {
-                session: context.ids.session.to_owned(),
-                turn: context.ids.turn.to_owned(),
-                call_id: result.call_id.clone(),
-                name: BATCH.to_owned(),
-                retention: Retention::Ephemeral,
-                is_error: result.is_error,
-                ms: *inner,
-            }));
-        }
-    }
-    Batch {
-        results: folded.results,
-        summaries: folded.summaries,
-        kept: folded.kept,
-        end,
-        checkpoint: None,
-        effects,
-    }
-}
-
-async fn run_outward<M, H: ToolHost, S, J: Journal>(
-    tool_calls: &[ToolCall],
-    outward: &[usize],
-    slots: &mut [Option<Timed>],
-    context: &TurnContext<'_>,
-    deps: &TurnDeps<'_, M, H, S, J>,
-    replay: &Replay,
-) {
-    let replayed_outward_failed = tool_calls.iter().any(|call| {
-        context.retention.get(&call.name) == Some(&Retention::Outward)
-            && replay
-                .output(&call.id)
-                .is_some_and(|output| output.is_error)
-    });
-    let mut skip_reason = replayed_outward_failed.then(|| OUTWARD_SKIPPED.to_owned());
-    for &slot in outward {
-        let call = &tool_calls[slot];
-        if skip_reason.is_none() && deps.cancel.is_cancelled() {
-            skip_reason = Some(OUTWARD_CANCELLED.to_owned());
-        }
-        if skip_reason.is_none()
-            && let Err(error) = deps
-                .journal
-                .append_and_wait(JournalEntry::OutwardIntent {
-                    call_id: call.id.clone(),
-                })
-                .await
-        {
-            skip_reason = Some(format!("Not sent: {error}"));
-        }
-        let output = if let Some(reason) = &skip_reason {
-            (failure(reason.clone()), 0)
-        } else {
-            let output = timed_call(
-                deps.host,
-                call,
-                &call_context(context, call),
-                context,
-                deps.sink,
-            )
-            .await;
-            record_output(deps.journal, call, &output.0);
-            if output.0.is_error {
-                skip_reason = Some(OUTWARD_SKIPPED.to_owned());
-            }
-            output
-        };
-        slots[slot] = Some(output);
-    }
-}
-
-fn apply_workspace_changes(
-    tool_calls: &[ToolCall],
-    outputs: &mut [(ToolOutput, u64)],
-    context: &TurnContext<'_>,
-    replay: &Replay,
-) {
-    let workspace = context.workspace;
-    let mut changed = false;
-    for (call, (output, _)) in tool_calls.iter().zip(outputs.iter_mut()) {
-        if output.is_error {
-            continue;
-        }
-        let mut prefixes = std::mem::take(&mut output.invalidate);
-        if let Some(declared) = context.invalidates.get(&call.name) {
-            prefixes.extend(declared.iter().cloned());
-        }
-        let mut touched = workspace.invalidate(&prefixes);
-        let pages = std::mem::take(&mut output.pages);
-        if replay.output(&call.id).is_none() {
-            touched.extend(workspace.put(pages));
-        }
-        if touched.is_empty() {
-            continue;
-        }
-        changed = true;
-        touched.sort();
-        touched.dedup();
-        output.content.push_str(
-            "
-(workspace pages changed: ",
-        );
-        output.content.push_str(&touched.join(", "));
-        output.content.push(')');
-    }
-    if changed {
-        workspace.refresh_read_pages_in_background();
-    }
-}
-
-async fn timed_read(context: &TurnContext<'_>, call: &ToolCall) -> (ToolOutput, u64) {
-    let started = Instant::now();
-    let output = run_workspace_tool(call, context.workspace).await;
-    (output, elapsed_ms(started))
-}
-
-/// Runs one host call, passing the progress it reports to the sink.
-async fn timed_call<H: ToolHost>(
-    host: &H,
-    call: &ToolCall,
-    call_context: &CallContext,
-    context: &TurnContext<'_>,
-    sink: &dyn EventSink,
-) -> (ToolOutput, u64) {
-    let started = Instant::now();
-    let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
-    let call_context = CallContext {
-        progress: Some(crate::tools::Progress(sender)),
-        ..call_context.clone()
-    };
-    let report = |message: String| {
-        sink.emit(Event::now(EventKind::ToolProgress {
-            session: context.ids.session.to_owned(),
-            turn: context.ids.turn.to_owned(),
-            call_id: call.id.clone(),
-            name: call.name.clone(),
-            message,
-        }));
-    };
-    let running = host.call(call, &call_context);
-    tokio::pin!(running);
-    let output = loop {
-        tokio::select! {
-            biased;
-            Some(message) = reports.recv() => report(message),
-            output = &mut running => break output,
-        }
-    };
-    while let Ok(message) = reports.try_recv() {
-        report(message);
-    }
-    (output, elapsed_ms(started))
-}
-
-async fn timed_skill_load<H: ToolHost>(host: &H, call: &ToolCall, skill: &Skill) -> Timed {
-    let started = Instant::now();
-    let output = host
-        .load_skill(skill, crate::skills::requested_file(call))
-        .await;
-    (output, elapsed_ms(started))
-}
-
-fn call_context(context: &TurnContext<'_>, call: &ToolCall) -> CallContext {
-    CallContext {
-        idempotency_key: format!("{}:{}:{}", context.ids.session, context.ids.turn, call.id),
-        skills_loaded: context.skills_loaded(),
-        pages_read: context.workspace.pages_read(),
-        traceparent: Some(crate::otlp::tool_traceparent(
-            context.ids.session,
-            context.ids.turn,
-            context.ids.started,
-            &call.id,
-        )),
-        progress: None,
-    }
-}
-
-fn record_output<J: Journal>(journal: &J, call: &ToolCall, output: &ToolOutput) {
-    journal.append(JournalEntry::ToolOutput {
-        call_id: call.id.clone(),
-        output: output.clone(),
-    });
-}
-
-fn elapsed_ms(started: Instant) -> u64 {
-    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
