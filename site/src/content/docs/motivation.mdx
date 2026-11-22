@@ -1,5 +1,5 @@
 ---
-title: Why newt
+title: Why is newt
 description: What started newt. Agents rewritten for every framework, products split into a frontend, an API and an MCP server that drift apart, and a model for keeping a UI and an agent on the same data.
 ---
 
@@ -17,13 +17,17 @@ MCP already describes the parts of an agent in a way no vendor owns: instruction
 
 Putting an agent into a product today usually means building the same thing several times: the backend API, the frontend, an MCP server for other people's agents, and the agent itself. They are built separately and drift apart. The UI shows a field the agent cannot read; the agent changes something the UI never notices.
 
-They should be one thing:
+They should be one thing: **one core API that does the work**, exposed in three tiers by who may call it.
 
-- **The core API** does the work.
-- **A public surface** wraps it for everyone: routes for your frontend, and a public MCP server for other people's agents.
-- **A private surface** wraps what only your own agent should have: internal context, internal operations, anything the public MCP server must not expose. That private MCP server is the agent's [home](../home-server/).
+| Tier | Who calls it |
+|---|---|
+| **Public** | Anyone browsing |
+| **Authenticated** | A logged-in user, acting on their own data |
+| **Private** | A logged-in admin, or your own backend |
 
-A frontend already has this split between its public and private API. An agent is one more client of the same API.
+Each tier is wrapped twice: as routes for your frontend, and as an MCP server for agents. The public and authenticated MCP servers are for other people's agents; an authenticated one acts as the logged-in user, the way the frontend does. The private MCP server holds the internal context and operations that only your own agent should have, and it is that agent's [home](../home-server/).
+
+A frontend already has these tiers. An agent is one more client of the same API, at the tier it is allowed.
 
 ## One way to say what changed
 
