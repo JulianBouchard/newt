@@ -62,7 +62,7 @@ proptest! {
 
     #[test]
     fn every_event_is_dispatched_by_its_blank_line(data in "[a-z\u{e9} ]{0,12}", count in 1usize..6) {
-        let stream: String = (0..count).map(|_| format!("data: {data}\r\n\r\n")).collect();
+        let stream = format!("data: {data}\r\n\r\n").repeat(count);
         let events = feed_all(&[stream.as_bytes()]).unwrap();
         prop_assert_eq!(events.len(), count);
         prop_assert!(events.iter().all(|event| event.data == data));

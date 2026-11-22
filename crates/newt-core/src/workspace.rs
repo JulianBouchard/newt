@@ -389,9 +389,7 @@ impl Workspace {
 
 fn matcher(pattern: &str) -> Result<GlobMatcher, WorkspaceError> {
     if pattern.len() > GLOB_LIMIT {
-        return Err(WorkspaceError::Glob(format!(
-            "longer than {GLOB_LIMIT} bytes"
-        )));
+        return Err(WorkspaceError::Glob("longer than 512 bytes".to_owned()));
     }
     Ok(GlobBuilder::new(pattern)
         .literal_separator(true)

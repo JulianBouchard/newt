@@ -62,7 +62,10 @@ fn tool_calls(outcome: &Outcome) -> Vec<(String, String, Value)> {
 }
 
 fn delta(delta: Value, finish: Value) -> Value {
-    json!({ "id": "chatcmpl_x", "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }] })
+    let mut chunk = json!({ "id": "chatcmpl_x", "choices": [{ "index": 0 }] });
+    chunk["choices"][0]["delta"] = delta;
+    chunk["choices"][0]["finish_reason"] = finish;
+    chunk
 }
 
 fn call_delta(index: Option<u64>, id: Option<&str>, name: Option<&str>, arguments: &str) -> Value {
@@ -346,5 +349,5 @@ fn responses_drops_a_call_cut_off_by_the_token_limit() {
     ]);
     let summary = outcome.result.expect("a response");
     assert_eq!(summary.stop, StopReason::MaxTokens);
-    assert!(summary.parts.is_empty());
+    assert_eq!(summary.parts, Vec::<Part>::new());
 }

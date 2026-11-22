@@ -1,3 +1,5 @@
+#![expect(clippy::expect_used, reason = "tests fail loudly on setup errors")]
+
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
