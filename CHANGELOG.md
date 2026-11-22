@@ -4,7 +4,9 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
-This is a breaking release: newt 2.0. The HTTP context provider is gone, and an agent is now its home MCP server plus any servers the home adds.
+## [2.0.0] - 2026-11-21
+
+This is a breaking release. The HTTP context provider is gone, and an agent is now its home MCP server plus any servers the home adds.
 
 ### Changed
 
@@ -21,6 +23,8 @@ This is a breaking release: newt 2.0. The HTTP context provider is gone, and an 
 - **Servers the home adds.** `servers: [{ name, url, auth_env? }]` in the home's settings. An added server's tools are named `<name>__<tool>` and its resources become pages under `<name>/`, with page keys scoped to that server, so paths and tool names never depend on how many servers there are. All servers connect at once, each with its own 20 second limit; one that cannot be reached is left out, named to the model in the turn context, and tried again every 30 seconds while the rest of the agent runs.
 - **The stdio transport.** `stdio:<command>` for the home or any added server: newt starts the command, speaks MCP over its stdin and stdout, sends its stderr to newt's, stops it when the connection is dropped and starts it again when it exits. An agent and newt can ship as one container with no network between them; the same server code runs over HTTP.
 - `newt-demo --stdio` serves the demo agent over stdio, and the demo answers `newt/turn` with the time.
+- `newt-loadtest mock-app` is a home MCP server too, over HTTP or with `--stdio true`, and `/stats` counts resource lists and reads.
+- **Docs:** a Why is newt page, and guides for the home server and for adding servers, replace the context-provider and MCP-only pages.
 
 ## [1.7.0] - 2026-11-16
 

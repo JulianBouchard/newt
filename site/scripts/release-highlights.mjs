@@ -1,4 +1,8 @@
 export const RELEASE_HIGHLIGHTS = {
+  "2.0.0": {
+    title: "An agent is an MCP server",
+    body: "The HTTP context provider is gone: an agent is its home MCP server, which declares its settings in the `newt` extension, plus any servers it adds. Servers that do not speak newt get a plain tool call and nothing of the session's, and newt can run any of them itself over stdio. [The home server](../home-server/)",
+  },
   "1.6.0": {
     title: "A model per turn, and starting a session over",
     body: "`/turn` can pick the model and effort for one turn, such as a stronger model for a hard request, and `reset: true` runs the turn as if the session had no history. Nothing is deleted: history and fork still see every entry. [Context provider](../home-server/#pick-the-model-for-one-turn)",

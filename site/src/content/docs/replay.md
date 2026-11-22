@@ -4,7 +4,7 @@ description: Copy a real conversation into a new session, then replay it against
 ---
 
 :::note[Experimental]
-Replay and fork work and are tested, but their shape may change within 1.x.
+Replay and fork work and are tested, but their shape may change within 2.x.
 :::
 
 ## Fork a session
