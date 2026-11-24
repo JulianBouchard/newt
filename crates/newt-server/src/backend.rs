@@ -5,7 +5,7 @@ use newt_core::journal::TurnChoice;
 use newt_core::prompt::{Effort, Lane};
 use newt_core::skills::Skill;
 use newt_core::tools::{BuiltinTools, NoTools, ToolDef, ToolHost};
-use newt_core::turn::TurnSettings;
+use newt_core::turn::{Compaction, TurnSettings};
 use newt_core::workspace::Workspace;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -136,6 +136,23 @@ pub struct Prepared<H> {
     pub context: Option<String>,
     pub skills: Vec<Skill>,
     pub workspace: Workspace,
+    pub settings: AgentSettings,
+    pub state: SessionState,
+    /// What `/turn` chose for this turn, resolved against the bootstrap.
+    /// The model and efforts in `settings` stay the bootstrap's, so a resumed turn
+    /// whose first attempt chose nothing can fall back to them. `None` when
+    /// the provider chose nothing.
+    pub choice: Option<TurnChoice>,
+    /// Whether the provider wants a turn-end callback.
+    pub turn_end: bool,
+    pub turn_state: TurnState,
+    pub host: H,
+}
+
+/// How an agent's turns run: its model, efforts and limits. The one place a
+/// turn setting lives between the agent's declared settings and the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSettings {
     pub model: String,
     pub first_call_effort: Option<Effort>,
     pub effort: Option<Effort>,
@@ -146,21 +163,11 @@ pub struct Prepared<H> {
     pub require_end_turn: bool,
     pub builtin_tools: BuiltinTools,
     pub history_budget: u32,
-    pub state: SessionState,
-    /// What `/turn` chose for this turn, resolved against the bootstrap.
-    /// `model` and the efforts above stay the bootstrap's, so a resumed turn
-    /// whose first attempt chose nothing can fall back to them. `None` when
-    /// the provider chose nothing.
-    pub choice: Option<TurnChoice>,
-    /// Whether the provider wants a turn-end callback.
-    pub turn_end: bool,
-    pub turn_state: TurnState,
-    pub host: H,
 }
 
-impl<H> Prepared<H> {
+impl AgentSettings {
     /// The settings of an ordinary turn of this session.
-    pub fn turn_settings(&self, lane: Lane, reset: bool) -> TurnSettings<'_> {
+    pub fn turn(&self, lane: Lane, reset: bool) -> TurnSettings<'_> {
         TurnSettings {
             model: &self.model,
             first_call_effort: self.first_call_effort,
@@ -174,6 +181,25 @@ impl<H> Prepared<H> {
             lane,
             reset,
             compaction: None,
+        }
+    }
+
+    /// The settings of a compaction turn: in the background, at the agent's
+    /// effort throughout, with no token budget, recitation or `end_turn`.
+    pub fn compaction<'a>(&'a self, compaction: Compaction<'a>) -> TurnSettings<'a> {
+        TurnSettings {
+            model: &self.model,
+            first_call_effort: self.effort,
+            effort: self.effort,
+            max_output_tokens: self.max_output_tokens,
+            max_model_calls: self.max_model_calls,
+            max_turn_tokens: None,
+            recite: false,
+            require_end_turn: false,
+            builtin_tools: self.builtin_tools,
+            lane: Lane::Background,
+            reset: false,
+            compaction: Some(compaction),
         }
     }
 }
@@ -225,16 +251,18 @@ impl Backend for StaticBackend {
             context: None,
             skills: Vec::new(),
             workspace: self.workspace.clone(),
-            model: self.model.clone(),
-            first_call_effort: Some(Effort::Low),
-            effort: Some(Effort::Medium),
-            max_output_tokens: 4096,
-            max_model_calls: 8,
-            max_turn_tokens: None,
-            recite: false,
-            require_end_turn: false,
-            builtin_tools: BuiltinTools::ALL,
-            history_budget: 60_000,
+            settings: AgentSettings {
+                model: self.model.clone(),
+                first_call_effort: Some(Effort::Low),
+                effort: Some(Effort::Medium),
+                max_output_tokens: 4096,
+                max_model_calls: 8,
+                max_turn_tokens: None,
+                recite: false,
+                require_end_turn: false,
+                builtin_tools: BuiltinTools::ALL,
+                history_budget: 60_000,
+            },
             state: SessionState::starting_from(request.state.clone()),
             choice: None,
             turn_end: false,

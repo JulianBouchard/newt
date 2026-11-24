@@ -3,11 +3,10 @@ use std::time::Duration;
 use newt_core::checkpoint::COMPACTION_INSTRUCTION;
 use newt_core::event::{Event, EventKind};
 use newt_core::journal::NoJournal;
-use newt_core::prompt::Lane;
 use newt_core::provider::Model;
 use newt_core::sink::{EventSink, NoSink};
 use newt_core::steering::NoSteering;
-use newt_core::turn::{Compaction, TurnDeps, TurnInput, TurnSettings, run_turn};
+use newt_core::turn::{Compaction, TurnDeps, TurnInput, run_turn};
 
 use crate::backend::{Backend, Prepared};
 use crate::checkpoints::tail_cut;
@@ -22,7 +21,7 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
     prepared: &Prepared<B::Host>,
 ) -> anyhow::Result<()> {
     let state = inner.store.compaction_state(lease).await?;
-    let budget = i64::from(prepared.history_budget);
+    let budget = i64::from(prepared.settings.history_budget);
     let tokens_before = state.tokens();
     if tokens_before <= budget || !state.due {
         return Ok(());
@@ -59,23 +58,10 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
             workspace: &prepared.workspace,
             replay: Vec::new(),
         },
-        &TurnSettings {
-            model: &prepared.model,
-            first_call_effort: prepared.effort,
-            effort: prepared.effort,
-            max_output_tokens: prepared.max_output_tokens,
-            max_model_calls: prepared.max_model_calls,
-            max_turn_tokens: None,
-            recite: false,
-            require_end_turn: false,
-            builtin_tools: prepared.builtin_tools,
-            lane: Lane::Background,
-            reset: false,
-            compaction: Some(Compaction {
-                open_commitments: &state.open_commitments,
-                max_checkpoint_chars: usize::try_from(budget).unwrap_or(usize::MAX),
-            }),
-        },
+        &prepared.settings.compaction(Compaction {
+            open_commitments: &state.open_commitments,
+            max_checkpoint_chars: usize::try_from(budget).unwrap_or(usize::MAX),
+        }),
     )
     .await;
     let (outcome, checkpoint) = match result {

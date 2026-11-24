@@ -16,7 +16,9 @@ use newt_core::provider::{
 };
 use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::workspace::Workspace;
-use newt_server::backend::{Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState};
+use newt_server::backend::{
+    AgentSettings, Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState,
+};
 use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
@@ -139,16 +141,18 @@ impl Backend for WorldBackend {
             context: None,
             skills: Vec::new(),
             workspace: Workspace::default(),
-            model: "test".into(),
-            first_call_effort: None,
-            effort: None,
-            max_output_tokens: 1024,
-            max_model_calls: 6,
-            max_turn_tokens: None,
-            recite: false,
-            require_end_turn: true,
-            builtin_tools: newt_core::tools::BuiltinTools::ALL,
-            history_budget: 60_000,
+            settings: AgentSettings {
+                model: "test".into(),
+                first_call_effort: None,
+                effort: None,
+                max_output_tokens: 1024,
+                max_model_calls: 6,
+                max_turn_tokens: None,
+                recite: false,
+                require_end_turn: true,
+                builtin_tools: newt_core::tools::BuiltinTools::ALL,
+                history_budget: 60_000,
+            },
             state: SessionState::default(),
             choice: None,
             turn_end: false,

@@ -1,3 +1,4 @@
+use crate::backend::AgentSettings;
 use crate::mcp::{McpAuth, McpServer};
 use newt_core::prompt::Effort;
 use newt_core::tools::BuiltinTools;
@@ -60,6 +61,24 @@ pub struct Settings {
     pub turn_end: bool,
     #[serde(default)]
     pub servers: Vec<AddedServer>,
+}
+
+impl Settings {
+    /// How the agent's turns run, from its declared settings.
+    pub fn agent(&self) -> AgentSettings {
+        AgentSettings {
+            model: self.model.clone(),
+            first_call_effort: self.first_call_effort,
+            effort: self.effort,
+            max_output_tokens: self.max_output_tokens,
+            max_model_calls: self.max_model_calls,
+            max_turn_tokens: self.max_turn_tokens,
+            recite: self.recite,
+            require_end_turn: self.require_end_turn,
+            builtin_tools: self.builtin_tools,
+            history_budget: self.history_budget,
+        }
+    }
 }
 
 /// A server the home adds to the agent.

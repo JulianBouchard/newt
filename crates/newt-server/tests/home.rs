@@ -365,9 +365,9 @@ async fn the_home_server_is_the_agent_with_its_instructions_settings_and_pages()
     let backend = backend(App::home()).await;
     let ana = prepare(&backend, "ana").await;
     assert_eq!(ana.system, INSTRUCTIONS);
-    assert_eq!(ana.model, "default");
-    assert_eq!(ana.max_model_calls, 6);
-    assert_eq!(ana.max_output_tokens, 4096);
+    assert_eq!(ana.settings.model, "default");
+    assert_eq!(ana.settings.max_model_calls, 6);
+    assert_eq!(ana.settings.max_output_tokens, 4096);
     assert!(!ana.turn_end);
     assert_eq!(ana.context, None);
     assert_eq!(
@@ -420,14 +420,20 @@ async fn the_home_chooses_which_builtin_tools_the_agent_gets() {
     let none = App::home();
     none.settings(json!({ "model": "default", "builtin_tools": false }));
     assert_eq!(
-        prepare(&backend(none).await, "ana").await.builtin_tools,
+        prepare(&backend(none).await, "ana")
+            .await
+            .settings
+            .builtin_tools,
         BuiltinTools::NONE
     );
 
     let some = App::home();
     some.settings(json!({ "model": "default", "builtin_tools": ["read_file", "end_turn"] }));
     let prepared = prepare(&backend(some).await, "ana").await;
-    assert!(prepared.builtin_tools.offers("read_file") && !prepared.builtin_tools.offers("batch"));
+    assert!(
+        prepared.settings.builtin_tools.offers("read_file")
+            && !prepared.settings.builtin_tools.offers("batch")
+    );
 
     let unknown = App::home();
     unknown.settings(json!({ "model": "default", "builtin_tools": ["web_search"] }));
@@ -504,7 +510,7 @@ async fn newt_turn_shapes_the_turn_and_hears_its_events_and_state() {
     assert_eq!(prepared.state.changed(), Some(json!({ "seen": 2 })));
     assert_eq!(prepared.turn_state.get(), json!({ "channel": "whatsapp" }));
     assert_eq!(
-        prepared.model, "default",
+        prepared.settings.model, "default",
         "the settings' model stays the fallback"
     );
     assert_eq!(

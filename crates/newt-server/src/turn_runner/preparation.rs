@@ -42,9 +42,9 @@ pub(super) fn apply_choice<H>(
         (None, true) => (None, None),
         (Some(_), false) => {
             let choice = prepared.choice.clone().unwrap_or_else(|| TurnChoice {
-                model: prepared.model.clone(),
-                first_call_effort: prepared.first_call_effort,
-                effort: prepared.effort,
+                model: prepared.settings.model.clone(),
+                first_call_effort: prepared.settings.first_call_effort,
+                effort: prepared.settings.effort,
                 reset: false,
             });
             (Some(choice.clone()), Some(choice))
@@ -54,9 +54,9 @@ pub(super) fn apply_choice<H>(
     let Some(choice) = choice else {
         return (false, None);
     };
-    prepared.model.clone_from(&choice.model);
-    prepared.first_call_effort = choice.first_call_effort;
-    prepared.effort = choice.effort;
+    prepared.settings.model.clone_from(&choice.model);
+    prepared.settings.first_call_effort = choice.first_call_effort;
+    prepared.settings.effort = choice.effort;
     if choice.reset {
         history.clear();
     }

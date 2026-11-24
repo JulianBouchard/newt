@@ -203,7 +203,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             workspace: &prepared.workspace,
             replay: plan.replay,
         },
-        &prepared.turn_settings(lane, reset),
+        &prepared.settings.turn(lane, reset),
     )
     .await;
     drop(live);
