@@ -1,6 +1,11 @@
 //! Cancelling a running turn from any instance: the request is a flag on the
 //! session row, the owner finds it by notification or at its next heartbeat.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use tokio_util::sync::CancellationToken;
+
 use crate::sessions::Owned;
 use crate::store::{CANCEL_CHANNEL, Store, live_topic};
 
@@ -72,5 +77,89 @@ impl Store {
             .await?;
             Ok(turn.flatten())
         })
+    }
+}
+
+type Session = (String, String);
+
+/// The turns running on this instance, by session, so a cancel request
+/// that reaches this instance can stop the one it names.
+#[derive(Debug, Default)]
+pub(crate) struct RunningTurns(Mutex<HashMap<Session, (String, CancellationToken)>>);
+
+impl RunningTurns {
+    fn turns(&self) -> MutexGuard<'_, HashMap<Session, (String, CancellationToken)>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether a turn of this session is running on this instance.
+    pub(crate) fn is_running(&self, agent: &str, key: &str) -> bool {
+        self.turns()
+            .contains_key(&(agent.to_owned(), key.to_owned()))
+    }
+
+    /// Cancels the turn `turn` of this session when it runs on this
+    /// instance. False when another turn, or none, is running here, or it
+    /// was already cancelled.
+    pub(crate) fn cancel(&self, agent: &str, key: &str, turn: &str) -> bool {
+        self.turns()
+            .get(&(agent.to_owned(), key.to_owned()))
+            .filter(|(running, _)| running == turn)
+            .is_some_and(|(_, token)| {
+                let live = !token.is_cancelled();
+                token.cancel();
+                live
+            })
+    }
+
+    pub(crate) fn track(
+        self: &Arc<Self>,
+        agent: &str,
+        key: &str,
+        turn: &str,
+        token: CancellationToken,
+    ) -> TrackedTurn {
+        let session = (agent.to_owned(), key.to_owned());
+        self.turns()
+            .insert(session.clone(), (turn.to_owned(), token));
+        TrackedTurn {
+            turns: Arc::clone(self),
+            session,
+        }
+    }
+}
+
+/// A turn that can be cancelled by session; dropping it forgets the turn.
+pub(crate) struct TrackedTurn {
+    turns: Arc<RunningTurns>,
+    session: Session,
+}
+
+impl Drop for TrackedTurn {
+    fn drop(&mut self) {
+        self.turns.turns().remove(&self.session);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelling_a_tracked_turn_cancels_its_token_once_and_only_by_its_id() {
+        let running = Arc::new(RunningTurns::default());
+        assert!(!running.cancel("assistant", "a", "t1"));
+        let token = CancellationToken::new();
+        let tracked = running.track("assistant", "a", "t1", token.clone());
+        assert!(running.is_running("assistant", "a"));
+        assert!(!running.cancel("assistant", "b", "t1"));
+        assert!(!running.cancel("assistant", "a", "t0"));
+        assert!(!token.is_cancelled());
+        assert!(running.cancel("assistant", "a", "t1"));
+        assert!(token.is_cancelled());
+        assert!(!running.cancel("assistant", "a", "t1"));
+        drop(tracked);
+        assert!(!running.is_running("assistant", "a"));
+        assert!(!running.cancel("assistant", "a", "t1"));
     }
 }

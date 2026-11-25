@@ -14,6 +14,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::backend::Backend;
 use crate::cache_keys::{Buckets, CacheKeys};
+use crate::cancel::RunningTurns;
 use crate::live::Topics;
 use crate::metrics::Metrics;
 use crate::retention::Retention;
@@ -116,6 +117,7 @@ pub(crate) struct Inner<B, M> {
     pub(crate) turns: CancellationToken,
     pub(crate) turn_ends: tokio::sync::Notify,
     pub(crate) metrics: Arc<Metrics>,
+    pub(crate) running_turns: Arc<RunningTurns>,
 }
 
 pub(crate) fn elapsed_ms(started: std::time::Instant) -> u64 {
@@ -178,6 +180,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 turns: CancellationToken::new(),
                 turn_ends: tokio::sync::Notify::new(),
                 metrics: Arc::new(Metrics::new(config.max_sessions.max(1))),
+                running_turns: Arc::default(),
             }),
         }
     }

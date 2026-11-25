@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use serde::Serialize;
-use tokio_util::sync::CancellationToken;
 
 use crate::counters::{Counter, Counters};
 
@@ -29,7 +28,6 @@ pub struct Metrics {
     running: AtomicUsize,
     waiters: Mutex<HashMap<u64, Instant>>,
     next_waiter: AtomicU64,
-    turns: Mutex<HashMap<(String, String), (String, CancellationToken)>>,
     counters: Counters,
 }
 
@@ -78,46 +76,6 @@ impl Metrics {
         self.counters.render(self.load())
     }
 
-    fn turns(&self) -> MutexGuard<'_, HashMap<(String, String), (String, CancellationToken)>> {
-        self.turns.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Whether a turn of this session is running on this instance.
-    pub fn is_tracking(&self, agent: &str, key: &str) -> bool {
-        self.turns()
-            .contains_key(&(agent.to_owned(), key.to_owned()))
-    }
-
-    /// Cancels the turn `turn` of this session when it runs on this
-    /// instance. False when another turn, or none, is running here, or it
-    /// was already cancelled.
-    pub fn cancel_turn(&self, agent: &str, key: &str, turn: &str) -> bool {
-        self.turns()
-            .get(&(agent.to_owned(), key.to_owned()))
-            .filter(|(running, _)| running == turn)
-            .is_some_and(|(_, token)| {
-                let live = !token.is_cancelled();
-                token.cancel();
-                live
-            })
-    }
-
-    pub(crate) fn track_turn(
-        self: &Arc<Self>,
-        agent: &str,
-        key: &str,
-        turn: &str,
-        token: CancellationToken,
-    ) -> TrackedTurn {
-        let session = (agent.to_owned(), key.to_owned());
-        self.turns()
-            .insert(session.clone(), (turn.to_owned(), token));
-        TrackedTurn {
-            metrics: Arc::clone(self),
-            session,
-        }
-    }
-
     pub(crate) fn start_waiting(self: &Arc<Self>) -> Waiting {
         let id = self.next_waiter.fetch_add(1, Ordering::Relaxed);
         let since = Instant::now();
@@ -127,18 +85,6 @@ impl Metrics {
             id,
             since,
         }
-    }
-}
-
-/// A turn that can be cancelled by session; dropping it forgets the turn.
-pub(crate) struct TrackedTurn {
-    metrics: Arc<Metrics>,
-    session: (String, String),
-}
-
-impl Drop for TrackedTurn {
-    fn drop(&mut self) {
-        self.metrics.turns().remove(&self.session);
     }
 }
 
@@ -204,24 +150,6 @@ mod tests {
         drop(second);
         let load = metrics.load();
         assert_eq!((load.running, load.waiting), (0, 0));
-    }
-
-    #[test]
-    fn cancelling_a_tracked_turn_cancels_its_token_once_and_only_by_its_id() {
-        let metrics = Arc::new(Metrics::new(1));
-        assert!(!metrics.cancel_turn("assistant", "a", "t1"));
-        let token = CancellationToken::new();
-        let tracked = metrics.track_turn("assistant", "a", "t1", token.clone());
-        assert!(metrics.is_tracking("assistant", "a"));
-        assert!(!metrics.cancel_turn("assistant", "b", "t1"));
-        assert!(!metrics.cancel_turn("assistant", "a", "t0"));
-        assert!(!token.is_cancelled());
-        assert!(metrics.cancel_turn("assistant", "a", "t1"));
-        assert!(token.is_cancelled());
-        assert!(!metrics.cancel_turn("assistant", "a", "t1"));
-        drop(tracked);
-        assert!(!metrics.is_tracking("assistant", "a"));
-        assert!(!metrics.cancel_turn("assistant", "a", "t1"));
     }
 
     #[test]

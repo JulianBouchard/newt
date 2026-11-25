@@ -115,7 +115,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         {
             Ok(requests) => {
                 for (agent, key, turn) in requests {
-                    if self.inner.metrics.cancel_turn(&agent, &key, &turn) {
+                    if self.inner.running_turns.cancel(&agent, &key, &turn) {
                         tracing::info!(%agent, %key, %turn, "cancelling the turn on a request found at the heartbeat");
                     }
                 }

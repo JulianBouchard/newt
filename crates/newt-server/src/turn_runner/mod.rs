@@ -153,8 +153,8 @@ async fn run_one_turn<B: Backend, M: Model>(
     let turn_cancel = inner.turns.child_token();
     let _cancellable =
         inner
-            .metrics
-            .track_turn(&lease.agent, &lease.key, &plan.turn_id, turn_cancel.clone());
+            .running_turns
+            .track(&lease.agent, &lease.key, &plan.turn_id, turn_cancel.clone());
     let (journal, journal_writer) = TurnJournal::spawn(
         inner.store.clone(),
         lease.clone(),

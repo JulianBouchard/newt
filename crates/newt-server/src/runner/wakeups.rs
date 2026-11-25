@@ -122,7 +122,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
     }
 
     pub(super) async fn cancel_requested(&self, agent: &str, key: &str) {
-        if !self.inner.metrics.is_tracking(agent, key) {
+        if !self.inner.running_turns.is_running(agent, key) {
             return;
         }
         match self
@@ -132,7 +132,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
             .await
         {
             Ok(Some(turn)) => {
-                if self.inner.metrics.cancel_turn(agent, key, &turn) {
+                if self.inner.running_turns.cancel(agent, key, &turn) {
                     tracing::info!(agent, key, %turn, "cancelling the turn on request");
                 }
             }
