@@ -193,35 +193,51 @@ pub(super) async fn finish_turn<B: Backend, M: Model>(
         return Ok(true);
     };
     tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn failed");
-    let attempts = if cancelled && !effects {
-        inner.store.release(lease).await?;
+    let attempts = if cancelled || effects {
         0
     } else {
-        retry_later(inner, lease).await?
+        inner.store.failed_attempts(lease).await? + 1
     };
-    if !effects && (cancelled || attempts >= inner.config.max_attempts) {
-        tracing::error!(attempts, cancelled, agent = %lease.agent, key = %lease.key, "giving up on the turn, dead-lettering its events");
-        inner
-            .metrics
-            .count_many(Counter::DeadLetters, consumed.len());
-        inner
-            .store
-            .dead_letter(
-                lease,
-                consumed,
-                if cancelled {
-                    "cancelled".to_owned()
-                } else {
-                    error.to_string()
-                },
-                ending.payload(&turn_id, Outcome::DeadLettered, None)?,
-            )
-            .await?;
-        if ending.turn_end {
-            inner.turn_ends.notify_one();
-        }
+    if effects || !(cancelled || attempts >= inner.config.max_attempts) {
+        retry_later(inner, lease).await?;
+        return Ok(false);
     }
+    if !cancelled {
+        inner.metrics.count(Counter::Retries);
+    }
+    tracing::error!(attempts, cancelled, agent = %lease.agent, key = %lease.key, "giving up on the turn, dead-lettering its events");
+    let reason = if cancelled {
+        "cancelled".to_owned()
+    } else {
+        error.to_string()
+    };
+    give_up(inner, lease, &ending, &turn_id, consumed, reason).await?;
     Ok(false)
+}
+
+async fn give_up<B: Backend, M: Model>(
+    inner: &Inner<B, M>,
+    lease: &Lease,
+    ending: &Ending,
+    turn_id: &str,
+    consumed: Vec<i64>,
+    reason: String,
+) -> anyhow::Result<()> {
+    let count = consumed.len();
+    let turn_end = ending.payload(turn_id, Outcome::DeadLettered, None)?;
+    if !inner
+        .store
+        .dead_letter(lease, consumed, reason, turn_end)
+        .await?
+    {
+        tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before the events were dead-lettered");
+        return Ok(());
+    }
+    inner.metrics.count_many(Counter::DeadLetters, count);
+    if ending.turn_end {
+        inner.turn_ends.notify_one();
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -48,6 +48,26 @@ impl Store {
         })
     }
 
+    /// The session's failed attempts so far, while `lease` holds it; 0 when
+    /// it no longer does.
+    pub fn failed_attempts(&self, lease: &Lease) -> Owned<i32> {
+        let pool = self.pool().clone();
+        let lease = lease.clone();
+        Box::pin(async move {
+            let attempts: Option<i32> = sqlx::query_scalar(
+                "select failed_attempts from sessions \
+                 where agent = $1 and key = $2 and lease_owner = $3 and lease_epoch = $4",
+            )
+            .bind(&lease.agent)
+            .bind(&lease.key)
+            .bind(&lease.owner)
+            .bind(lease.epoch)
+            .fetch_optional(&pool)
+            .await?;
+            Ok(attempts.unwrap_or(0))
+        })
+    }
+
     pub fn release_with_backoff(&self, lease: &Lease, base_seconds: f64) -> Owned<i32> {
         let pool = self.pool().clone();
         let lease = lease.clone();

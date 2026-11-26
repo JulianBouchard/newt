@@ -58,19 +58,38 @@ impl Store {
         })
     }
 
-    /// Gives up on events no turn could answer. A `turn_end` payload, when
-    /// the provider wants one, is queued with them.
+    /// Gives up on events no turn could answer: consumes `inbox_ids` as dead
+    /// letters, queues the `turn_end` payload when the provider wants one,
+    /// drops the session's journal and releases the session, all while
+    /// `lease` still holds it. False when another owner holds the session by
+    /// now: then nothing changes.
     pub fn dead_letter(
         &self,
         lease: &Lease,
         inbox_ids: Vec<i64>,
         reason: String,
         turn_end: Option<Value>,
-    ) -> Owned<()> {
+    ) -> Owned<bool> {
         let pool = self.pool().clone();
         let lease = lease.clone();
         Box::pin(async move {
             let mut tx = pool.begin().await?;
+            let released = sqlx::query(
+                "update sessions set failed_attempts = 0, retry_after = null, \
+                   cancel_turn = null, cancel_requested_at = null, \
+                   lease_owner = null, lease_expires_at = null \
+                 where agent = $1 and key = $2 and lease_owner = $3 and lease_epoch = $4",
+            )
+            .bind(&lease.agent)
+            .bind(&lease.key)
+            .bind(&lease.owner)
+            .bind(lease.epoch)
+            .execute(&mut *tx)
+            .await?;
+            if released.rows_affected() == 0 {
+                tx.rollback().await?;
+                return Ok(false);
+            }
             if let Some(payload) = &turn_end {
                 let turn = payload["turn"].as_str().unwrap_or_default().to_owned();
                 sqlx::query(DEAD_LETTER_TURN_END)
@@ -97,17 +116,8 @@ impl Store {
                 .bind(&lease.key)
                 .execute(&mut *tx)
                 .await?;
-            sqlx::query(
-                "update sessions set failed_attempts = 0, retry_after = null, \
-                   cancel_turn = null, cancel_requested_at = null \
-                 where agent = $1 and key = $2",
-            )
-            .bind(&lease.agent)
-            .bind(&lease.key)
-            .execute(&mut *tx)
-            .await?;
             tx.commit().await?;
-            Ok(())
+            Ok(true)
         })
     }
 }
