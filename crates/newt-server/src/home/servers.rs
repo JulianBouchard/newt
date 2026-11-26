@@ -27,7 +27,7 @@ impl std::fmt::Debug for HomeServer {
     clippy::struct_excessive_bools,
     reason = "each flag is a field of the declared settings object, decoded as it is written"
 )]
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub model: String,
@@ -53,6 +53,10 @@ pub struct Settings {
     pub builtin_tools: BuiltinTools,
     #[serde(default = "default_history_budget")]
     pub history_budget: u32,
+    /// Pages whose MCP `annotations.priority` is at least this are read in
+    /// the background as each turn starts.
+    #[serde(default = "default_preload_priority")]
+    pub preload_priority: f32,
     /// Ask the home with `newt/turn` before each turn.
     #[serde(default)]
     pub turn: bool,
@@ -94,6 +98,10 @@ pub struct AddedServer {
 
 pub(super) const fn default_history_budget() -> u32 {
     60_000
+}
+
+pub(super) const fn default_preload_priority() -> f32 {
+    1.0
 }
 
 pub(super) const fn default_max_output_tokens() -> u32 {

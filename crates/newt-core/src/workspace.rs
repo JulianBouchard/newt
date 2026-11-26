@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 mod listing;
+mod preload;
 mod refresh;
 mod search;
 

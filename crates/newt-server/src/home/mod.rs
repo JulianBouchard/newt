@@ -182,6 +182,7 @@ impl HomeBackend {
         let workspace = match loaded.toolset.pages(key, &state) {
             Some(pages) => {
                 let workspace = Workspace::loading(Arc::clone(&pages) as _);
+                workspace.preload(settings.preload_priority);
                 workspace.watch(|invalidator| pages.watch(invalidator));
                 workspace
             }
