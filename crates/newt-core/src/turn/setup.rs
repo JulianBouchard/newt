@@ -6,8 +6,8 @@ use crate::event::{Event, EventKind};
 use crate::message::Message;
 use crate::prompt::ToolSpec;
 use crate::skills::{LOAD_SKILL, Skill, load_skill_tool};
-use crate::tools::{BuiltinTools, ENDS_TURN_NOTE, Retention, ToolDef, builtin_tools};
-use crate::workspace::PageKey;
+use crate::tools::{BuiltinTools, ENDS_TURN_NOTE, READ_FILE, Retention, ToolDef, builtin_tools};
+use crate::workspace::{PageKey, Workspace};
 
 pub(super) fn turn_started(
     input: &TurnInput<'_>,
@@ -23,6 +23,30 @@ pub(super) fn turn_started(
         events: input.events.len(),
         compaction: ending.is_compaction(),
     })
+}
+
+/// The turn's opening note: the workspace's page index when the agent can
+/// read pages, then the context its server gave for the turn.
+pub(super) async fn turn_context(
+    workspace: &Workspace,
+    builtin: BuiltinTools,
+    context: Option<String>,
+) -> Option<String> {
+    let index = if builtin.offers(READ_FILE) {
+        match workspace.index().await {
+            Ok(index) => index.render(),
+            Err(error) => {
+                tracing::warn!(%error, "the workspace could not be listed; the turn starts without its page index");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    match (index, context) {
+        (Some(index), Some(context)) => Some(format!("{index}\n\n{context}")),
+        (index, context) => index.or(context),
+    }
 }
 
 pub(super) fn initial_scratch(

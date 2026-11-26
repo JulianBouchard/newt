@@ -6,6 +6,7 @@ use crate::message::ToolCall;
 use crate::prompt::ToolSpec;
 
 pub const END_TURN: &str = "end_turn";
+pub const READ_FILE: &str = "read_file";
 pub const REMEMBER: &str = "remember";
 pub const REMEMBER_LIMIT: usize = 1000;
 
@@ -26,7 +27,7 @@ pub fn builtin_tools(require_end_turn: bool) -> Vec<ToolDef> {
     };
     vec![
         ephemeral(
-            "read_file",
+            READ_FILE,
             "Read one or more workspace pages. Pages change between turns: read again rather than relying on an earlier read.",
             json!({
                 "type": "object",

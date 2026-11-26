@@ -326,8 +326,10 @@ async fn a_full_turn_commits_writes_and_sends_and_drops_reads() {
     let seen = run.model.seen.lock().unwrap();
     assert_eq!(seen[0].effort, Some(Effort::Low));
     assert_eq!(seen[1].effort, Some(Effort::Medium));
-    let Part::ToolResult(read) = &seen[1].scratch[2].parts[0] else {
-        unreachable!("the third scratch message holds the first batch's results");
+    let Part::ToolResult(read) = &seen[1].scratch[3].parts[0] else {
+        unreachable!(
+            "after the page index, the event and the first response come the first batch's results"
+        );
     };
     assert!(read.content.contains("Prefers remote roles"));
 
@@ -389,7 +391,7 @@ async fn stopping_without_end_turn_gets_one_reminder_that_is_never_committed() {
             assistant(vec![Part::text("Sure.")]),
         ]
     );
-    assert_eq!(run.model.seen.lock().unwrap()[1].scratch.len(), 3);
+    assert_eq!(run.model.seen.lock().unwrap()[1].scratch.len(), 4);
 }
 
 #[tokio::test]
@@ -604,7 +606,7 @@ async fn a_failed_outward_call_skips_later_outward_calls_and_blocks_end_turn() {
         Some("send failed, will retry later")
     );
     let seen = run.model.seen.lock().unwrap();
-    let results: Vec<(&str, bool)> = seen[1].scratch[2]
+    let results: Vec<(&str, bool)> = seen[1].scratch[3]
         .parts
         .iter()
         .map(|part| match part {
@@ -696,7 +698,7 @@ async fn invalid_arguments_are_refused_and_block_end_turn() {
 
     assert!(run.host.calls.lock().unwrap().is_empty());
     let seen = run.model.seen.lock().unwrap();
-    let errors: Vec<bool> = seen[1].scratch[2]
+    let errors: Vec<bool> = seen[1].scratch[3]
         .parts
         .iter()
         .map(|part| matches!(part, Part::ToolResult(result) if result.is_error))
@@ -1019,7 +1021,10 @@ async fn turn_context_reaches_the_model_first_and_is_never_committed() {
     let first = &run.model.seen.lock().unwrap()[0].scratch;
     assert_eq!(
         first[0],
-        Message::user_text("<turn_context>no sends before 9am</turn_context>")
+        Message::user_text(
+            "<workspace>\nPages you can read with read_file:\n- profile.md\n</workspace>\n\n\
+             <turn_context>no sends before 9am</turn_context>"
+        )
     );
     assert_eq!(first[1], Message::user_text("Only remote roles please."));
     assert!(!format!("{:?}", outcome.committed).contains("9am"));

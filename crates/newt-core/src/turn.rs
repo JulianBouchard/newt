@@ -22,7 +22,7 @@ mod types;
 
 use drive::{Finish, drive};
 pub(crate) use ending::Ending;
-use setup::{offered_skills, tool_table, turn_started};
+use setup::{offered_skills, tool_table, turn_context, turn_started};
 use state::TurnState;
 pub use types::{
     CallReport, Compaction, TurnDeps, TurnError, TurnFailure, TurnInput, TurnOutcome, TurnSettings,
@@ -119,7 +119,8 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         history_fingerprint: layers.history_fingerprint(),
     };
     sink.emit(started);
-    let mut state = TurnState::new(input.context, input.events, input.replay);
+    let turn_context = turn_context(input.workspace, settings.builtin_tools, input.context).await;
+    let mut state = TurnState::new(turn_context, input.events, input.replay);
 
     let result = drive(deps, &context, settings, &mut state).await;
     let committed = committed_messages(

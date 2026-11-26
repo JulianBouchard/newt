@@ -202,6 +202,24 @@ async fn with_no_builtins_the_model_sees_only_the_agents_tools_and_no_skills_ind
 }
 
 #[tokio::test]
+async fn the_page_index_opens_the_turn_only_when_the_agent_can_read_pages() {
+    let opening = |seen: &[Request]| format!("{:?}", seen[0].scratch.first());
+    let (_, seen) = turn(vec![says(vec![Part::text("Hi.")])], BuiltinTools::ALL, None).await;
+    assert!(opening(&seen).contains("- notes.md"), "{}", opening(&seen));
+    let (_, seen) = turn(
+        vec![says(vec![Part::text("Hi.")])],
+        BuiltinTools::NONE,
+        None,
+    )
+    .await;
+    assert!(
+        !opening(&seen).contains("<workspace>"),
+        "{}",
+        opening(&seen)
+    );
+}
+
+#[tokio::test]
 async fn a_list_keeps_only_the_named_builtins() {
     let only = BuiltinTools::only(&["read_file", "end_turn"]).unwrap();
     let (_, seen) = turn(vec![says(vec![Part::text("Hi.")])], only, None).await;
