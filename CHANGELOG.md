@@ -4,6 +4,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-26
+
+A write a crash interrupted is reported to the model instead of made again. In the agent-runtime bench (one session, four turns, 21 model calls and 73 tool calls), a turn waits on about four more database round trips: +195 ms per turn at 50 ms per round trip, nothing measurable at 0 ms; statements and CPU per turn are unchanged.
+
 ### Changed
 
 - **A write a crash interrupted is no longer made again by default.** The `durable` calls of a model step run only once Postgres has acknowledged the model response's journal write (not its disk flush). On recovery, a `durable` call from a journaled response with no recorded output is not made again: the model gets an `Interrupted:` error result saying it may or may not have taken effect. Until now it was made again, and if the response had not reached the journal, newt asked the model again, which gave the calls new ids and new idempotency keys, so a handler could not tell the repeat apart. Tools that set `newt/idempotent: true` are still made again, now always with the same key. `ephemeral` calls don't wait and still run again. The journal format is unchanged; a turn journaled by an older version that crashed mid-write is reported `Interrupted:` too. Protocol section 4.1.
