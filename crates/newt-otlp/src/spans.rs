@@ -1,10 +1,10 @@
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
-use crate::trace::{attempt, hex64, tool_span_id, trace_id};
+use newt_core::trace::{attempt, hex64, tool_span_id, trace_id};
 
-use super::assemble::{CallTrace, ToolTrace, TurnTrace};
-use super::{Hooks, OtlpConfig, Profile};
+use crate::assemble::{CallTrace, ToolTrace, TurnTrace};
+use crate::{Hooks, OtlpConfig, Profile};
 
 const KIND_INTERNAL: u8 = 1;
 const KIND_CLIENT: u8 = 3;

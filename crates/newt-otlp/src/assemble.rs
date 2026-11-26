@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use time::OffsetDateTime;
 
-use crate::event::{Event, EventKind};
-use crate::message::Message;
-use crate::prompt::Effort;
-use crate::provider::{CallTiming, Usage};
-use crate::tools::Retention;
+use newt_core::event::{Event, EventKind};
+use newt_core::message::Message;
+use newt_core::prompt::Effort;
+use newt_core::provider::{CallTiming, Usage};
+use newt_core::tools::Retention;
 
 #[derive(Debug, Default)]
 pub(crate) struct CallTrace {

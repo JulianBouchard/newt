@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Context;
-use newt_core::otlp::parse_headers;
 use newt_core::prompt::{Lane, ModelRequest};
 use newt_core::provider::{
     Model, ModelResponse, Protocol as CoreProtocol, ProviderClient, ProviderError, StreamEvent,
 };
+use newt_otlp::parse_headers;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio_util::sync::CancellationToken;

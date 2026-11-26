@@ -1362,6 +1362,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "newt-otlp"
+version = "2.3.0"
+dependencies = [
+ "axum",
+ "newt-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "newt-server"
 version = "2.3.0"
 dependencies = [
@@ -1369,6 +1384,7 @@ dependencies = [
  "axum",
  "futures-util",
  "newt-core",
+ "newt-otlp",
  "postgresql_archive",
  "postgresql_embedded",
  "proptest",

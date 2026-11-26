@@ -8,12 +8,12 @@ use newt_core::prompt::{Effort, Lane};
 use newt_core::provider::{Protocol, ProviderClient};
 use std::sync::Arc;
 
-use newt_core::otlp::{Hooks, OtlpConfig, OtlpSink, Profile, parse_headers};
 use newt_core::sink::{EventSink, JsonlSink, MultiSink};
 use newt_core::steering::NoSteering;
 use newt_core::tools::NoTools;
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
+use newt_otlp::{Hooks, OtlpConfig, OtlpSink, Profile, parse_headers};
 use tokio_util::sync::CancellationToken;
 
 const SYSTEM: &str = "You are a concise personal assistant. Read the workspace before answering. \

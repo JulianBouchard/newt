@@ -8,7 +8,7 @@
 //! with the same idempotency key.
 //!
 //! Start at [`turn::run_turn`]; the workspace is in [`workspace`], providers in
-//! [`provider`], and observability sinks in [`sink`] and [`otlp`].
+//! [`provider`], and observability sinks in [`sink`].
 
 mod batch;
 pub mod batch_tool;
@@ -18,7 +18,6 @@ pub mod event;
 pub mod journal;
 pub mod message;
 mod nul;
-pub mod otlp;
 pub mod prompt;
 pub mod provider;
 pub mod sink;

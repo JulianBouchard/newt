@@ -8,7 +8,7 @@ use std::path::PathBuf;
 pub struct Tracing {
     pub endpoint: String,
     #[serde(default)]
-    pub profile: newt_core::otlp::Profile,
+    pub profile: newt_otlp::Profile,
     #[serde(default)]
     pub headers_env: Option<String>,
     #[serde(default = "default_true")]

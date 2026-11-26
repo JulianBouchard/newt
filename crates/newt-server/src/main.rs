@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use anyhow::Context;
 use newt_core::event::{Event, EventKind};
-use newt_core::otlp::{Hooks, OtlpConfig, OtlpSink, parse_headers};
 use newt_core::sink::{EventSink, JsonlSink, MultiSink, SinkError};
+use newt_otlp::{Hooks, OtlpConfig, OtlpSink, parse_headers};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

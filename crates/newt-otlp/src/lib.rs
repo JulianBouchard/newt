@@ -1,3 +1,10 @@
+//! Exports newt's turns as OpenTelemetry traces over OTLP/HTTP JSON: one
+//! trace per turn attempt, with a span per model call and per tool call.
+//! An [`OtlpSink`] is an [`EventSink`]: hand it to the turn loop, or to the
+//! server, and it assembles spans from the turn's events in the background.
+//! Span ids come from [`newt_core::trace`], the same ids the loop puts in
+//! each tool call's `traceparent`.
+
 mod assemble;
 mod spans;
 
@@ -10,8 +17,8 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::event::Event;
-use crate::sink::EventSink;
+use newt_core::event::Event;
+use newt_core::sink::EventSink;
 
 use assemble::{Assembler, TurnTrace};
 
