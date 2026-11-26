@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Changed
+
+- **OTLP export is its own crate, `newt-otlp`.** For Rust users of the library: `newt_core::otlp` is now `newt_otlp`, and `tool_traceparent` with the other trace and span ids is `newt_core::trace`. The `newt` binary, its config and the traces it exports are unchanged.
+- **The server's own events leave `newt_core::event`.** `EventKind` keeps the events of a turn. `server_ready`, `event_accepted`, `session_woken`, `session_claimed`, `turn_prepared`, `turn_committed`, `compaction_completed` and `runner_sample` move to `newt_server::events`, and `JsonlSink` takes the line type it writes. The JSONL event log is unchanged, line for line.
+
 ## [2.3.0] - 2026-11-26
 
 A write a crash interrupted is reported to the model instead of made again. In the agent-runtime bench (one session, four turns, 21 model calls and 73 tool calls), a turn waits on about four more database round trips: +195 ms per turn at 50 ms per round trip, nothing measurable at 0 ms; statements and CPU per turn are unchanged.
