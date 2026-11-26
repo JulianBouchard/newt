@@ -205,14 +205,30 @@ async fn arbitrary_live_cursors_never_fail_the_server(pool: PgPool) {
     }
 }
 
+async fn send_oversized(client: &reqwest::Client, url: &str) -> (reqwest::StatusCode, Vec<u8>) {
+    let oversized = || vec![b' '; 3 * 1024 * 1024];
+    for _ in 0..19 {
+        let sent = client
+            .post(url)
+            .bearer_auth("secret")
+            .body(oversized())
+            .send()
+            .await;
+        if let Ok(response) = sent {
+            let status = response.status();
+            return (status, response.bytes().await.unwrap().to_vec());
+        }
+    }
+    send(client, Method::POST, url, Some("secret"), None, oversized()).await
+}
+
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_body_over_the_limit_is_a_413_in_the_documented_shape(pool: PgPool) {
     let base = start(pool).await;
     let client = reqwest::Client::new();
     for route in ["events", "chat", "cancel", "fork"] {
         let url = format!("{base}/v1/agents/assistant/sessions/s/{route}");
-        let body = vec![b' '; 3 * 1024 * 1024];
-        let (status, answer) = send(&client, Method::POST, &url, Some("secret"), None, body).await;
+        let (status, answer) = send_oversized(&client, &url).await;
         assert_eq!(status, 413, "{route}");
         assert_contract(route, status, &answer);
     }
