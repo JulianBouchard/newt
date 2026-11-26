@@ -120,7 +120,7 @@ impl LogLine for Record {
 
 /// Where the server's instrumentation goes: the event log, the trace
 /// exporter, or both.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct Instrumentation {
     pub log: Option<JsonlSink<Record>>,
     pub traces: Option<OtlpSink>,

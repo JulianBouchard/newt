@@ -149,8 +149,8 @@ pub struct Prepared<H> {
     pub host: H,
 }
 
-/// How an agent's turns run: its model, efforts and limits. The one place a
-/// turn setting lives between the agent's declared settings and the turn.
+/// How an agent's turns run: its model, efforts and limits, carried from the
+/// agent's declared settings to each turn's [`TurnSettings`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSettings {
     pub model: String,
