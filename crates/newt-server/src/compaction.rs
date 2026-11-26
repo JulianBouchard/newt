@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use newt_core::checkpoint::COMPACTION_INSTRUCTION;
-use newt_core::event::{Event, EventKind};
 use newt_core::journal::NoJournal;
 use newt_core::provider::Model;
 use newt_core::sink::{EventSink, NoSink};
@@ -10,6 +9,7 @@ use newt_core::turn::{Compaction, TurnDeps, TurnInput, run_turn};
 
 use crate::backend::{Backend, Prepared};
 use crate::checkpoints::tail_cut;
+use crate::events::ServerEventKind;
 use crate::runner::Inner;
 use crate::sessions::{CommitError, Lease};
 
@@ -34,7 +34,10 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
     let turn_id = uuid::Uuid::now_v7().to_string();
     let session = format!("{}/{}", lease.agent, lease.key);
     let cancel = inner.turns.child_token();
-    let sink: &dyn EventSink = inner.instrumentation.as_deref().unwrap_or(&NoSink);
+    let sink: &dyn EventSink = match inner.instrumentation.as_deref() {
+        Some(instrumentation) => instrumentation,
+        None => &NoSink,
+    };
     tracing::info!(agent = %lease.agent, key = %lease.key, tokens_before, budget, "compacting session history");
     let result = run_turn(
         &TurnDeps {
@@ -91,12 +94,12 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
     }
     let tokens_after = inner.store.compaction_state(lease).await?.tokens();
     tracing::info!(agent = %lease.agent, key = %lease.key, tokens_before, tokens_after, "checkpoint saved");
-    sink.emit(Event::now(EventKind::CompactionCompleted {
+    inner.emit(ServerEventKind::CompactionCompleted {
         session,
         turn: turn_id,
         tokens_before,
         tokens_after,
-    }));
+    });
     Ok(())
 }
 

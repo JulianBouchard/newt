@@ -3,13 +3,13 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use futures_util::FutureExt;
-use newt_core::event::{EventKind, WakeSource};
 use newt_core::prompt::Lane;
 use newt_core::provider::Model;
 use tokio::sync::broadcast;
 
 use crate::backend::Backend;
 use crate::counters::Counter;
+use crate::events::{ServerEventKind, WakeSource};
 
 struct InFlight<'a, B, M> {
     inner: &'a Inner<B, M>,
@@ -41,7 +41,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
             return false;
         }
         let waiting = self.inner.metrics.start_waiting();
-        self.inner.emit(EventKind::SessionWoken {
+        self.inner.emit(ServerEventKind::SessionWoken {
             session: format!("{agent}/{key}"),
             source,
         });
@@ -165,7 +165,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
             Err(error) => tracing::error!(%error, "sweep could not list sessions"),
         }
         let pool = self.inner.store.pool();
-        self.inner.emit(EventKind::RunnerSample {
+        self.inner.emit(ServerEventKind::RunnerSample {
             running: self.inner.running().len(),
             pool_size: pool.size(),
             pool_idle: pool.num_idle(),

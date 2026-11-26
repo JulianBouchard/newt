@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
-use newt_core::event::{Event, EventKind, WakeSource};
+use newt_core::event::{Event, EventKind};
 use time::OffsetDateTime;
+
+use crate::events::{Record, ServerEvent, ServerEventKind, WakeSource};
 
 #[derive(Debug, Default, Clone)]
 struct Waiting {
@@ -42,15 +44,15 @@ impl Profile {
         self.stages.entry(name).or_default().push(value);
     }
 
-    fn observe_pool_wait(&mut self, kind: &EventKind) {
+    fn observe_pool_wait(&mut self, kind: &ServerEventKind) {
         let (stage, waited) = match kind {
-            EventKind::EventAccepted { pool_wait_ms, .. } => {
+            ServerEventKind::EventAccepted { pool_wait_ms, .. } => {
                 ("read receipt: waiting for a connection", pool_wait_ms)
             }
-            EventKind::SessionClaimed { pool_wait_ms, .. } => {
+            ServerEventKind::SessionClaimed { pool_wait_ms, .. } => {
                 ("claim: waiting for a connection", pool_wait_ms)
             }
-            EventKind::TurnPrepared { pool_wait_ms, .. } => {
+            ServerEventKind::TurnPrepared { pool_wait_ms, .. } => {
                 ("history load: waiting for a connection", pool_wait_ms)
             }
             _ => return,
@@ -58,11 +60,18 @@ impl Profile {
         self.stage(stage, number(*waited));
     }
 
-    pub fn observe(&mut self, event: &Event) {
+    pub fn observe(&mut self, record: &Record) {
+        match record {
+            Record::Turn(event) => self.observe_turn(event),
+            Record::Server(event) => self.observe_server(event),
+        }
+    }
+
+    fn observe_server(&mut self, event: &ServerEvent) {
         self.observe_pool_wait(&event.kind);
         let at = event.at;
         match &event.kind {
-            EventKind::EventAccepted {
+            ServerEventKind::EventAccepted {
                 session, accept_ms, ..
             } => {
                 self.stage("read receipt (server)", number(*accept_ms));
@@ -74,7 +83,7 @@ impl Profile {
                     };
                 }
             }
-            EventKind::SessionWoken { session, source } => {
+            ServerEventKind::SessionWoken { session, source } => {
                 let name = match source {
                     WakeSource::Notify => "notify",
                     WakeSource::Sweep => "sweep",
@@ -88,7 +97,7 @@ impl Profile {
                     waiting.woken = Some(at);
                 }
             }
-            EventKind::SessionClaimed {
+            ServerEventKind::SessionClaimed {
                 session,
                 claimed,
                 claim_ms,
@@ -104,7 +113,7 @@ impl Profile {
                     waiting.claimed = Some(at);
                 }
             }
-            EventKind::TurnPrepared {
+            ServerEventKind::TurnPrepared {
                 session,
                 prepare_ms,
                 history_ms,
@@ -118,8 +127,31 @@ impl Profile {
                     waiting.prepared = Some(at);
                 }
             }
+            ServerEventKind::TurnCommitted { commit_ms, .. } => {
+                self.stage("commit", number(*commit_ms));
+            }
+            ServerEventKind::RunnerSample {
+                running,
+                pool_size,
+                pool_idle,
+                sweep_ms,
+                ..
+            } => {
+                self.running
+                    .push(number(u64::try_from(*running).unwrap_or(u64::MAX)));
+                self.pool_size.push(f64::from(*pool_size));
+                self.pool_idle
+                    .push(number(u64::try_from(*pool_idle).unwrap_or(u64::MAX)));
+                self.sweeps.push(number(*sweep_ms));
+            }
+            ServerEventKind::ServerReady { .. } | ServerEventKind::CompactionCompleted { .. } => {}
+        }
+    }
+
+    fn observe_turn(&mut self, event: &Event) {
+        let at = event.at;
+        match &event.kind {
             EventKind::TurnStarted { session, .. } => self.turn_started(session, at),
-            EventKind::TurnCommitted { commit_ms, .. } => self.stage("commit", number(*commit_ms)),
             EventKind::ModelCallStarted {
                 session,
                 turn,
@@ -138,20 +170,6 @@ impl Profile {
             EventKind::TurnCompleted { session, turn, .. }
             | EventKind::TurnFailed { session, turn, .. } => {
                 self.previous_call_end.remove(&format!("{session}/{turn}"));
-            }
-            EventKind::RunnerSample {
-                running,
-                pool_size,
-                pool_idle,
-                sweep_ms,
-                ..
-            } => {
-                self.running
-                    .push(number(u64::try_from(*running).unwrap_or(u64::MAX)));
-                self.pool_size.push(f64::from(*pool_size));
-                self.pool_idle
-                    .push(number(u64::try_from(*pool_idle).unwrap_or(u64::MAX)));
-                self.sweeps.push(number(*sweep_ms));
             }
             _ => {}
         }

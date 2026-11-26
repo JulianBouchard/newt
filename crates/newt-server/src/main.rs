@@ -4,8 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
-use newt_core::event::{Event, EventKind};
-use newt_core::sink::{EventSink, JsonlSink, MultiSink, SinkError};
+use newt_core::sink::{JsonlSink, SinkError};
 use newt_otlp::{Hooks, OtlpConfig, OtlpSink, parse_headers};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -13,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use newt_server::config::ServerConfig;
+use newt_server::events::{Instrumentation, Record, ServerEvent, ServerEventKind};
 use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::http::{self, AppState};
 use newt_server::models::Routes;
@@ -21,6 +21,8 @@ use newt_server::store::Store;
 use newt_server::{db, live};
 
 const EVENT_BUFFER: usize = 1024;
+
+type EventLog = (JsonlSink<Record>, JoinHandle<Result<(), SinkError>>);
 
 #[tokio::main]
 #[expect(clippy::too_many_lines, reason = "startup reads top to bottom")]
@@ -72,8 +74,10 @@ async fn main() -> anyhow::Result<()> {
         routes = config.routes.len(),
         "newt ready"
     );
-    if let Some((sink, _)) = &jsonl {
-        sink.emit(Event::now(EventKind::ServerReady { boot_ms }));
+    if let Some((log, _)) = &jsonl {
+        log.write(Record::Server(ServerEvent::now(
+            ServerEventKind::ServerReady { boot_ms },
+        )));
     }
 
     let access = agent_access(&config)?;
@@ -162,17 +166,15 @@ fn otlp_sink(config: &ServerConfig) -> anyhow::Result<Option<(OtlpSink, JoinHand
 }
 
 fn instrumentation(
-    jsonl: Option<&(JsonlSink, JoinHandle<Result<(), SinkError>>)>,
+    jsonl: Option<&EventLog>,
     otlp: Option<&(OtlpSink, JoinHandle<()>)>,
-) -> Option<Arc<dyn EventSink>> {
-    let mut sinks: Vec<Arc<dyn EventSink>> = Vec::new();
-    if let Some((sink, _)) = jsonl {
-        sinks.push(Arc::new(sink.clone()));
-    }
-    if let Some((sink, _)) = otlp {
-        sinks.push(Arc::new(sink.clone()));
-    }
-    (!sinks.is_empty()).then(|| Arc::new(MultiSink(sinks)) as Arc<dyn EventSink>)
+) -> Option<Arc<Instrumentation>> {
+    let instrumentation = Instrumentation {
+        log: jsonl.map(|(log, _)| log.clone()),
+        traces: otlp.map(|(traces, _)| traces.clone()),
+    };
+    (instrumentation.log.is_some() || instrumentation.traces.is_some())
+        .then(|| Arc::new(instrumentation))
 }
 
 struct AgentAccess {

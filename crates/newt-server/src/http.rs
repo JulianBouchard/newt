@@ -13,8 +13,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::Stream;
 use futures_util::stream;
-use newt_core::event::{Event, EventKind};
-use newt_core::sink::EventSink;
 use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -22,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 use self::error::{ApiError, json_errors};
 use crate::cancel::CancelRequest;
 use crate::counters::Counter;
+use crate::events::{Instrumentation, ServerEventKind};
 use crate::live::{Channel, Topics, Watch};
 use crate::metrics::Metrics;
 use crate::retention::Deleted;
@@ -46,7 +45,7 @@ pub struct AppState {
     pub tokens: Arc<HashMap<String, String>>,
     pub live: Topics,
     pub shutdown: CancellationToken,
-    pub instrumentation: Option<Arc<dyn EventSink>>,
+    pub instrumentation: Option<Arc<Instrumentation>>,
     /// Agents whose live `received` frames carry the event's `meta`.
     pub live_meta: Arc<HashSet<String>>,
     /// Agents that stream text and tool input on the live feed, which `/chat` needs.
@@ -215,12 +214,12 @@ async fn accept_event(
     if let Some(sink) = &state.instrumentation
         && !accepted.duplicate
     {
-        sink.emit(Event::now(EventKind::EventAccepted {
+        sink.server(ServerEventKind::EventAccepted {
             session: format!("{agent}/{key}"),
             inbox_id: accepted.inbox_id,
             accept_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             pool_wait_ms: accepted.pool_wait_ms,
-        }));
+        });
     }
     Ok(accepted)
 }

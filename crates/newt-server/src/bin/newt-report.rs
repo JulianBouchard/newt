@@ -5,6 +5,7 @@ use anyhow::Context;
 use newt_core::event::{Event, EventKind};
 use newt_core::provider::{CallTiming, Usage};
 use newt_server::cache_card::{CacheCard, Prices};
+use newt_server::events::{Record, ServerEvent, ServerEventKind};
 use time::OffsetDateTime;
 
 /// Providers keep an idle cached prefix for about five minutes.
@@ -79,11 +80,16 @@ fn main() -> anyhow::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let event: Event = serde_json::from_str(&line)
+        let record: Record = serde_json::from_str(&line)
             .with_context(|| format!("line {} is not a newt event", index + 1))?;
-        profile.observe(&event);
-        card.observe(&event);
-        apply(&mut turns, event);
+        profile.observe(&record);
+        match record {
+            Record::Turn(event) => {
+                card.observe(&event);
+                apply(&mut turns, event);
+            }
+            Record::Server(event) => apply_server(&mut turns, event),
+        }
     }
     let mut out = std::io::stdout().lock();
     let mut flags = Vec::new();
@@ -135,20 +141,13 @@ fn call_mut(turn: &mut TurnReport, call: u32) -> &mut Call {
 fn apply(turns: &mut Vec<TurnReport>, event: Event) {
     let at = event.at;
     match event.kind {
-        EventKind::ServerReady { .. }
-        | EventKind::ToolProgress { .. }
+        EventKind::ToolProgress { .. }
         | EventKind::TextDelta { .. }
         | EventKind::ToolInputDelta { .. }
         | EventKind::ToolInput { .. }
         | EventKind::ToolOutput { .. }
         | EventKind::TurnSteered { .. }
-        | EventKind::ModelCallReplayed { .. }
-        | EventKind::EventAccepted { .. }
-        | EventKind::SessionWoken { .. }
-        | EventKind::SessionClaimed { .. }
-        | EventKind::TurnPrepared { .. }
-        | EventKind::TurnCommitted { .. }
-        | EventKind::RunnerSample { .. } => {}
+        | EventKind::ModelCallReplayed { .. } => {}
         EventKind::TurnStarted { session, turn, .. } => {
             turn_mut(turns, &session, &turn).started_at = Some(at);
         }
@@ -247,15 +246,19 @@ fn apply(turns: &mut Vec<TurnReport>, event: Event) {
             entry.ended_at = Some(at);
             entry.outcome = format!("failed: {error}");
         }
-        EventKind::CompactionCompleted {
-            session,
-            turn,
-            tokens_before,
-            tokens_after,
-        } => {
-            turn_mut(turns, &session, &turn).outcome =
-                format!("compacted history {tokens_before} -> {tokens_after} tokens");
-        }
+    }
+}
+
+fn apply_server(turns: &mut Vec<TurnReport>, event: ServerEvent) {
+    if let ServerEventKind::CompactionCompleted {
+        session,
+        turn,
+        tokens_before,
+        tokens_after,
+    } = event.kind
+    {
+        turn_mut(turns, &session, &turn).outcome =
+            format!("compacted history {tokens_before} -> {tokens_after} tokens");
     }
 }
 

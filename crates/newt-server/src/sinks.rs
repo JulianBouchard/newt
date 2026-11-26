@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::events::Instrumentation;
 use crate::live::Topics;
 use crate::store::{LiveEvent, Store, live_topic};
 
@@ -164,7 +165,7 @@ impl EventSink for LiveSink {
 #[derive(Clone, Copy)]
 pub struct TeeSink<'a> {
     pub live: &'a LiveSink,
-    pub instrumentation: Option<&'a Arc<dyn EventSink>>,
+    pub instrumentation: Option<&'a Arc<Instrumentation>>,
     /// Called on every model call the turn starts.
     pub on_model_call: Option<&'a (dyn Fn() + Sync)>,
 }

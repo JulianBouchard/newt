@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+use newt_core::event::Event;
 use newt_core::journal::NoJournal;
 use newt_core::message::Message;
 use newt_core::prompt::{Effort, Lane};
@@ -71,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let events_path = std::env::var("NEWT_EVENTS_FILE")
         .map_or_else(|_| PathBuf::from("newt-events.jsonl"), PathBuf::from);
-    let (jsonl, writer) = JsonlSink::spawn(events_path.clone(), 1024);
+    let (jsonl, writer) = JsonlSink::<Event>::spawn(events_path.clone(), 1024);
     let jsonl = jsonl.capturing_content(true);
     let mut sinks: Vec<Arc<dyn EventSink>> = vec![Arc::new(jsonl.clone())];
     let otlp = otlp_from_env()?;

@@ -5,9 +5,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use newt_core::event::{Event, EventKind};
 use newt_core::provider::Model;
-use newt_core::sink::EventSink;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -15,6 +13,7 @@ use tokio_util::task::TaskTracker;
 use crate::backend::Backend;
 use crate::cache_keys::{Buckets, CacheKeys};
 use crate::cancel::RunningTurns;
+use crate::events::{Instrumentation, ServerEventKind};
 use crate::live::Topics;
 use crate::metrics::Metrics;
 use crate::retention::Retention;
@@ -106,7 +105,7 @@ pub(crate) struct Inner<B, M> {
     pub(crate) owner: String,
     pub(crate) config: RunnerConfig,
     pub(crate) cache_keys: CacheKeys,
-    pub(crate) instrumentation: Option<Arc<dyn EventSink>>,
+    pub(crate) instrumentation: Option<Arc<Instrumentation>>,
     pub(crate) notifications: Topics,
     pub(crate) live_stream: HashSet<String>,
     in_flight: Mutex<HashSet<Session>>,
@@ -125,9 +124,9 @@ pub(crate) fn elapsed_ms(started: std::time::Instant) -> u64 {
 }
 
 impl<B, M> Inner<B, M> {
-    pub(crate) fn emit(&self, kind: EventKind) {
-        if let Some(sink) = &self.instrumentation {
-            sink.emit(Event::now(kind));
+    pub(crate) fn emit(&self, kind: ServerEventKind) {
+        if let Some(instrumentation) = &self.instrumentation {
+            instrumentation.server(kind);
         }
     }
 
@@ -152,7 +151,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
         backend: B,
         model: M,
         config: RunnerConfig,
-        instrumentation: Option<Arc<dyn EventSink>>,
+        instrumentation: Option<Arc<Instrumentation>>,
         notifications: Topics,
     ) -> Self {
         let owner = format!(

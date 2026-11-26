@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde::Serialize;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
@@ -51,14 +52,46 @@ pub enum SinkError {
     Serialize(#[from] serde_json::Error),
 }
 
-#[derive(Debug, Clone)]
-pub struct JsonlSink {
-    sender: mpsc::Sender<Event>,
+/// A line of a JSONL event log.
+pub trait LogLine: Serialize + Send + Sized + 'static {
+    /// The line as written, or `None` to leave it out of the log. Without
+    /// `capture_content` it carries no prompt or reply content.
+    fn logged(self, capture_content: bool) -> Option<Self>;
+}
+
+impl LogLine for Event {
+    fn logged(self, capture_content: bool) -> Option<Self> {
+        if self.kind.is_live_only() {
+            return None;
+        }
+        Some(if capture_content {
+            self
+        } else {
+            self.without_content()
+        })
+    }
+}
+
+/// Appends lines to a JSONL file from a background task. Lines that find
+/// the buffer full are dropped and counted.
+#[derive(Debug)]
+pub struct JsonlSink<L = Event> {
+    sender: mpsc::Sender<L>,
     dropped: Arc<AtomicU64>,
     capture_content: bool,
 }
 
-impl JsonlSink {
+impl<L> Clone for JsonlSink<L> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            dropped: Arc::clone(&self.dropped),
+            capture_content: self.capture_content,
+        }
+    }
+}
+
+impl<L: LogLine> JsonlSink<L> {
     pub fn spawn(path: PathBuf, capacity: usize) -> (Self, JoinHandle<Result<(), SinkError>>) {
         let (sender, receiver) = mpsc::channel(capacity);
         let writer = tokio::spawn(write_lines(path, receiver));
@@ -79,26 +112,29 @@ impl JsonlSink {
         self.capture_content = capture_content;
         self
     }
-}
 
-impl EventSink for JsonlSink {
-    fn emit(&self, event: Event) {
-        if event.kind.is_live_only() {
+    /// Writes `line`, unless [`LogLine::logged`] leaves it out.
+    pub fn write(&self, line: L) {
+        let Some(line) = line.logged(self.capture_content) else {
             return;
-        }
-        let event = if self.capture_content {
-            event
-        } else {
-            event.without_content()
         };
-        if self.sender.try_send(event).is_err() {
+        if self.sender.try_send(line).is_err() {
             let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::warn!(dropped = total, "jsonl sink full or closed, event dropped");
         }
     }
 }
 
-async fn write_lines(path: PathBuf, mut receiver: mpsc::Receiver<Event>) -> Result<(), SinkError> {
+impl<L: LogLine + From<Event>> EventSink for JsonlSink<L> {
+    fn emit(&self, event: Event) {
+        self.write(L::from(event));
+    }
+}
+
+async fn write_lines<L: Serialize>(
+    path: PathBuf,
+    mut receiver: mpsc::Receiver<L>,
+) -> Result<(), SinkError> {
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -120,42 +156,50 @@ mod tests {
     use super::*;
     use crate::event::EventKind;
 
+    fn steered(events: usize) -> Event {
+        Event::now(EventKind::TurnSteered {
+            session: "assistant/a".to_owned(),
+            turn: "t1".to_owned(),
+            events,
+        })
+    }
+
     #[tokio::test]
     async fn writes_one_json_line_per_event_in_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
-        let (sink, writer) = JsonlSink::spawn(path.clone(), 8);
+        let (sink, writer) = JsonlSink::<Event>::spawn(path.clone(), 8);
 
-        sink.emit(Event::now(EventKind::ServerReady { boot_ms: 7 }));
-        sink.emit(Event::now(EventKind::ServerReady { boot_ms: 9 }));
+        sink.emit(steered(7));
+        sink.emit(steered(9));
         drop(sink);
         writer.await.unwrap().unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
-        let boot_times: Vec<u64> = contents
+        let counts: Vec<usize> = contents
             .lines()
             .filter_map(
                 |line| match serde_json::from_str::<Event>(line).unwrap().kind {
-                    EventKind::ServerReady { boot_ms } => Some(boot_ms),
+                    EventKind::TurnSteered { events, .. } => Some(events),
                     _ => None,
                 },
             )
             .collect();
-        assert_eq!(boot_times, vec![7, 9]);
+        assert_eq!(counts, vec![7, 9]);
     }
 
     #[tokio::test]
     async fn counts_events_dropped_when_the_buffer_is_full() {
         let (sender, _receiver) = mpsc::channel(1);
-        let sink = JsonlSink {
+        let sink: JsonlSink = JsonlSink {
             sender,
             dropped: Arc::new(AtomicU64::new(0)),
             capture_content: false,
         };
 
-        sink.emit(Event::now(EventKind::ServerReady { boot_ms: 1 }));
-        sink.emit(Event::now(EventKind::ServerReady { boot_ms: 2 }));
-        sink.emit(Event::now(EventKind::ServerReady { boot_ms: 3 }));
+        sink.emit(steered(1));
+        sink.emit(steered(2));
+        sink.emit(steered(3));
 
         assert_eq!(sink.dropped(), 2);
     }

@@ -1,9 +1,9 @@
 use super::ending::turn_events;
 use super::retry_later;
 use crate::backend::{Backend, Prepared, TurnRequest};
+use crate::events::ServerEventKind;
 use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{Lease, PendingEvent};
-use newt_core::event::EventKind;
 use newt_core::journal::{JournalEntry, TurnChoice};
 use newt_core::message::Message;
 use newt_core::prompt::Lane;
@@ -116,7 +116,7 @@ pub(super) async fn ready_turn<B: Backend, M: Model>(
         tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before the turn started");
         return Ok(None);
     };
-    inner.emit(EventKind::TurnPrepared {
+    inner.emit(ServerEventKind::TurnPrepared {
         session: format!("{}/{}", lease.agent, lease.key),
         turn: plan.turn_id.clone(),
         prepare_ms,

@@ -177,22 +177,14 @@ impl Assembler {
                 trace.error = Some(error);
                 return Some(trace);
             }
-            EventKind::ServerReady { .. }
-            | EventKind::TurnSteered { .. }
+            EventKind::TurnSteered { .. }
             | EventKind::ToolStarted { .. }
             | EventKind::ToolProgress { .. }
             | EventKind::TextDelta { .. }
             | EventKind::ToolInputDelta { .. }
             | EventKind::ToolInput { .. }
             | EventKind::ToolOutput { .. }
-            | EventKind::ModelCallReplayed { .. }
-            | EventKind::CompactionCompleted { .. }
-            | EventKind::EventAccepted { .. }
-            | EventKind::SessionWoken { .. }
-            | EventKind::SessionClaimed { .. }
-            | EventKind::TurnPrepared { .. }
-            | EventKind::TurnCommitted { .. }
-            | EventKind::RunnerSample { .. } => {}
+            | EventKind::ModelCallReplayed { .. } => {}
         }
         None
     }
@@ -246,20 +238,12 @@ pub(super) fn event_turn(kind: &EventKind) -> Option<(String, String)> {
         | EventKind::ToolFinished { session, turn, .. }
         | EventKind::TurnCompleted { session, turn, .. }
         | EventKind::TurnFailed { session, turn, .. } => Some((session.clone(), turn.clone())),
-        EventKind::ServerReady { .. }
-        | EventKind::ToolProgress { .. }
+        EventKind::ToolProgress { .. }
         | EventKind::TextDelta { .. }
         | EventKind::ToolInputDelta { .. }
         | EventKind::ToolInput { .. }
         | EventKind::ToolOutput { .. }
         | EventKind::TurnSteered { .. }
-        | EventKind::ModelCallReplayed { .. }
-        | EventKind::CompactionCompleted { .. }
-        | EventKind::EventAccepted { .. }
-        | EventKind::SessionWoken { .. }
-        | EventKind::SessionClaimed { .. }
-        | EventKind::TurnPrepared { .. }
-        | EventKind::TurnCommitted { .. }
-        | EventKind::RunnerSample { .. } => None,
+        | EventKind::ModelCallReplayed { .. } => None,
     }
 }

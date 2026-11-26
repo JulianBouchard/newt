@@ -45,9 +45,6 @@ impl Event {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventKind {
-    ServerReady {
-        boot_ms: u64,
-    },
     TurnStarted {
         session: String,
         turn: String,
@@ -173,53 +170,6 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<FailureReason>,
     },
-    CompactionCompleted {
-        session: String,
-        turn: String,
-        tokens_before: i64,
-        tokens_after: i64,
-    },
-    EventAccepted {
-        session: String,
-        inbox_id: i64,
-        accept_ms: u64,
-        /// Of the time above, how long it waited for a database connection.
-        #[serde(default)]
-        pool_wait_ms: u64,
-    },
-    SessionWoken {
-        session: String,
-        source: WakeSource,
-    },
-    SessionClaimed {
-        session: String,
-        claimed: bool,
-        claim_ms: u64,
-        /// Of the time above, how long it waited for a database connection.
-        #[serde(default)]
-        pool_wait_ms: u64,
-    },
-    TurnPrepared {
-        session: String,
-        turn: String,
-        prepare_ms: u64,
-        history_ms: u64,
-        /// Of the history time, how long it waited for a database connection.
-        #[serde(default)]
-        pool_wait_ms: u64,
-    },
-    TurnCommitted {
-        session: String,
-        turn: String,
-        commit_ms: u64,
-    },
-    RunnerSample {
-        running: usize,
-        pool_size: u32,
-        pool_idle: usize,
-        sweep_ms: u64,
-        woken: usize,
-    },
 }
 
 impl EventKind {
@@ -253,12 +203,4 @@ pub fn live_excerpt(text: &str, limit: usize) -> String {
     text.char_indices()
         .nth(limit)
         .map_or_else(|| text.to_owned(), |(end, _)| text[..end].to_owned())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WakeSource {
-    Notify,
-    Sweep,
-    Direct,
 }

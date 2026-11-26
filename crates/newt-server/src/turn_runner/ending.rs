@@ -1,9 +1,9 @@
 use super::retry_later;
 use crate::backend::{Backend, Prepared, SessionState, TurnEvent, TurnState};
 use crate::counters::Counter;
+use crate::events::ServerEventKind;
 use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{CommitError, Lease, PendingEvent, TurnCommit};
-use newt_core::event::EventKind;
 use newt_core::message::Message;
 use newt_core::provider::{Model, ProviderError};
 use newt_core::turn::TurnError;
@@ -172,7 +172,7 @@ pub(super) async fn finish_turn<B: Backend, M: Model>(
             .await;
         match commit {
             Ok(()) => {
-                inner.emit(EventKind::TurnCommitted {
+                inner.emit(ServerEventKind::TurnCommitted {
                     session: format!("{}/{}", lease.agent, lease.key),
                     turn: turn_id.clone(),
                     commit_ms: elapsed_ms(committing),

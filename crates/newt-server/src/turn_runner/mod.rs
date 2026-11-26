@@ -5,6 +5,7 @@ use std::panic::AssertUnwindSafe;
 
 use crate::backend::Backend;
 use crate::counters::Counter;
+use crate::events::ServerEventKind;
 use crate::journal::TurnJournal;
 use crate::live::{Channel, Watch};
 use crate::runner::{Inner, elapsed_ms};
@@ -15,7 +16,6 @@ use crate::store::live_topic;
 use crate::turn_start::NextTurn;
 use ending::{Ending, finish_turn};
 use futures_util::FutureExt;
-use newt_core::event::EventKind;
 use newt_core::journal::{Journal, JournalEntry};
 use newt_core::provider::Model;
 use newt_core::turn::{TurnDeps, TurnInput, run_turn};
@@ -30,7 +30,7 @@ pub(crate) async fn run_session<B: Backend, M: Model>(
     let started = std::time::Instant::now();
     let changes = inbox_watch(inner, agent, key);
     let (claimed, pool_wait_ms) = inner.store.claim(agent, key, &inner.owner, ttl).await?;
-    inner.emit(EventKind::SessionClaimed {
+    inner.emit(ServerEventKind::SessionClaimed {
         session: format!("{agent}/{key}"),
         claimed: claimed.is_some(),
         claim_ms: elapsed_ms(started),
