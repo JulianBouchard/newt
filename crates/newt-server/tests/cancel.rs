@@ -201,11 +201,12 @@ async fn cancelling_a_running_turn_fails_it_as_cancelled_and_does_not_retry_it(p
     node.send("e1").await;
     node.until("the turn to start", || node.model.calls_started() == 1)
         .await;
+    let turn = running_turn(&pool).await;
 
     let cancelled = node.cancel(&json!({})).await;
     assert_eq!(cancelled.status(), 202);
     let accepted: Value = cancelled.json().await.unwrap();
-    assert_eq!(accepted["turn"], running_turn(&pool).await);
+    assert_eq!(accepted["turn"], turn);
 
     let failed = node.frame_of_type("turn_failed").await;
     assert_eq!(failed["reason"], "cancelled");
@@ -306,7 +307,8 @@ async fn a_request_whose_notification_was_lost_is_found_at_the_next_heartbeat(po
 
     let failed = node.frame_of_type("turn_failed").await;
     assert_eq!(failed["reason"], "cancelled");
-    assert_eq!(node.cancelled(), 1);
+    node.until("the cancel to be counted", || node.cancelled() == 1)
+        .await;
     node.stop().await;
 }
 
