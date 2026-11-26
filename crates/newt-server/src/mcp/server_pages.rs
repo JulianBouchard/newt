@@ -75,7 +75,11 @@ impl PageSource for ServerPages {
             )?;
             Ok(Listing {
                 pages,
-                templates: Vec::new(),
+                templates: self
+                    .servers
+                    .iter()
+                    .flat_map(|server| server.templates())
+                    .collect(),
             })
         })
     }

@@ -12,6 +12,7 @@ mod pages;
 mod props;
 mod server_pages;
 mod skills;
+mod templates;
 mod tools;
 mod toolset;
 

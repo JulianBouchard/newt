@@ -17,10 +17,10 @@ use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::mcp::McpHost;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, CustomRequest,
-    CustomResult, JsonObject, ListResourcesResult, ListToolsResult, MetaObject,
-    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-    RequestMetaObject, Resource, ResourceContents, ServerCapabilities, ServerConfig,
-    SubscriptionFilter, Tool,
+    CustomResult, JsonObject, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+    MetaObject, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, RequestMetaObject, Resource, ResourceContents, ResourceTemplate,
+    ServerCapabilities, ServerConfig, SubscriptionFilter, Tool,
 };
 use rmcp::service::{RequestContext, SubscriptionContext, SubscriptionSink};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -53,6 +53,7 @@ struct App {
     result_meta: Option<Value>,
     listings: Arc<AtomicUsize>,
     links: Vec<&'static str>,
+    templates: Vec<(&'static str, &'static str)>,
 }
 
 impl App {
@@ -263,6 +264,19 @@ impl ServerHandler for App {
             })
             .collect();
         Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        Ok(ListResourceTemplatesResult::with_all_items(
+            self.templates
+                .iter()
+                .map(|(name, uri)| ResourceTemplate::new(*uri, *name))
+                .collect(),
+        ))
     }
 
     async fn read_resource(
@@ -1076,4 +1090,33 @@ async fn a_page_a_tool_result_links_to_is_read_ahead_from_its_servers_listing() 
     };
     eventually(|| reads() == 1).await;
     assert_eq!(prepared.workspace.pages_read(), Vec::new());
+}
+
+#[tokio::test]
+async fn a_path_a_resource_template_serves_is_read_by_its_filled_uri_without_being_listed() {
+    let mut app = App::home();
+    app.templates = vec![("orders/{id}.md", "orders://{id}")];
+    app.set("orders://17", "Order 17: shipped\n");
+    let backend = backend(app.clone()).await;
+    let prepared = prepare(&backend, "ana").await;
+    let index = prepared.workspace.index().await.unwrap();
+    assert_eq!(index.templates.len(), 1);
+    assert_eq!(index.templates[0].path, "orders/{id}.md");
+    assert!(
+        index
+            .pages
+            .iter()
+            .all(|page| !page.path.starts_with("orders/"))
+    );
+    assert_eq!(
+        prepared
+            .workspace
+            .read("orders/17.md")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("Order 17: shipped\n")
+    );
+    assert!(prepared.workspace.read("orders/18.md").await.is_err());
+    assert_eq!(prepared.workspace.read("roles/1.md").await.unwrap(), None);
 }

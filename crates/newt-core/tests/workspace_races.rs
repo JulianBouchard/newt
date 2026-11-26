@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use newt_core::workspace::{
-    Listed, Listing, ListingFuture, Page, PageFuture, PageKey, PageSource, Workspace,
+    Listed, Listing, ListingFuture, Page, PageFuture, PageKey, PageSource, Template, Workspace,
 };
 
 #[derive(Default)]
 struct Gated {
     pages: Mutex<BTreeMap<String, String>>,
+    templates: Mutex<Vec<Template>>,
     lists: AtomicUsize,
     reads: AtomicUsize,
     fail_list: AtomicBool,
@@ -53,7 +54,7 @@ impl PageSource for Source {
                     .into_iter()
                     .map(|path| Listed::new(vec![path.clone()], path))
                     .collect(),
-                templates: Vec::new(),
+                templates: gated.templates.lock().unwrap().clone(),
             })
         })
     }
@@ -188,4 +189,19 @@ async fn readers_waiting_on_a_failed_page_read_all_get_its_error_without_reading
         1,
         "one failed read, one call"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_template_path_its_source_does_not_return_reads_as_missing_once() {
+    let gated = Arc::new(Gated::default());
+    gated.templates.lock().unwrap().push(Template {
+        path: "orders/{id}.md".to_owned(),
+        description: None,
+        key: vec!["orders".to_owned()],
+    });
+    let workspace = Workspace::loading(Arc::new(Source(Arc::clone(&gated))));
+    let reading = tokio::spawn(async move { workspace.read("orders/1.md").await });
+    let read = tokio::time::timeout(Duration::from_secs(5), reading).await;
+    assert_eq!(read.unwrap().unwrap().unwrap(), None);
+    assert_eq!(gated.reads.load(Ordering::SeqCst), 1);
 }

@@ -7,15 +7,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures_util::future::try_join_all;
-use newt_core::workspace::{Invalidator, Listed, Page, PageKey};
+use newt_core::workspace::{Invalidator, Listed, Page, PageKey, Template};
 use rmcp::model::{
-    PaginatedRequestParams, ReadResourceRequestParams, RequestMetaObject, ResourceContents,
-    ServerNotification, SubscriptionFilter, sha256_digest,
+    PaginatedRequestParams, ReadResourceRequestParams, RequestMetaObject, Resource,
+    ResourceContents, ServerNotification, SubscriptionFilter, sha256_digest,
 };
 use serde_json::Value;
 use tokio::sync::watch;
 
 use super::server_pages::{check_entries, check_pages};
+use super::templates::Served;
 use super::{Client, META_SESSION, META_STATE, META_STATE_PATCH, Owner, meta_field};
 use crate::backend::SessionState;
 
@@ -36,6 +37,7 @@ pub(super) struct McpPages {
     listed: watch::Sender<Arc<Vec<Known>>>,
     relisting: tokio::sync::Mutex<()>,
     listings: std::sync::atomic::AtomicU64,
+    templates: std::sync::Mutex<Arc<Vec<Served>>>,
 }
 
 /// A resource as the last listing named it.
@@ -76,6 +78,7 @@ impl McpPages {
             listed: watch::Sender::new(Arc::new(Vec::new())),
             relisting: tokio::sync::Mutex::new(()),
             listings: std::sync::atomic::AtomicU64::new(0),
+            templates: std::sync::Mutex::new(Arc::new(Vec::new())),
         }
     }
 
@@ -94,6 +97,46 @@ impl McpPages {
     }
 
     async fn list(&self) -> Result<Vec<Known>, String> {
+        let (listed, templates) = tokio::join!(self.list_resources(), self.list_templates());
+        let listed = listed?;
+        let uris: Vec<Known> = listed
+            .into_iter()
+            .map(|(resource, key)| Known {
+                listed: Listed {
+                    path: self.owner.path(&resource.name),
+                    key,
+                    size: resource.size,
+                    description: resource.description,
+                    priority: resource
+                        .annotations
+                        .as_ref()
+                        .and_then(|annotations| annotations.priority),
+                },
+                uri: resource.uri,
+            })
+            .collect();
+        self.listings
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        check_entries(
+            uris.iter()
+                .map(|known| (known.listed.path.as_str(), &known.listed.key)),
+        )
+        .map_err(|error| format!("MCP server `{}`: {error}", self.server))?;
+        self.listed.send_if_modified(|current| {
+            let changed = **current != uris;
+            if changed {
+                *current = Arc::new(uris.clone());
+            }
+            changed
+        });
+        *self
+            .templates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(templates);
+        Ok(uris)
+    }
+
+    async fn list_resources(&self) -> Result<Vec<(Resource, PageKey)>, String> {
         let mut listed = Vec::new();
         let mut cursor = None;
         loop {
@@ -140,37 +183,51 @@ impl McpPages {
                 break;
             }
         }
-        let uris: Vec<Known> = listed
-            .into_iter()
-            .map(|(resource, key)| Known {
-                listed: Listed {
-                    path: self.owner.path(&resource.name),
-                    key,
-                    size: resource.size,
-                    description: resource.description,
-                    priority: resource
-                        .annotations
-                        .as_ref()
-                        .and_then(|annotations| annotations.priority),
-                },
-                uri: resource.uri,
-            })
-            .collect();
-        self.listings
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        check_entries(
-            uris.iter()
-                .map(|known| (known.listed.path.as_str(), &known.listed.key)),
-        )
-        .map_err(|error| format!("MCP server `{}`: {error}", self.server))?;
-        self.listed.send_if_modified(|current| {
-            let changed = **current != uris;
-            if changed {
-                *current = Arc::new(uris.clone());
+        Ok(listed)
+    }
+
+    /// The resource templates newt can serve. A server that lists none, or
+    /// cannot list them, serves only its listed pages.
+    async fn list_templates(&self) -> Vec<Served> {
+        let mut served = Vec::new();
+        let mut cursor = None;
+        loop {
+            let mut params = PaginatedRequestParams::default().with_cursor(cursor);
+            params.meta = self.meta();
+            let page = match self.client.list_resource_templates(Some(params)).await {
+                Ok(page) => page,
+                Err(error) => {
+                    tracing::debug!(server = %self.server, %error, "MCP server lists no resource templates");
+                    return served;
+                }
+            };
+            served.extend(
+                page.resource_templates
+                    .into_iter()
+                    .filter_map(|listed| Served::new(listed, &self.owner, &self.server)),
+            );
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                return served;
             }
-            changed
-        });
-        Ok(uris)
+        }
+    }
+
+    /// The templates the last listing that worked gave.
+    pub(super) fn templates(&self) -> Vec<Template> {
+        self.served()
+            .iter()
+            .map(|served| served.template.clone())
+            .collect()
+    }
+
+    fn served(&self) -> Arc<Vec<Served>> {
+        Arc::clone(
+            &self
+                .templates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     async fn read(&self, known: &Known) -> Result<Option<Page>, String> {
@@ -311,6 +368,12 @@ impl McpPages {
     /// lists again first, once for every caller waiting, when one of them is
     /// not known yet.
     pub(super) async fn read_owned(&self, keys: &[PageKey]) -> Result<Vec<Page>, String> {
+        let (templated, keys) = super::templates::split(&self.served(), keys);
+        let templated: Vec<Known> = templated
+            .into_iter()
+            .map(|(listed, uri)| Known { uri, listed })
+            .collect();
+        let keys = keys.as_slice();
         let unknown = |known: &[Known]| {
             keys.iter()
                 .any(|key| !known.iter().any(|resource| &resource.listed.key == key))
@@ -326,7 +389,8 @@ impl McpPages {
         }
         let wanted = known
             .iter()
-            .filter(|resource| keys.contains(&resource.listed.key));
+            .filter(|resource| keys.contains(&resource.listed.key))
+            .chain(&templated);
         let pages = try_join_all(wanted.map(|resource| self.read(resource))).await?;
         let pages: Vec<Page> = pages.into_iter().flatten().collect();
         check_pages(&pages).map_err(|error| format!("MCP server `{}`: {error}", self.server))?;

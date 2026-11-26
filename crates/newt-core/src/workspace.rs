@@ -10,6 +10,7 @@ mod listing;
 mod preload;
 mod refresh;
 mod search;
+mod template;
 
 pub use listing::Index;
 use refresh::Claimed;
@@ -48,11 +49,13 @@ impl Listed {
     }
 }
 
-/// A collection a source serves by pattern, such as `roles/{id}`.
+/// A collection a source serves by pattern, such as `roles/{id}`: each
+/// path it matches is a page, keyed by `key` and the path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Template {
     pub path: String,
     pub description: Option<String>,
+    pub key: PageKey,
 }
 
 /// What a source lists: its pages and its collections, no contents.
@@ -320,6 +323,7 @@ impl Workspace {
     /// Waits only for this page, never for the rest of the workspace.
     pub async fn read(&self, path: &str) -> Result<Option<String>, WorkspaceError> {
         self.listed().await?;
+        self.lock().list_from_template(path);
         loop {
             let next = {
                 let mut state = self.lock();
@@ -347,25 +351,6 @@ impl Workspace {
                 Next::Fetch(claimed) => self.fetch_claimed(&claimed).await?,
             }
         }
-    }
-
-    /// Takes pages a tool result carried as fresh, and lists them.
-    pub fn put(&self, pages: Vec<Page>) -> Vec<String> {
-        let mut state = self.lock();
-        pages
-            .into_iter()
-            .map(|page| {
-                let path = page.path.clone();
-                state.touch(&path);
-                state.stale.remove(&path);
-                state
-                    .index
-                    .entry(path.clone())
-                    .or_insert_with(|| Listed::new(page.key.clone(), path.clone()));
-                state.pages.insert(path.clone(), page);
-                path
-            })
-            .collect()
     }
 
     /// Marks every page whose key starts with one of `prefixes` stale,

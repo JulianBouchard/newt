@@ -3,7 +3,7 @@ use std::sync::Arc;
 use futures_util::future::join_all;
 use tokio::sync::Notify;
 
-use super::{Claim, Listed, PageKey, State, Workspace, WorkspaceError};
+use super::{Claim, Listed, Page, PageKey, State, Workspace, WorkspaceError};
 
 impl Workspace {
     /// Refetches, in the background, the stale pages the turn has read.
@@ -72,6 +72,25 @@ impl Workspace {
                 return Err(WorkspaceError::Refresh(failures.join("; ")));
             }
         }
+    }
+
+    /// Takes pages a tool result carried as fresh, and lists them.
+    pub fn put(&self, pages: Vec<Page>) -> Vec<String> {
+        let mut state = self.lock();
+        pages
+            .into_iter()
+            .map(|page| {
+                let path = page.path.clone();
+                state.touch(&path);
+                state.stale.remove(&path);
+                state
+                    .index
+                    .entry(path.clone())
+                    .or_insert_with(|| Listed::new(page.key.clone(), path.clone()));
+                state.pages.insert(path.clone(), page);
+                path
+            })
+            .collect()
     }
 
     /// The error of the fetch numbered `claim` when it failed this page.
