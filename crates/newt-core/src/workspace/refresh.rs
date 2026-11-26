@@ -47,10 +47,10 @@ impl Workspace {
                 let mut free = Vec::new();
                 for path in outdated {
                     match state.in_flight.get(&path) {
-                        Some(notify) => {
+                        Some((notify, claim)) => {
                             let mut waiting = Box::pin(Arc::clone(notify).notified_owned());
                             waiting.as_mut().enable();
-                            waits.push(waiting);
+                            waits.push((waiting, path.clone(), *claim));
                         }
                         None => free.push(path),
                     }
@@ -63,24 +63,42 @@ impl Workspace {
             if !claimed.claims.is_empty() {
                 self.fetch_claimed(&claimed).await?;
             }
-            for waiting in waits {
+            let mut failures = Vec::new();
+            for (waiting, path, claim) in waits {
                 waiting.await;
+                failures.extend(self.failure_of(&path, claim));
+            }
+            if !failures.is_empty() {
+                return Err(WorkspaceError::Refresh(failures.join("; ")));
             }
         }
     }
 
+    /// The error of the fetch numbered `claim` when it failed this page.
+    pub(super) fn failure_of(&self, path: &str, claim: u64) -> Option<String> {
+        self.lock()
+            .failed
+            .get(path)
+            .filter(|(failed, _)| *failed == claim)
+            .map(|(_, error)| format!("{path}: {error}"))
+    }
+
     pub(super) fn claim(state: &mut State, paths: impl Iterator<Item = String>) -> Claimed {
         let notify = Arc::new(Notify::new());
+        state.claims += 1;
+        let id = state.claims;
         let claims = paths
             .map(|path| {
-                state.in_flight.insert(path.clone(), Arc::clone(&notify));
+                state
+                    .in_flight
+                    .insert(path.clone(), (Arc::clone(&notify), id));
                 Claim {
                     generation: state.generation_of(&path),
                     path,
                 }
             })
             .collect();
-        Claimed { claims, notify }
+        Claimed { claims, notify, id }
     }
 
     /// Fetches the claimed pages one by one, so a page that fails leaves
@@ -114,9 +132,13 @@ impl Workspace {
         let mut failures = Vec::new();
         for (claim, read) in claimed.claims.iter().zip(reads) {
             let pages = match read {
-                Ok(pages) => pages,
+                Ok(pages) => {
+                    state.failed.remove(&claim.path);
+                    pages
+                }
                 Err(error) => {
                     failures.push(format!("{}: {error}", claim.path));
+                    state.failed.insert(claim.path.clone(), (claimed.id, error));
                     continue;
                 }
             };
@@ -150,6 +172,7 @@ impl Workspace {
 pub(super) struct Claimed {
     claims: Vec<Claim>,
     notify: Arc<Notify>,
+    id: u64,
 }
 
 struct Release<'a> {
@@ -164,7 +187,7 @@ impl Drop for Release<'_> {
             if state
                 .in_flight
                 .get(&claim.path)
-                .is_some_and(|notify| Arc::ptr_eq(notify, &self.claimed.notify))
+                .is_some_and(|(notify, _)| Arc::ptr_eq(notify, &self.claimed.notify))
             {
                 state.in_flight.remove(&claim.path);
             }

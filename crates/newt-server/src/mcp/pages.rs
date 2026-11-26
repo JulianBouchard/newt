@@ -35,6 +35,7 @@ pub(super) struct McpPages {
     folders: Arc<HashSet<String>>,
     listed: watch::Sender<Arc<Vec<Known>>>,
     relisting: tokio::sync::Mutex<()>,
+    listings: std::sync::atomic::AtomicU64,
 }
 
 /// A resource as the last listing named it.
@@ -74,6 +75,7 @@ impl McpPages {
             folders,
             listed: watch::Sender::new(Arc::new(Vec::new())),
             relisting: tokio::sync::Mutex::new(()),
+            listings: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -154,6 +156,8 @@ impl McpPages {
                 uri: resource.uri,
             })
             .collect();
+        self.listings
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         check_entries(
             uris.iter()
                 .map(|known| (known.listed.path.as_str(), &known.listed.key)),
@@ -313,12 +317,12 @@ impl McpPages {
         };
         let mut known = Arc::clone(&self.listed.borrow());
         if unknown(&known) {
+            let seen = self.listings.load(std::sync::atomic::Ordering::SeqCst);
             let _relisting = self.relisting.lock().await;
-            known = Arc::clone(&self.listed.borrow());
-            if unknown(&known) {
+            if self.listings.load(std::sync::atomic::Ordering::SeqCst) == seen {
                 self.list().await?;
-                known = Arc::clone(&self.listed.borrow());
             }
+            known = Arc::clone(&self.listed.borrow());
         }
         let wanted = known
             .iter()

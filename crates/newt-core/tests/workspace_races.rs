@@ -15,6 +15,7 @@ struct Gated {
     lists: AtomicUsize,
     reads: AtomicUsize,
     fail_list: AtomicBool,
+    fail_reads: AtomicBool,
     hold_lists: AtomicBool,
     hold_reads: AtomicBool,
     gate: tokio::sync::Notify,
@@ -63,6 +64,9 @@ impl PageSource for Source {
             gated.reads.fetch_add(1, Ordering::SeqCst);
             let snapshot = gated.pages.lock().unwrap().clone();
             gated.hold(&gated.hold_reads).await;
+            if gated.fail_reads.load(Ordering::SeqCst) {
+                return Err("the route timed out".to_owned());
+            }
             Ok(snapshot
                 .into_iter()
                 .filter(|(path, _)| keys.contains(&vec![path.clone()]))
@@ -144,13 +148,44 @@ async fn readers_waiting_on_a_failed_listing_all_get_its_error_without_listing_a
         })
         .collect();
     tokio::time::sleep(Duration::from_millis(20)).await;
+    gated.hold_lists.store(false, Ordering::SeqCst);
     gated.gate.notify_one();
     for read in reads {
-        assert!(read.await.unwrap().is_err());
+        let read = tokio::time::timeout(Duration::from_secs(5), read).await;
+        assert!(read.unwrap().unwrap().is_err());
     }
     assert_eq!(
         gated.lists.load(Ordering::SeqCst),
         1,
         "one failed listing, one call"
+    );
+}
+
+#[tokio::test]
+async fn readers_waiting_on_a_failed_page_read_all_get_its_error_without_reading_again() {
+    let gated = Arc::new(Gated::default());
+    gated.set("a.md", "a");
+    let workspace = Workspace::loading(Arc::new(Source(Arc::clone(&gated))));
+    workspace.glob("**").await.unwrap();
+    gated.fail_reads.store(true, Ordering::SeqCst);
+    gated.hold_reads.store(true, Ordering::SeqCst);
+    let reads: Vec<_> = (0..5)
+        .map(|_| {
+            let workspace = workspace.clone();
+            tokio::spawn(async move { workspace.read("a.md").await })
+        })
+        .collect();
+    until(&gated.reads, 1).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    gated.hold_reads.store(false, Ordering::SeqCst);
+    gated.gate.notify_one();
+    for read in reads {
+        let read = tokio::time::timeout(Duration::from_secs(5), read).await;
+        assert!(read.unwrap().unwrap().is_err());
+    }
+    assert_eq!(
+        gated.reads.load(Ordering::SeqCst),
+        1,
+        "one failed read, one call"
     );
 }

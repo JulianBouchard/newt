@@ -93,7 +93,9 @@ struct State {
     list_failure: Option<(u64, String)>,
     listing: Option<Arc<Notify>>,
     stale: HashSet<String>,
-    in_flight: HashMap<String, Arc<Notify>>,
+    in_flight: HashMap<String, (Arc<Notify>, u64)>,
+    claims: u64,
+    failed: HashMap<String, (u64, String)>,
     read: HashSet<String>,
     generation: HashMap<String, u64>,
     clock: u64,
@@ -201,7 +203,7 @@ pub fn key_starts_with(key: &[String], prefix: &[String]) -> bool {
 
 enum Next {
     Done(Option<String>),
-    Wait(Pin<Box<tokio::sync::futures::OwnedNotified>>),
+    Wait(Pin<Box<tokio::sync::futures::OwnedNotified>>, u64),
     Fetch(Claimed),
 }
 
@@ -320,10 +322,10 @@ impl Workspace {
         loop {
             let next = {
                 let mut state = self.lock();
-                if let Some(notify) = state.in_flight.get(path) {
+                if let Some((notify, claim)) = state.in_flight.get(path) {
                     let mut waiting = Box::pin(Arc::clone(notify).notified_owned());
                     waiting.as_mut().enable();
-                    Next::Wait(waiting)
+                    Next::Wait(waiting, *claim)
                 } else if state.needs_fetch(path) {
                     Next::Fetch(Self::claim(&mut state, std::iter::once(path.to_owned())))
                 } else {
@@ -335,7 +337,12 @@ impl Workspace {
             };
             match next {
                 Next::Done(content) => return Ok(content),
-                Next::Wait(waiting) => waiting.await,
+                Next::Wait(waiting, claim) => {
+                    waiting.await;
+                    if let Some(error) = self.failure_of(path, claim) {
+                        return Err(WorkspaceError::Refresh(error));
+                    }
+                }
                 Next::Fetch(claimed) => self.fetch_claimed(&claimed).await?,
             }
         }
@@ -385,6 +392,7 @@ impl Workspace {
             state.touch(path);
             state.stale.insert(path.clone());
         }
+        matched.retain(|path| state.pages.contains_key(path) || state.in_flight.contains_key(path));
         matched
     }
 }
