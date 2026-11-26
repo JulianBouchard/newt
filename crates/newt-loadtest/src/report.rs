@@ -97,9 +97,11 @@ pub fn render(
     );
     let _ = writeln!(
         out,
-        "tools: {} MCP calls, {} sends",
+        "tools: {} MCP calls, {} sends\npages: {} resource lists, {} resource reads",
         delta(app.0, app.1, "tool_calls"),
-        delta(app.0, app.1, "sends")
+        delta(app.0, app.1, "sends"),
+        delta(app.0, app.1, "resource_lists"),
+        delta(app.0, app.1, "resource_reads")
     );
     let mut reasons: Vec<&str> = samples
         .iter()
