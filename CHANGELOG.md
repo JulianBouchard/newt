@@ -4,6 +4,15 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-26
+
+newt-core now holds only the turn loop: tracing is its own crate and the server's own concerns live in the server. The `newt` binary, its config, the event log and the journal are unchanged. Two fixes for several instances sharing one Postgres.
+
+### Fixed
+
+- **A cancelled turn's events can no longer be answered by another instance.** A cancelled turn without effects released its session before it dead-lettered its events, so for a moment another instance could claim the session and run them again. The late dead-letter then marked those events consumed under the new owner's running turn and deleted its journal, so a crash in that turn could not be resumed. Dead-lettering now happens while the turn still holds the session, checks the lease, and releases the session in the same transaction.
+- **Library users of the OTLP exporter: an unfinished turn is exported after 30 minutes even if no other event arrives.** Eviction ran only when an event came in; it now runs on its own one-minute timer. The server always had events arriving, so its traces are unchanged.
+
 ### Changed
 
 - **OTLP export is its own crate, `newt-otlp`.** For Rust users of the library: `newt_core::otlp` is now `newt_otlp`, and `tool_traceparent` with the other trace and span ids is `newt_core::trace`. The `newt` binary, its config and the traces it exports are unchanged.
