@@ -24,7 +24,7 @@ Add up to three fields to a tool's `_meta` in `tools/list`:
   - `durable` for writes to your own system. The call is kept with a short summary. This is the default.
   - `outward` for anything that reaches outside your system, like a message, an email or a payment. Kept like `durable`, and sent exactly once.
 - `newt/invalidates` lists the page keys every successful call changes.
-- `newt/idempotent` has to be `true` on an `outward` tool, or newt won't load the tools at all.
+- `newt/idempotent` says your handler does nothing new when it sees a key twice. It has to be `true` on an `outward` tool, or newt won't load the tools at all. On a `durable` tool it's optional: if newt crashes while the tool runs, newt runs it again with the same key. Without it, newt tells the model the call was interrupted and may or may not have taken effect, and the model checks before it tries again.
 
 [How newt works](../design/#what-a-turn-keeps-in-history) explains why history works this way. Tools from a plain MCP server are all `durable` and change no pages.
 

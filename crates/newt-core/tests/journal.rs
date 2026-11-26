@@ -77,6 +77,7 @@ impl ToolHost for Host {
 struct Recorder {
     entries: Mutex<Vec<JournalEntry>>,
     waits: AtomicUsize,
+    flushes: AtomicUsize,
 }
 
 impl Journal for Recorder {
@@ -91,6 +92,13 @@ impl Journal for Recorder {
         self.waits.fetch_add(1, Ordering::Relaxed);
         self.entries.lock().unwrap().push(entry);
         std::future::ready(Ok(()))
+    }
+
+    fn flush_relaxed(&self) -> impl Future<Output = Result<(), JournalError>> + Send {
+        std::future::poll_fn(|_| {
+            self.flushes.fetch_add(1, Ordering::Relaxed);
+            std::task::Poll::Ready(Ok(()))
+        })
     }
 }
 
@@ -137,6 +145,7 @@ fn tools() -> Vec<ToolDef> {
         retention,
         invalidates: Vec::new(),
         ends_turn: false,
+        idempotent: retention == Retention::Outward,
     };
     vec![
         tool("save_note", Retention::Durable),
@@ -202,7 +211,7 @@ fn kind(entry: &JournalEntry) -> String {
 }
 
 #[tokio::test]
-async fn a_turn_records_responses_outputs_and_waits_only_on_outward_intents() {
+async fn a_turn_waits_for_the_journal_once_per_step_that_writes_and_before_each_outward_call() {
     let model = Scripted {
         script: Mutex::new(script().into()),
         calls: AtomicUsize::new(0),
@@ -217,6 +226,7 @@ async fn a_turn_records_responses_outputs_and_waits_only_on_outward_intents() {
         vec!["model:0", "output:w1", "model:1", "intent:s1", "output:s1"]
     );
     assert_eq!(journal.waits.load(Ordering::Relaxed), 1);
+    assert_eq!(journal.flushes.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -249,4 +259,59 @@ async fn a_resumed_turn_replays_and_resends_only_the_unfinished_outward_call() {
         "the resend re-checks the lease with one fenced journal write"
     );
     assert_eq!(resumed.committed, completed.committed);
+}
+
+#[tokio::test]
+async fn a_resumed_turn_reports_a_started_write_as_interrupted_instead_of_running_it() {
+    let first_model = Scripted {
+        script: Mutex::new(script().into()),
+        calls: AtomicUsize::new(0),
+    };
+    let first_journal = Recorder::default();
+    run(&first_model, &Host::default(), &first_journal, Vec::new()).await;
+    let crashed: Vec<JournalEntry> = first_journal.entries.lock().unwrap()[..1].to_vec();
+
+    let model = Scripted {
+        script: Mutex::new(script()[1..].to_vec().into()),
+        calls: AtomicUsize::new(0),
+    };
+    let host = Host::default();
+    let resumed = run(&model, &host, &Recorder::default(), crashed).await;
+
+    let names: Vec<String> = host
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert_eq!(names, vec!["send_message".to_owned()]);
+    let interrupted = resumed.committed.iter().flat_map(|message| &message.parts).any(|part| {
+        matches!(part, Part::ToolResult(result) if result.call_id == "w1" && result.is_error && result.content.starts_with("Interrupted:"))
+    });
+    assert!(interrupted, "the model is told the write may have happened");
+}
+
+#[tokio::test]
+async fn a_resumed_turn_runs_a_write_whose_response_was_never_journaled() {
+    let model = Scripted {
+        script: Mutex::new(script().into()),
+        calls: AtomicUsize::new(0),
+    };
+    let host = Host::default();
+    run(&model, &host, &Recorder::default(), Vec::new()).await;
+
+    assert_eq!(
+        model.calls.load(Ordering::Relaxed),
+        2,
+        "the model is asked again"
+    );
+
+    assert_eq!(
+        *host.calls.lock().unwrap(),
+        vec![
+            ("save_note".to_owned(), "customer-1:turn-9:w1".to_owned()),
+            ("send_message".to_owned(), "customer-1:turn-9:s1".to_owned())
+        ]
+    );
 }

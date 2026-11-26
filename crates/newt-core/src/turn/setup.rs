@@ -40,6 +40,7 @@ pub(super) struct ToolTable {
     pub(super) retention: HashMap<String, Retention>,
     pub(super) invalidates: HashMap<String, Vec<PageKey>>,
     pub(super) ends_turn: HashSet<String>,
+    pub(super) idempotent: HashSet<String>,
 }
 
 pub(super) fn offered_skills(skills: &[Skill], builtin: BuiltinTools) -> &[Skill] {
@@ -68,6 +69,7 @@ pub(super) fn tool_table(
     let mut retention = HashMap::new();
     let mut invalidates = HashMap::new();
     let mut ends_turn = HashSet::new();
+    let mut idempotent = HashSet::new();
     for tool in &tools {
         if retention
             .insert(tool.spec.name.clone(), tool.retention)
@@ -80,6 +82,9 @@ pub(super) fn tool_table(
         }
         if tool.ends_turn {
             ends_turn.insert(tool.spec.name.clone());
+        }
+        if tool.idempotent {
+            idempotent.insert(tool.spec.name.clone());
         }
     }
     let specs = tools
@@ -97,5 +102,6 @@ pub(super) fn tool_table(
         retention,
         invalidates,
         ends_turn,
+        idempotent,
     })
 }

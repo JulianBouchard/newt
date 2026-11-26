@@ -95,6 +95,7 @@ impl Backend for Provider {
                 retention: Retention::Outward,
                 invalidates: Vec::new(),
                 ends_turn: false,
+                idempotent: true,
             }],
             context: None,
             skills: Vec::new(),

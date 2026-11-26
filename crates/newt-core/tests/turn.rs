@@ -156,6 +156,7 @@ fn external_tools() -> Vec<ToolDef> {
         retention,
         invalidates: Vec::new(),
         ends_turn: false,
+        idempotent: retention == Retention::Outward,
     };
     let ending = |name: &str, retention| ToolDef {
         ends_turn: true,

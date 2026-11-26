@@ -18,6 +18,7 @@ pub(super) const OUTWARD_CANCELLED: &str =
 const CHECKPOINT_OUTSIDE: &str = "Only call checkpoint when newt asks you to compact.";
 const CHECKPOINT_ALONE: &str =
     "Call checkpoint on its own, after your saves have succeeded, not alongside other calls.";
+const INTERRUPTED: &str = "Interrupted: newt stopped while this call was running, so it may or may not have taken effect. Check the current state before calling it again.";
 const NO_SENDS_WHILE_COMPACTING: &str = "Not run: nothing is sent while compacting.";
 const END_TURN_WHILE_COMPACTING: &str = "Compaction ends with checkpoint, not end_turn.";
 
@@ -121,6 +122,11 @@ pub(super) fn plan_calls(
                     Plan::Done(failure(NO_SENDS_WHILE_COMPACTING), 0)
                 }
                 Some(Retention::Outward) => Plan::Outward,
+                Some(Retention::Durable)
+                    if replay.started(&call.id) && !context.idempotent.contains(&call.name) =>
+                {
+                    Plan::Done(failure(INTERRUPTED), 0)
+                }
                 _ => Plan::Concurrent,
             }
         })

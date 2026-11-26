@@ -30,8 +30,33 @@ enum Crash {
     AfterEffect,
 }
 
+/// The tool the turn calls: an outward send, or a durable write whose handler
+/// does or doesn't dedupe on the idempotency key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Tool {
+    #[default]
+    Send,
+    Write {
+        idempotent: bool,
+    },
+}
+
+impl Tool {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Send => "send_message",
+            Self::Write { .. } => "save_note",
+        }
+    }
+
+    fn dedupes(self) -> bool {
+        self != Self::Write { idempotent: false }
+    }
+}
+
 #[derive(Default)]
 struct World {
+    tool: Tool,
     effects: Mutex<HashMap<String, usize>>,
     keys: Mutex<Vec<String>>,
     crash: Mutex<Option<Crash>>,
@@ -40,7 +65,7 @@ struct World {
 impl World {
     fn send(&self, key: &str) -> ToolOutput {
         self.keys.lock().unwrap().push(key.to_owned());
-        if self.effects.lock().unwrap().contains_key(key) {
+        if self.tool.dedupes() && self.effects.lock().unwrap().contains_key(key) {
             return ToolOutput {
                 content: "already sent".into(),
                 is_error: false,
@@ -99,13 +124,17 @@ impl Backend for WorldBackend {
             system: "You are a helpful agent.".into(),
             tools: vec![ToolDef {
                 spec: ToolSpec {
-                    name: "send_message".into(),
-                    description: "Send a message.".into(),
+                    name: self.0.tool.name().into(),
+                    description: "Do it.".into(),
                     input_schema: json!({ "type": "object" }),
                 },
-                retention: Retention::Outward,
+                retention: match self.0.tool {
+                    Tool::Send => Retention::Outward,
+                    Tool::Write { .. } => Retention::Durable,
+                },
                 invalidates: Vec::new(),
                 ends_turn: false,
+                idempotent: self.0.tool.dedupes(),
             }],
             context: None,
             skills: Vec::new(),
@@ -206,7 +235,19 @@ async fn until(what: &str, check: impl AsyncFn() -> bool) {
     }
 }
 
-async fn crash_then_recover(pool: PgPool, crash: Crash) {
+struct Recovered {
+    effects: usize,
+    keys: Vec<String>,
+    model_calls_before: usize,
+    model_calls_after: usize,
+    history_entries: i64,
+    journal_rows: i64,
+    results: Vec<String>,
+}
+
+/// Runs one turn that calls `tool` once, crashes it at `crash`, and lets a
+/// second runner recover the session.
+async fn crash_then_recover(pool: PgPool, tool: Tool, crash: Crash) -> Recovered {
     let store = Store::new(pool.clone());
     let event: InboundEvent =
         serde_json::from_value(json!({ "id": "e1", "text": "Tell them yes." })).unwrap();
@@ -214,7 +255,10 @@ async fn crash_then_recover(pool: PgPool, crash: Crash) {
         .accept_event("assistant", "k", &event, false)
         .await
         .unwrap();
-    let world = Arc::new(World::default());
+    let world = Arc::new(World {
+        tool,
+        ..World::default()
+    });
     *world.crash.lock().unwrap() = Some(crash);
     let calls_a = Arc::new(AtomicUsize::new(0));
     let calls_b = Arc::new(AtomicUsize::new(0));
@@ -223,8 +267,8 @@ async fn crash_then_recover(pool: PgPool, crash: Crash) {
         &pool,
         &world,
         vec![
-            tool_call("s1", "send_message", json!({ "text": "Yes!" })),
-            tool_call("e1", "end_turn", json!({ "nothing_new": "sent" })),
+            tool_call("s1", tool.name(), json!({ "text": "Yes!" })),
+            tool_call("e1", "end_turn", json!({ "nothing_new": "done" })),
         ],
         &calls_a,
     );
@@ -240,7 +284,7 @@ async fn crash_then_recover(pool: PgPool, crash: Crash) {
         vec![tool_call(
             "e2",
             "end_turn",
-            json!({ "nothing_new": "sent" }),
+            json!({ "nothing_new": "done" }),
         )],
         &calls_b,
     );
@@ -255,39 +299,89 @@ async fn crash_then_recover(pool: PgPool, crash: Crash) {
     })
     .await;
 
-    let effects: usize = world.effects.lock().unwrap().values().sum();
-    assert_eq!(effects, 1, "the message must be sent exactly once");
-    let keys = world.keys.lock().unwrap().clone();
-    assert_eq!(keys.len(), 2);
-    assert_eq!(
-        keys[0], keys[1],
-        "the resend must reuse the idempotency key"
-    );
-    assert_eq!(calls_a.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        calls_b.load(Ordering::Relaxed),
-        1,
-        "the recorded model call must be replayed, not re-paid"
-    );
     let status = store
         .session_status("assistant", "k")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(status.history_entries, 3);
     let journal_rows: i64 = sqlx::query_scalar("select count(*) from turn_journal")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(journal_rows, 0);
+    let results: Vec<String> = sqlx::query_scalar(
+        "select part->>'content' from history, jsonb_array_elements(entry->'parts') part \
+         where part->>'type' = 'tool_result' order by seq",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let effects = world.effects.lock().unwrap().values().sum();
+    let keys = world.keys.lock().unwrap().clone();
+    Recovered {
+        effects,
+        keys,
+        model_calls_before: calls_a.load(Ordering::Relaxed),
+        model_calls_after: calls_b.load(Ordering::Relaxed),
+        history_entries: status.history_entries,
+        journal_rows,
+        results,
+    }
+}
+
+fn assert_resent_once(recovered: &Recovered) {
+    assert_eq!(recovered.effects, 1, "the effect must happen exactly once");
+    assert_eq!(recovered.keys.len(), 2);
+    assert_eq!(
+        recovered.keys[0], recovered.keys[1],
+        "the retry must reuse the idempotency key"
+    );
+    assert_eq!(recovered.model_calls_before, 1);
+    assert_eq!(
+        recovered.model_calls_after, 1,
+        "the recorded model call must be replayed, not re-paid"
+    );
+    assert_eq!(recovered.history_entries, 3);
+    assert_eq!(recovered.journal_rows, 0);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_crash_before_the_send_resends_once_with_the_same_key(pool: PgPool) {
-    crash_then_recover(pool, Crash::BeforeEffect).await;
+    assert_resent_once(&crash_then_recover(pool, Tool::Send, Crash::BeforeEffect).await);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_crash_after_the_send_never_sends_twice(pool: PgPool) {
-    crash_then_recover(pool, Crash::AfterEffect).await;
+    assert_resent_once(&crash_then_recover(pool, Tool::Send, Crash::AfterEffect).await);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_crash_after_an_idempotent_write_retries_it_with_the_same_key(pool: PgPool) {
+    let tool = Tool::Write { idempotent: true };
+    assert_resent_once(&crash_then_recover(pool, tool, Crash::AfterEffect).await);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_crash_after_a_write_reports_it_interrupted_instead_of_writing_twice(pool: PgPool) {
+    let tool = Tool::Write { idempotent: false };
+    let recovered = crash_then_recover(pool, tool, Crash::AfterEffect).await;
+
+    assert_eq!(recovered.effects, 1, "the write must not run a second time");
+    assert_eq!(recovered.keys.len(), 1);
+    assert_eq!(recovered.model_calls_after, 1);
+    assert!(
+        recovered.results[0].starts_with("Interrupted:"),
+        "the model must learn the write may have happened: {:?}",
+        recovered.results
+    );
+    assert_eq!(recovered.journal_rows, 0);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_crash_while_a_write_starts_reports_it_interrupted_too(pool: PgPool) {
+    let tool = Tool::Write { idempotent: false };
+    let recovered = crash_then_recover(pool, tool, Crash::BeforeEffect).await;
+
+    assert_eq!(recovered.effects, 0);
+    assert_eq!(recovered.keys.len(), 1);
+    assert!(recovered.results[0].starts_with("Interrupted:"));
 }

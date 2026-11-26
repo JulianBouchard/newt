@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-use futures_util::future::join_all;
+use futures_util::FutureExt;
+use futures_util::future::{Shared, join_all};
 use futures_util::stream::{self, StreamExt};
 
 use crate::batch_tool::{expand, project};
 use crate::checkpoint::Checkpoint;
-use crate::journal::{Journal, Replay};
+use crate::journal::{Journal, JournalError, Replay};
 use crate::message::{ToolCall, ToolResult};
-use crate::tools::{CallContext, END_TURN, EndTurn, ToolHost, ToolOutput};
+use crate::tools::{CallContext, END_TURN, EndTurn, Retention, ToolHost, ToolOutput};
 use crate::turn::{TurnContext, TurnDeps};
 
 mod calls;
@@ -100,6 +101,7 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         outward,
     } = Lanes::of(plans);
 
+    let written = response_written(tool_calls, &concurrent, context, replay, journal);
     let workspace_reads = take_early::<J>(tool_calls, workspace_reads, &mut slots, early, None);
     let concurrent = take_early(tool_calls, concurrent, &mut slots, early, Some(journal));
     let contexts: Vec<CallContext> = concurrent
@@ -110,7 +112,11 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
         .iter()
         .zip(&contexts)
         .map(|(&slot, call_context)| {
-            timed_call(host, &tool_calls[slot], call_context, context, deps.sink)
+            let call = &tool_calls[slot];
+            let written = written
+                .clone()
+                .filter(|_| is_new_write(call, context, replay));
+            after_written(written, host, call, call_context, context, deps.sink)
         })
         .collect();
     let reads: Vec<_> = workspace_reads
@@ -176,4 +182,44 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     let mut batch = finish_batch(&expanded, outputs, end, context, deps.sink);
     batch.checkpoint = checkpoint;
     batch
+}
+
+/// A `durable` call that no earlier attempt of this turn can have run. It runs
+/// only once the model response that asked for it is in the journal, so after a
+/// crash newt knows the call may have run.
+fn is_new_write(call: &ToolCall, context: &TurnContext<'_>, replay: &Replay) -> bool {
+    context.retention.get(&call.name) == Some(&Retention::Durable) && !replay.started(&call.id)
+}
+
+/// When the step has a new write, a wait, shared by its writes, until the model
+/// response that asked for them is written. It is queued now, before the outputs
+/// of calls that started early, so it never waits for those.
+fn response_written<'a, J: Journal>(
+    tool_calls: &[ToolCall],
+    concurrent: &[usize],
+    context: &TurnContext<'_>,
+    replay: &Replay,
+    journal: &'a J,
+) -> Option<Shared<impl Future<Output = Result<(), JournalError>> + Send + 'a>> {
+    concurrent
+        .iter()
+        .any(|&slot| is_new_write(&tool_calls[slot], context, replay))
+        .then(|| journal.flush_relaxed().shared())
+}
+
+/// Runs a host call, first waiting for `written` when it is a new write.
+async fn after_written<H: ToolHost>(
+    written: Option<Shared<impl Future<Output = Result<(), JournalError>>>>,
+    host: &H,
+    call: &ToolCall,
+    call_context: &CallContext,
+    context: &TurnContext<'_>,
+    sink: &dyn crate::sink::EventSink,
+) -> Timed {
+    if let Some(written) = written
+        && let Err(error) = written.await
+    {
+        return (failure(format!("Not run: {error}")), 0);
+    }
+    timed_call(host, call, call_context, context, sink).await
 }

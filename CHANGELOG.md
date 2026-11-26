@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Changed
+
+- **A write a crash interrupted is no longer made again by default.** The `durable` calls of a model step run only once Postgres has acknowledged the model response's journal write (not its disk flush). On recovery, a `durable` call from a journaled response with no recorded output is not made again: the model gets an `Interrupted:` error result saying it may or may not have taken effect. Until now it was made again, and if the response had not reached the journal, newt asked the model again, which gave the calls new ids and new idempotency keys, so a handler could not tell the repeat apart. Tools that set `newt/idempotent: true` are still made again, now always with the same key. `ephemeral` calls don't wait and still run again. The journal format is unchanged; a turn journaled by an older version that crashed mid-write is reported `Interrupted:` too. Protocol section 4.1.
+- **`newt/idempotent` now applies to `durable` tools too** (protocol section 2.2). It is still required on `outward` tools.
+
 ## [2.2.2] - 2026-11-22
 
 ### Security

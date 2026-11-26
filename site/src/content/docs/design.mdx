@@ -94,9 +94,11 @@ Code: `crates/newt-server/src/compaction.rs`, `checkpoints.rs`, `crates/newt-cor
 
 A turn can send a message and then crash before it commits. If the session just runs the turn again, the person gets the message twice. newt prevents that with a journal per turn in Postgres.
 
-The journal records the turn as it goes: each model response, each tool result, any event that joined mid-turn, and an intent entry before each outward call. When newt picks up a crashed turn, it replays it. Recorded model responses are used instead of asking the model again, and recorded tool results instead of calling the tools again. A call with no recorded result gets made again.
+The journal records the turn as it goes: each model response, each tool result, any event that joined mid-turn, and an intent entry before each outward call. When newt picks up a crashed turn, it replays it. Recorded model responses are used instead of asking the model again, and recorded tool results instead of calling the tools again. A read with no recorded result gets made again.
 
-That last part is the risky one, so outward calls get extra care:
+Writes are riskier. A `durable` tool that was running when newt crashed may or may not have changed something, and doing it again could do it twice. So a step's writes run only once Postgres has the model response that asked for them. When newt picks up the turn and finds a write from that response with no result, it doesn't guess: it tells the model the call was interrupted and may or may not have taken effect. The model reads the current state from your app, which is the same thing newt asks of it everywhere else, and decides. A tool that says it's idempotent gets run again with the same key instead.
+
+Outward calls get the most care:
 
 - The intent entry is written, and confirmed by Postgres, before the call. If that write fails, the call isn't made.
 - Every call carries an idempotency key built from the session, turn and call. The replay uses the same ids, so it sends the same key.
@@ -105,7 +107,7 @@ That last part is the risky one, so outward calls get extra care:
 
 <JournalSketch />
 
-Only the intent entry waits for Postgres to confirm. Everything else is written without waiting, because losing it only means asking the model again or repeating a safe call. So the journal costs you one wait before each outward call, and nothing on the rest of the turn.
+newt waits for the journal in two places: before the writes of a step, until the model response is written, and before each outward call, until its intent entry is. Everything else is written without waiting, because losing it only means asking the model again or repeating a read. So the journal costs you one wait in each step that writes, one before each outward call, and nothing for reads.
 
 This doesn't make the model deterministic. Replay just avoids asking it again.
 

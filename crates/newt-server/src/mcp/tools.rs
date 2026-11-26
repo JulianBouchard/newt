@@ -67,7 +67,7 @@ pub(super) fn tool_def(
     speaks_newt: bool,
     owner: &Owner,
 ) -> Result<ToolDef, String> {
-    let (retention, invalidates, ends_turn) = if speaks_newt {
+    let (retention, invalidates, ends_turn, idempotent) = if speaks_newt {
         let meta = tool.meta.as_deref();
         let retention: Retention = meta_field(meta, META_RETENTION)?.unwrap_or(Retention::Durable);
         let invalidates: Vec<PageKey> = meta_field(meta, META_INVALIDATES)?.unwrap_or_default();
@@ -78,9 +78,9 @@ pub(super) fn tool_def(
                 "outward tools must set `_meta.{META_IDEMPOTENT}: true` and honour `_meta.{META_IDEMPOTENCY_KEY}`, or a crash could send twice"
             ));
         }
-        (retention, invalidates, ends_turn)
+        (retention, invalidates, ends_turn, idempotent)
     } else {
-        (Retention::Durable, Vec::new(), false)
+        (Retention::Durable, Vec::new(), false, false)
     };
     let mut def = ToolDef::new(
         ToolSpec {
@@ -95,6 +95,7 @@ pub(super) fn tool_def(
     );
     def.invalidates = invalidates.into_iter().map(|key| owner.key(key)).collect();
     def.ends_turn = ends_turn;
+    def.idempotent = idempotent;
     Ok(def)
 }
 

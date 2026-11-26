@@ -295,7 +295,7 @@ Set on each tool in the `tools/list` response of a server with the newt extensio
 |---|---|---|---|
 | `newt/retention` | `"ephemeral"`, `"durable"` or `"outward"` | `"durable"` | What reaches history (section 3). |
 | `newt/invalidates` | array of page key | `[]` | Key prefixes of the server's own pages that every successful call makes stale. |
-| `newt/idempotent` | boolean | `false` | Must be `true` on an `outward` tool. Declares that the handler honours `newt/idempotency_key`. |
+| `newt/idempotent` | boolean | `false` | Declares that the handler honours `newt/idempotency_key`. Must be `true` on an `outward` tool. On a `durable` tool, a call a crash interrupted is made again instead of reported (section 4). |
 | `newt/ends_turn` | boolean | `false` | A successful call ends the turn once every call of its response has succeeded, with no further model call (6). Newt adds a sentence saying so to the tool's description. |
 
 ```json
@@ -398,7 +398,7 @@ Retention decides what a turn leaves in history. Everything the turn added to th
 | Class | Call and result in history |
 |---|---|
 | `ephemeral` | Both dropped when the turn commits. |
-| `durable` | Call kept. The result is replaced by `newt/summary`; with no summary it is cut to 500 characters. |
+| `durable` | Call kept. The result is replaced by `newt/summary`; with no summary it is cut to 500 characters. Runs only once its model response is journaled (section 4.1). |
 | `outward` | Kept like `durable`. Also journaled before it runs and run under the rules in section 4. |
 
 Also dropped at commit: the model's reasoning, the turn-context message, and harness reminders. Assistant text is kept. Built-in tools: `read_file`, `glob`, `grep`, `end_turn`, `batch`, `checkpoint` and `load_skill` are `ephemeral`; `remember` is `durable` with the summary `Remembered.`.
@@ -425,7 +425,18 @@ Ordering rules in a model step:
 - At most one outward call per `batch` call; `batch` holds up to 10 calls and cannot contain `batch`, `end_turn` or `checkpoint`.
 - If an outward call fails, the later outward calls of the step are skipped (`Not run: ...`).
 - During compaction no outward call runs.
-- Every tool call, not only outward ones, carries an idempotency key. Only outward calls are journaled before running.
+- Every tool call, not only outward ones, carries an idempotency key.
+
+### 4.1 Durable calls after a crash
+
+A model response is journaled when it arrives. Its `durable` calls run only once Postgres has acknowledged that write (not its flush to disk: the entry survives newt crashing, not Postgres). `ephemeral` calls don't wait. If the write fails, or an earlier journal write was lost, the step's `durable` calls are not made and the model gets `Not run: ...`.
+
+On recovery, a `durable` call with a recorded output gets that output back. A call from a journaled response with no recorded output may or may not have taken effect:
+
+- With `newt/idempotent: true` it is made again with the same idempotency key.
+- Without it, it is not made again. The model gets an error result starting with `Interrupted:`, which says the call may or may not have taken effect and to check the current state before calling it again.
+
+If the response itself was not journaled, none of its `durable` calls ran: newt asks the model again.
 
 The reference handler is `send_message` in `crates/newt-demo/src/tools.rs`: it records the key and sends only the first time.
 

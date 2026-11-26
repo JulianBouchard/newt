@@ -80,6 +80,7 @@ fn external_tools() -> Vec<ToolDef> {
         retention,
         invalidates: Vec::new(),
         ends_turn,
+        idempotent: retention == Retention::Outward,
     };
     vec![
         tool("save_note", Retention::Durable, false),

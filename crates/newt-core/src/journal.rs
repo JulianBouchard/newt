@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ pub struct TurnChoice {
     pub reset: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("could not write the turn journal: {0}")]
 pub struct JournalError(pub String);
 
@@ -54,6 +54,12 @@ pub trait Journal: Send + Sync {
         &self,
         entry: JournalEntry,
     ) -> impl Future<Output = Result<(), JournalError>> + Send;
+    /// Waits until every entry appended so far is written. The database may
+    /// confirm before they reach its disk: they survive newt stopping, not the
+    /// database.
+    fn flush_relaxed(&self) -> impl Future<Output = Result<(), JournalError>> + Send {
+        std::future::ready(Ok(()))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -74,6 +80,7 @@ impl Journal for NoJournal {
 pub(crate) struct Replay {
     sequence: VecDeque<JournalEntry>,
     outputs: HashMap<String, ToolOutput>,
+    started: HashSet<String>,
 }
 
 impl Replay {
@@ -86,6 +93,11 @@ impl Replay {
                 }
                 JournalEntry::OutwardIntent { .. } | JournalEntry::Choice(_) => {}
                 ordered @ (JournalEntry::Steered { .. } | JournalEntry::ModelResponse { .. }) => {
+                    if let JournalEntry::ModelResponse { message, .. } = &ordered {
+                        replay
+                            .started
+                            .extend(message.tool_calls().map(|call| call.id.clone()));
+                    }
                     replay.sequence.push_back(ordered);
                 }
             }
@@ -127,5 +139,15 @@ impl Replay {
 
     pub(crate) fn output(&self, call_id: &str) -> Option<&ToolOutput> {
         self.outputs.get(call_id)
+    }
+
+    /// Whether the call comes from a journaled model response, so it may have
+    /// run before a crash. A call inside `batch` has its batch call's id, a dot
+    /// and its index.
+    pub(crate) fn started(&self, call_id: &str) -> bool {
+        self.started.contains(call_id)
+            || call_id
+                .rsplit_once('.')
+                .is_some_and(|(batch, _)| self.started.contains(batch))
     }
 }

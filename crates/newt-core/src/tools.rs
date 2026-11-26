@@ -35,6 +35,9 @@ pub struct ToolDef {
     pub invalidates: Vec<PageKey>,
     /// A successful call ends the turn once every call of its batch succeeds.
     pub ends_turn: bool,
+    /// A call repeated with the same idempotency key takes effect once, so a
+    /// `durable` call interrupted by a crash is run again instead of reported.
+    pub idempotent: bool,
 }
 
 impl ToolDef {
@@ -44,6 +47,7 @@ impl ToolDef {
             retention,
             invalidates: Vec::new(),
             ends_turn: false,
+            idempotent: false,
         }
     }
 }
