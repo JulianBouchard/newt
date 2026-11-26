@@ -126,6 +126,10 @@ impl State {
         self.pages.contains_key(path) || self.index.contains_key(path)
     }
 
+    fn is_fresh(&self, path: &str) -> bool {
+        self.pages.contains_key(path) && !self.stale.contains(path)
+    }
+
     fn needs_fetch(&self, path: &str) -> bool {
         self.stale.contains(path)
             || (!self.pages.contains_key(path) && self.index.contains_key(path))
@@ -322,8 +326,20 @@ impl Workspace {
     /// The page's content, fetched first when it is not loaded or is stale.
     /// Waits only for this page, never for the rest of the workspace.
     pub async fn read(&self, path: &str) -> Result<Option<String>, WorkspaceError> {
-        self.listed().await?;
-        self.lock().list_from_template(path);
+        if let Err(error) = self.listed().await
+            && !self.lock().is_fresh(path)
+        {
+            return Err(error);
+        }
+        let templated = self.lock().list_from_template(path);
+        let read = self.read_listed(path).await;
+        if templated && read.is_err() {
+            self.lock().forget_unloaded(path);
+        }
+        read
+    }
+
+    async fn read_listed(&self, path: &str) -> Result<Option<String>, WorkspaceError> {
         loop {
             let next = {
                 let mut state = self.lock();

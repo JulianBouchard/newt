@@ -69,6 +69,21 @@ impl Served {
     }
 }
 
+/// Whether a home template could serve paths inside an added server's
+/// folder: its first segment is that folder or a `{part}`. Such a template
+/// is left out, as a home resource named inside one fails the listing.
+pub(super) fn inside_a_folder(name: &str, folders: &std::collections::HashSet<String>) -> bool {
+    let first = name.split('/').next().unwrap_or_default();
+    let inside = name.contains('/') && (first.contains('{') || folders.contains(first));
+    if inside {
+        tracing::warn!(
+            name,
+            "home resource template left out: it would serve paths inside an added server's folder"
+        );
+    }
+    inside
+}
+
 /// The keys that name template pages, as listed pages with their URIs,
 /// and the other keys.
 pub(super) fn split(served: &[Served], keys: &[PageKey]) -> (Vec<(Listed, String)>, Vec<PageKey>) {
@@ -128,6 +143,15 @@ mod tests {
             None
         );
         assert_eq!(orders.uri_for(&vec!["crm/orders/1.md".to_owned()]), None);
+    }
+
+    #[test]
+    fn a_home_template_may_not_reach_into_an_added_servers_folder() {
+        let folders = std::collections::HashSet::from(["crm".to_owned()]);
+        assert!(super::inside_a_folder("crm/orders/{id}.md", &folders));
+        assert!(super::inside_a_folder("{team}/orders/{id}.md", &folders));
+        assert!(!super::inside_a_folder("orders/{id}.md", &folders));
+        assert!(!super::inside_a_folder("{id}.md", &folders));
     }
 
     #[test]

@@ -205,3 +205,40 @@ async fn a_template_path_its_source_does_not_return_reads_as_missing_once() {
     assert_eq!(read.unwrap().unwrap().unwrap(), None);
     assert_eq!(gated.reads.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn a_template_path_that_fails_to_read_does_not_stay_listed() {
+    let gated = Arc::new(Gated::default());
+    gated.set("a.md", "hello");
+    gated.templates.lock().unwrap().push(Template {
+        path: "orders/{id}.md".to_owned(),
+        description: None,
+        key: vec!["orders".to_owned()],
+    });
+    let workspace = Workspace::loading(Arc::new(Source(Arc::clone(&gated))));
+    workspace.glob("**").await.unwrap();
+    gated.fail_reads.store(true, Ordering::SeqCst);
+    assert!(workspace.read("orders/999.md").await.is_err());
+    gated.fail_reads.store(false, Ordering::SeqCst);
+    assert_eq!(workspace.glob("**").await.unwrap(), vec!["a.md"]);
+    assert_eq!(workspace.grep("hello", None, 10).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_failed_relist_leaves_loaded_fresh_pages_readable() {
+    let gated = Arc::new(Gated::default());
+    gated.set("a.md", "hello");
+    gated.set("b.md", "there");
+    let workspace = Workspace::loading(Arc::new(Source(Arc::clone(&gated))));
+    workspace.read("a.md").await.unwrap();
+    gated.fail_list.store(true, Ordering::SeqCst);
+    workspace.relist();
+    assert_eq!(
+        workspace.read("a.md").await.unwrap().as_deref(),
+        Some("hello")
+    );
+    assert!(
+        workspace.read("b.md").await.is_err(),
+        "an unloaded page reports the listing"
+    );
+}

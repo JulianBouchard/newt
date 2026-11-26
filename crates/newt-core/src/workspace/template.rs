@@ -38,18 +38,28 @@ impl Template {
 
 impl State {
     /// Lists `path` when it is not listed and one of the templates serves
-    /// it, so it can be read like any listed page.
-    pub(super) fn list_from_template(&mut self, path: &str) {
+    /// it, so it can be read like any listed page. Whether it did.
+    pub(super) fn list_from_template(&mut self, path: &str) -> bool {
         if self.knows(path) {
-            return;
+            return false;
         }
-        if let Some(template) = self
+        let Some(template) = self
             .templates
             .iter()
             .find(|template| template.captures(path).is_some())
-        {
-            let key = template.page_key(path);
-            self.index.insert(path.to_owned(), Listed::new(key, path));
+        else {
+            return false;
+        };
+        let key = template.page_key(path);
+        self.index.insert(path.to_owned(), Listed::new(key, path));
+        true
+    }
+
+    /// Unlists a template page whose read failed, so a mistyped path does
+    /// not stay in the index for `glob` and `grep` to trip on.
+    pub(super) fn forget_unloaded(&mut self, path: &str) {
+        if !self.pages.contains_key(path) {
+            self.index.remove(path);
         }
     }
 }

@@ -16,7 +16,7 @@ use serde_json::Value;
 use tokio::sync::watch;
 
 use super::server_pages::{check_entries, check_pages};
-use super::templates::Served;
+use super::templates::{Served, inside_a_folder};
 use super::{Client, META_SESSION, META_STATE, META_STATE_PATCH, Owner, meta_field};
 use crate::backend::SessionState;
 
@@ -129,10 +129,12 @@ impl McpPages {
             }
             changed
         });
-        *self
-            .templates
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(templates);
+        if let Some(templates) = templates {
+            *self
+                .templates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(templates);
+        }
         Ok(uris)
     }
 
@@ -186,9 +188,10 @@ impl McpPages {
         Ok(listed)
     }
 
-    /// The resource templates newt can serve. A server that lists none, or
-    /// cannot list them, serves only its listed pages.
-    async fn list_templates(&self) -> Vec<Served> {
+    /// The resource templates newt can serve, none for a server that does
+    /// not offer the method. `None` when listing them failed: the last ones
+    /// stay.
+    async fn list_templates(&self) -> Option<Vec<Served>> {
         let mut served = Vec::new();
         let mut cursor = None;
         loop {
@@ -196,19 +199,27 @@ impl McpPages {
             params.meta = self.meta();
             let page = match self.client.list_resource_templates(Some(params)).await {
                 Ok(page) => page,
+                Err(rmcp::ServiceError::McpError(error))
+                    if error.code == rmcp::model::ErrorCode::METHOD_NOT_FOUND =>
+                {
+                    return Some(served);
+                }
                 Err(error) => {
-                    tracing::debug!(server = %self.server, %error, "MCP server lists no resource templates");
-                    return served;
+                    tracing::warn!(server = %self.server, %error, "MCP server could not list its resource templates; keeping the last ones");
+                    return None;
                 }
             };
             served.extend(
                 page.resource_templates
                     .into_iter()
+                    .filter(|listed| {
+                        self.owner != Owner::HOME || !inside_a_folder(&listed.name, &self.folders)
+                    })
                     .filter_map(|listed| Served::new(listed, &self.owner, &self.server)),
             );
             cursor = page.next_cursor;
             if cursor.is_none() {
-                return served;
+                return Some(served);
             }
         }
     }
