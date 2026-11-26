@@ -342,3 +342,47 @@ async fn ids_differ_across_turns_calls_and_tools() {
     span_ids.dedup();
     assert_eq!(span_ids.len(), total);
 }
+
+#[tokio::test]
+async fn an_unfinished_turn_is_exported_after_a_while_even_with_no_more_events() {
+    let (endpoint, captured) = collector().await;
+    let (sink, _exporter) = OtlpSink::spawn(
+        OtlpConfig {
+            endpoint,
+            headers: Vec::new(),
+            profile: Profile::Generic,
+            capture_content: false,
+            service_name: "newt-test".into(),
+        },
+        Hooks::default(),
+        64,
+    );
+    sink.emit(Event {
+        at: time::OffsetDateTime::now_utc() - time::Duration::hours(1),
+        kind: EventKind::TurnStarted {
+            session: "assistant/idle".into(),
+            turn: "t1".into(),
+            model: "test".into(),
+            reset: false,
+            history_messages: 0,
+            events: 1,
+            compaction: false,
+        },
+    });
+    tokio::task::yield_now().await;
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(61)).await;
+    tokio::time::resume();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while captured.lock().unwrap().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stale turn was never exported"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let body = captured.lock().unwrap()[0].1.clone();
+    let root = &spans(&body)[0];
+    assert_eq!(root["status"]["code"], 2, "{root}");
+    drop(sink);
+}

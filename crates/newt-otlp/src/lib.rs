@@ -140,16 +140,20 @@ async fn run(
 ) {
     let mut assembler = Assembler::default();
     let mut exports = tokio::task::JoinSet::new();
-    let mut last_eviction = std::time::Instant::now();
+    let mut eviction =
+        tokio::time::interval_at(tokio::time::Instant::now() + EVICT_EVERY, EVICT_EVERY);
+    eviction.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut reported_drops = 0;
-    while let Some(event) = receiver.recv().await {
-        let mut finished: Vec<TurnTrace> = assembler.apply(event).into_iter().collect();
-        if last_eviction.elapsed() >= EVICT_EVERY {
-            last_eviction = std::time::Instant::now();
-            finished.extend(
-                assembler.evict_older_than(time::OffsetDateTime::now_utc() - UNFINISHED_AFTER),
-            );
-        }
+    loop {
+        let finished: Vec<TurnTrace> = tokio::select! {
+            event = receiver.recv() => match event {
+                Some(event) => assembler.apply(event).into_iter().collect(),
+                None => break,
+            },
+            _ = eviction.tick() => {
+                assembler.evict_older_than(time::OffsetDateTime::now_utc() - UNFINISHED_AFTER)
+            }
+        };
         if finished.is_empty() {
             continue;
         }
