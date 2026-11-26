@@ -206,7 +206,7 @@ fn kind(entry: &JournalEntry) -> String {
         JournalEntry::ModelResponse { call, .. } => format!("model:{call}"),
         JournalEntry::OutwardIntent { call_id } => format!("intent:{call_id}"),
         JournalEntry::ToolOutput { call_id, .. } => format!("output:{call_id}"),
-        JournalEntry::Choice(_) => "choice".to_owned(),
+        JournalEntry::Host(_) => "host".to_owned(),
     }
 }
 

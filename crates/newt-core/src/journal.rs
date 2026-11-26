@@ -4,7 +4,6 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 
 use crate::message::Message;
-use crate::prompt::Effort;
 use crate::provider::{StopReason, Usage};
 use crate::steering::Steered;
 use crate::tools::ToolOutput;
@@ -29,19 +28,11 @@ pub enum JournalEntry {
         call_id: String,
         output: ToolOutput,
     },
-    Choice(TurnChoice),
-}
-
-/// What the home server's `newt/turn` chose for a turn, journaled when it
-/// differs from the bootstrap. Once a model call is journaled, a resumed turn
-/// keeps it, or the bootstrap's settings when none was journaled, whatever the
-/// server answers the second time.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TurnChoice {
-    pub model: String,
-    pub first_call_effort: Option<Effort>,
-    pub effort: Option<Effort>,
-    pub reset: bool,
+    /// An entry the host journals for itself, which the loop replays
+    /// untouched. Its tag stays `choice`, the one entry a host writes today,
+    /// so journals keep reading across versions.
+    #[serde(rename = "choice")]
+    Host(serde_json::Map<String, serde_json::Value>),
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -91,7 +82,7 @@ impl Replay {
                 JournalEntry::ToolOutput { call_id, output } => {
                     replay.outputs.insert(call_id, output);
                 }
-                JournalEntry::OutwardIntent { .. } | JournalEntry::Choice(_) => {}
+                JournalEntry::OutwardIntent { .. } | JournalEntry::Host(_) => {}
                 ordered @ (JournalEntry::Steered { .. } | JournalEntry::ModelResponse { .. }) => {
                     if let JournalEntry::ModelResponse { message, .. } = &ordered {
                         replay

@@ -1,6 +1,6 @@
 use super::Settings;
+use crate::backend::TurnChoice;
 use crate::mcp::Toolset;
-use newt_core::journal::TurnChoice;
 use newt_core::prompt::Effort;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

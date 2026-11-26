@@ -8,6 +8,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 - **OTLP export is its own crate, `newt-otlp`.** For Rust users of the library: `newt_core::otlp` is now `newt_otlp`, and `tool_traceparent` with the other trace and span ids is `newt_core::trace`. The `newt` binary, its config and the traces it exports are unchanged.
 - **The server's own events leave `newt_core::event`.** `EventKind` keeps the events of a turn. `server_ready`, `event_accepted`, `session_woken`, `session_claimed`, `turn_prepared`, `turn_committed`, `compaction_completed` and `runner_sample` move to `newt_server::events`, and `JsonlSink` takes the line type it writes. The JSONL event log is unchanged, line for line.
+- **`TurnChoice` moves to `newt_server::backend`.** In newt-core, `JournalEntry::Choice` is now `JournalEntry::Host`, an object the loop replays untouched. Journal rows keep their shape, so turns resume across versions.
 
 ## [2.3.0] - 2026-11-26
 

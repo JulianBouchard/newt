@@ -137,7 +137,7 @@ async fn run_one_turn<B: Backend, M: Model>(
     else {
         return Ok(false);
     };
-    let (reset, new_choice) = apply_choice(&plan.replay, &mut prepared, &mut history);
+    let (reset, new_choice) = apply_choice(&plan.replay, &mut prepared, &mut history)?;
     let (events, lane) = event_messages(&plan.events);
     let steered_before = plan.replay.iter().filter_map(|entry| match entry {
         JournalEntry::Steered { id, .. } => id.parse::<i64>().ok(),
@@ -163,7 +163,7 @@ async fn run_one_turn<B: Backend, M: Model>(
         turn_cancel.clone(),
     );
     if let Some(choice) = new_choice {
-        journal.append(JournalEntry::Choice(choice));
+        journal.append(choice.journal_entry()?);
     }
     let (live, live_writer) = LiveSink::spawn(
         inner.store.clone(),

@@ -9,11 +9,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use newt_core::journal::TurnChoice;
 use newt_core::message::ToolCall;
 use newt_core::prompt::Effort;
 use newt_core::tools::{BuiltinTools, CallContext, Retention, ToolHost};
-use newt_server::backend::{Backend, Prepared, TurnEvent, TurnRequest};
+use newt_server::backend::{Backend, Prepared, TurnChoice, TurnEvent, TurnRequest};
 use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::mcp::McpHost;
 use rmcp::model::{

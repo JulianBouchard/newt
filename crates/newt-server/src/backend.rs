@@ -1,13 +1,13 @@
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use newt_core::journal::TurnChoice;
+use newt_core::journal::JournalEntry;
 use newt_core::prompt::{Effort, Lane};
 use newt_core::skills::Skill;
 use newt_core::tools::{BuiltinTools, NoTools, ToolDef, ToolHost};
 use newt_core::turn::{Compaction, TurnSettings};
 use newt_core::workspace::Workspace;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// What the runner tells the backend about the turn it prepares: the events
@@ -103,6 +103,41 @@ fn merge_object(target: &mut Value, patch: &Map<String, Value>) {
                 merge_patch(target.entry(key.clone()).or_insert(Value::Null), value);
             }
         }
+    }
+}
+
+/// What the home server's `newt/turn` chose for a turn, journaled when it
+/// differs from the bootstrap. Once a model call is journaled, a resumed turn
+/// keeps it, or the bootstrap's settings when none was journaled, whatever the
+/// server answers the second time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnChoice {
+    pub model: String,
+    pub first_call_effort: Option<Effort>,
+    pub effort: Option<Effort>,
+    pub reset: bool,
+}
+
+impl TurnChoice {
+    /// The choice as the turn journal stores it.
+    pub fn journal_entry(&self) -> Result<JournalEntry, serde_json::Error> {
+        match serde_json::to_value(self)? {
+            Value::Object(fields) => Ok(JournalEntry::Host(fields)),
+            _ => Err(serde::ser::Error::custom("a turn choice is an object")),
+        }
+    }
+
+    /// The last choice journaled among `entries`.
+    pub fn last_journaled(entries: &[JournalEntry]) -> Result<Option<Self>, serde_json::Error> {
+        entries
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                JournalEntry::Host(fields) => Some(fields),
+                _ => None,
+            })
+            .map(|fields| serde_json::from_value(Value::Object(fields.clone())))
+            .transpose()
     }
 }
 
@@ -325,5 +360,32 @@ mod tests {
         let fresh = SessionState::starting_from(None);
         fresh.patch(&object(json!({ "seen": 3 })));
         assert_eq!(fresh.changed(), Some(json!({ "seen": 3 })));
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
+    fn a_turn_choice_journals_as_it_did_before_it_left_newt_core() {
+        let stored = json!({
+            "entry": "choice",
+            "model": "strong",
+            "first_call_effort": null,
+            "effort": "high",
+            "reset": true,
+        });
+        let entry: JournalEntry = serde_json::from_value(stored.clone()).unwrap();
+        let choice = TurnChoice::last_journaled(std::slice::from_ref(&entry))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            choice,
+            TurnChoice {
+                model: "strong".to_owned(),
+                first_call_effort: None,
+                effort: Some(Effort::High),
+                reset: true,
+            }
+        );
+        let written = serde_json::to_value(choice.journal_entry().unwrap()).unwrap();
+        assert_eq!(written, stored);
     }
 }

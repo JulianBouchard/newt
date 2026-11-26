@@ -1,10 +1,10 @@
 use super::ending::turn_events;
 use super::retry_later;
-use crate::backend::{Backend, Prepared, TurnRequest};
+use crate::backend::{Backend, Prepared, TurnChoice, TurnRequest};
 use crate::events::ServerEventKind;
 use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{Lease, PendingEvent};
-use newt_core::journal::{JournalEntry, TurnChoice};
+use newt_core::journal::JournalEntry;
 use newt_core::message::Message;
 use newt_core::prompt::Lane;
 use newt_core::provider::Model;
@@ -29,11 +29,8 @@ pub(super) fn apply_choice<H>(
     replay: &[JournalEntry],
     prepared: &mut Prepared<H>,
     history: &mut Vec<Message>,
-) -> (bool, Option<TurnChoice>) {
-    let journaled = replay.iter().rev().find_map(|entry| match entry {
-        JournalEntry::Choice(choice) => Some(choice.clone()),
-        _ => None,
-    });
+) -> anyhow::Result<(bool, Option<TurnChoice>)> {
+    let journaled = TurnChoice::last_journaled(replay)?;
     let answered = replay
         .iter()
         .any(|entry| matches!(entry, JournalEntry::ModelResponse { .. }));
@@ -52,7 +49,7 @@ pub(super) fn apply_choice<H>(
         (None, false) => (prepared.choice.clone(), prepared.choice.clone()),
     };
     let Some(choice) = choice else {
-        return (false, None);
+        return Ok((false, None));
     };
     prepared.settings.model.clone_from(&choice.model);
     prepared.settings.first_call_effort = choice.first_call_effort;
@@ -60,7 +57,7 @@ pub(super) fn apply_choice<H>(
     if choice.reset {
         history.clear();
     }
-    (choice.reset, to_journal)
+    Ok((choice.reset, to_journal))
 }
 
 pub(super) fn event_messages(events: &[PendingEvent]) -> (Vec<Message>, Lane) {

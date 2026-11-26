@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use newt_core::journal::TurnChoice;
 use newt_core::message::{Message, Part, Role, ToolCall};
 use newt_core::prompt::{Effort, ModelRequest, ToolSpec};
 use newt_core::provider::{
@@ -18,7 +17,8 @@ use newt_core::provider::{
 use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::workspace::Workspace;
 use newt_server::backend::{
-    AgentSettings, Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState,
+    AgentSettings, Backend, BackendError, Prepared, SessionState, TurnChoice, TurnRequest,
+    TurnState,
 };
 use newt_server::fork::{Fork, fork, history};
 use newt_server::live::Topics;
