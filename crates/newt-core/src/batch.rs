@@ -174,7 +174,7 @@ pub(crate) async fn run_tools<M, H: ToolHost, S, J: Journal>(
     {
         entry.0 = failure(END_TURN_BLOCKED);
     }
-    if end.is_none() && !batch_failed && context.compaction.is_none() {
+    if end.is_none() && !batch_failed && !context.ending.is_compaction() {
         end = ended_by_tool(tool_calls, &outputs, context);
     }
 

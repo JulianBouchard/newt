@@ -93,7 +93,7 @@ pub(super) fn plan_calls(
                 return Plan::Done(plan_checkpoint(call, tool_calls.len(), context, &mut checkpoint), 0);
             }
             if call.name == END_TURN {
-                if context.compaction.is_some() {
+                if context.ending.is_compaction() {
                     return Plan::Done(failure(END_TURN_WHILE_COMPACTING), 0);
                 }
                 if end_slot.is_some() {
@@ -101,7 +101,7 @@ pub(super) fn plan_calls(
                 }
                 end_slot = Some(slot);
                 return Plan::Done(
-                    match EndTurn::parse(&call.arguments, context.require_end_turn) {
+                    match EndTurn::parse(&call.arguments, context.ending.end_turn_must_record()) {
                         Ok(parsed) => {
                             end = Some(parsed);
                             success("Turn ended.")
@@ -118,7 +118,7 @@ pub(super) fn plan_calls(
                 return Plan::Workspace;
             }
             match context.retention.get(&call.name) {
-                Some(Retention::Outward) if context.compaction.is_some() => {
+                Some(Retention::Outward) if context.ending.is_compaction() => {
                     Plan::Done(failure(NO_SENDS_WHILE_COMPACTING), 0)
                 }
                 Some(Retention::Outward) => Plan::Outward,
@@ -145,7 +145,7 @@ fn plan_checkpoint(
     context: &TurnContext<'_>,
     accepted: &mut Option<Checkpoint>,
 ) -> ToolOutput {
-    let Some(compaction) = context.compaction else {
+    let Some(compaction) = context.ending.compaction() else {
         return failure(CHECKPOINT_OUTSIDE);
     };
     if calls_in_batch != 1 {

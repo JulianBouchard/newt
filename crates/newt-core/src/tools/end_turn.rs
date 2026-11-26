@@ -9,8 +9,8 @@ pub struct EndTurn {
 }
 
 impl EndTurn {
-    /// `strict` is the agent's `require_end_turn`: then every turn must say what it
-    /// recorded or why there was nothing to record. Otherwise both are optional.
+    /// With `strict`, a turn that requires `end_turn` must say what it recorded
+    /// or why there was nothing to record. Otherwise both are optional.
     pub fn parse(arguments: &serde_json::Value, strict: bool) -> Result<Self, String> {
         if !arguments.is_object() {
             return Err("invalid end_turn arguments: expected an object".to_owned());

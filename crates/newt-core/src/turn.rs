@@ -15,11 +15,13 @@ use crate::workspace::{PageKey, Workspace};
 mod call;
 mod coalesce;
 mod drive;
+mod ending;
 mod setup;
 mod state;
 mod types;
 
 use drive::{Finish, drive};
+pub(crate) use ending::Ending;
 use setup::{offered_skills, tool_table, turn_started};
 use state::TurnState;
 pub use types::{
@@ -64,8 +66,7 @@ pub(crate) struct TurnContext<'a> {
     pub(crate) invalidates: &'a HashMap<String, Vec<PageKey>>,
     pub(crate) ends_turn: &'a HashSet<String>,
     pub(crate) idempotent: &'a HashSet<String>,
-    pub(crate) require_end_turn: bool,
-    pub(crate) compaction: Option<Compaction<'a>>,
+    pub(crate) ending: Ending<'a>,
     pub(crate) skills: &'a [Skill],
     loaded_skills: Mutex<BTreeSet<String>>,
     prefix_fingerprint: LayerFingerprint,
@@ -83,13 +84,8 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
 ) -> Result<TurnOutcome, TurnFailure> {
     let sink = deps.sink;
     let skills = offered_skills(input.skills, settings.builtin_tools);
-    let tools = match tool_table(
-        input.external_tools,
-        skills,
-        settings.require_end_turn,
-        settings.builtin_tools,
-        settings.compaction.is_some(),
-    ) {
+    let ending = Ending::of(settings);
+    let tools = match tool_table(input.external_tools, skills, ending, settings.builtin_tools) {
         Ok(table) => table,
         Err(error) => return Err(TurnFailure::before_start(error, input.events)),
     };
@@ -100,7 +96,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         history: input.history,
         scratch: &[],
     };
-    let started = turn_started(&input, settings);
+    let started = turn_started(&input, settings, ending);
     let context = TurnContext {
         ids: TurnIds {
             session: input.session,
@@ -116,8 +112,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         invalidates: &tools.invalidates,
         ends_turn: &tools.ends_turn,
         idempotent: &tools.idempotent,
-        require_end_turn: settings.require_end_turn,
-        compaction: settings.compaction,
+        ending,
         skills,
         loaded_skills: Mutex::new(BTreeSet::new()),
         prefix_fingerprint: layers.prefix_fingerprint(),

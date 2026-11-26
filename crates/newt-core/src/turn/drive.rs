@@ -10,12 +10,6 @@ use crate::provider::Model;
 use crate::steering::Steering;
 use crate::tools::{EndTurn, ToolHost};
 
-const END_TURN_REMINDER: &str =
-    "Every turn ends with a call to end_turn. Call it now if you are done, or keep working.";
-const CHECKPOINT_REMINDER: &str = "Compaction ends with a call to checkpoint. Call it now.";
-const EMPTY_RESPONSE_REMINDER: &str =
-    "Your last response had no text and no tool calls. Reply, or call a tool.";
-
 pub(super) struct Finish {
     pub(super) end: EndTurn,
     pub(super) reply: Option<String>,
@@ -26,21 +20,11 @@ fn remind_to_end(state: &mut TurnState, context: &TurnContext<'_>) {
     state.harness_notes.insert(state.scratch.len());
     state
         .scratch
-        .push(Message::user_text(if context.compaction.is_some() {
-            CHECKPOINT_REMINDER
-        } else if context.require_end_turn {
-            END_TURN_REMINDER
-        } else {
-            EMPTY_RESPONSE_REMINDER
-        }));
+        .push(Message::user_text(context.ending.reminder()));
 }
 
-fn finish_on_reply(
-    settings: &TurnSettings<'_>,
-    context: &TurnContext<'_>,
-    text: Option<&str>,
-) -> Option<Finish> {
-    let reply = text.filter(|_| !settings.require_end_turn && context.compaction.is_none())?;
+fn finish_on_reply(context: &TurnContext<'_>, text: Option<&str>) -> Option<Finish> {
+    let reply = text.filter(|_| context.ending.reply_ends_turn())?;
     Some(Finish {
         end: EndTurn {
             recorded: Vec::new(),
@@ -129,7 +113,7 @@ pub(super) async fn drive<M: Model, H: ToolHost, S: Steering, J: Journal>(
             state.scratch.push(response.message);
         }
         if tool_calls.is_empty() {
-            if let Some(finish) = finish_on_reply(settings, context, text.as_deref()) {
+            if let Some(finish) = finish_on_reply(context, text.as_deref()) {
                 return Ok(finish);
             }
             if reminded {
