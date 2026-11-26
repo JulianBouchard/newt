@@ -53,18 +53,23 @@ async fn read_file(workspace: &Workspace, paths: &[String]) -> Result<String, St
     if paths.is_empty() {
         return Err("read_file needs at least one path".to_owned());
     }
+    let reads = futures_util::future::join_all(paths.iter().map(|path| workspace.read(path))).await;
     let mut out = String::new();
-    for path in paths {
-        let content = workspace
-            .read(path)
-            .await
-            .map_err(|error| error.to_string())?;
-        let content = content.as_deref().unwrap_or("(no such page)");
-        for piece in ["--- ", path, " ---\n", content, "\n"] {
+    let mut failed = false;
+    for (path, read) in paths.iter().zip(reads) {
+        let content = match read {
+            Ok(Some(content)) => content,
+            Ok(None) => "(no such page)".to_owned(),
+            Err(error) => {
+                failed = true;
+                format!("(could not read this page: {error})")
+            }
+        };
+        for piece in ["--- ", path, " ---\n", &content, "\n"] {
             out.push_str(piece);
         }
     }
-    Ok(out)
+    if failed { Err(out) } else { Ok(out) }
 }
 
 async fn glob(workspace: &Workspace, pattern: &str) -> Result<String, String> {
@@ -135,6 +140,51 @@ mod tests {
         assert_eq!(
             result.content,
             "--- profile.md ---\nRemote only\n--- nope.md ---\n(no such page)\n"
+        );
+    }
+
+    struct HalfBroken;
+
+    impl crate::workspace::PageSource for HalfBroken {
+        fn list(&self) -> crate::workspace::ListingFuture<'_> {
+            Box::pin(std::future::ready(Ok(crate::workspace::Listing {
+                pages: ["good.md", "broken.md"]
+                    .map(|path| crate::workspace::Listed::new(vec![path.to_owned()], path))
+                    .to_vec(),
+                templates: Vec::new(),
+            })))
+        }
+
+        fn read(&self, keys: Vec<crate::workspace::PageKey>) -> crate::workspace::PageFuture<'_> {
+            Box::pin(std::future::ready(
+                if keys.iter().flatten().any(|key| key == "broken.md") {
+                    Err("route timed out".to_owned())
+                } else {
+                    Ok(vec![crate::workspace::Page {
+                        key: vec!["good.md".into()],
+                        path: "good.md".into(),
+                        version: "1".into(),
+                        content: "fine".into(),
+                    }])
+                },
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn read_file_keeps_the_pages_that_read_when_one_fails() {
+        let workspace = Workspace::loading(std::sync::Arc::new(HalfBroken));
+        let result = run_workspace_tool(
+            &call("read_file", json!({ "paths": ["good.md", "broken.md"] })),
+            &workspace,
+        )
+        .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("--- good.md ---\nfine\n"));
+        assert!(
+            result
+                .content
+                .contains("--- broken.md ---\n(could not read this page:")
         );
     }
 
