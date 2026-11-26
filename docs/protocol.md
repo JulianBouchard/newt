@@ -70,6 +70,7 @@ The agent core declares the agent in `capabilities.extensions.newt` of its `serv
 | `require_end_turn` | boolean | no | `false` | Every turn must end with `end_turn`, which must say what the turn recorded (`recorded`) or why there was nothing new (`nothing_new`); a reply with no tool calls gets a reminder instead of ending the turn. Off: a reply with no tool calls ends the turn. See section 6. |
 | `builtin_tools` | boolean or array of string | no | `true` | Which of newt's built-in tools the agent is offered: `true` for all of them, `false` for none, or the names of the ones to keep (`read_file`, `glob`, `grep`, `end_turn`, `remember`, `batch`, `checkpoint`, `load_skill`). A built-in that is off is not in the tool list, and a call to it gets an unknown-tool error. Without `load_skill` the skills index leaves the system prompt too. A compaction turn always gets `checkpoint`. Any other name, or `require_end_turn` without `end_turn`, is refused when newt connects. |
 | `history_budget` | integer | no | 60000 | Tokens of live history before compaction. Must be at least 1000. |
+| `preload_priority` | number | no | 1.0 | Pages whose `annotations.priority` is at least this are read in the background as each turn starts (1.4). |
 | `turn` | boolean | no | `false` | Send `newt/turn` before each turn (1.3). |
 | `turn_end` | boolean | no | `false` | Send `newt/turn_end` after each committed turn (1.6). |
 | `servers` | array of server | no | `[]` | Servers the agent adds (2.1). |
@@ -168,7 +169,11 @@ Both are in the live feed: `turn_started` carries `model` (the alias the turn us
 
 A **page** is one file in the agent's workspace. The agent reads pages with the built-in `read_file`, `glob` and `grep` tools. Pages are the resources of the agent core and of its extra servers; there is no other way to supply them.
 
-At the start of each turn newt calls `resources/list` (every page) on each server that offers resources and reads each resource with `resources/read`, in the background: the first model call starts at once, and the agent's first `read_file`, `glob` or `grep` waits for the load. If the load fails, those tools return the error for the rest of the turn. Requests to a server with the newt extension carry `_meta: { "newt/session": "<session key>", "newt/state": <state> }`, so one server can serve every session; requests to any other server carry nothing of newt's. Each text resource becomes a page:
+At the start of each turn newt calls `resources/list` on each server that offers resources. Nothing is read yet. When the agent has `read_file`, the turn opens with an index of the listed pages, in the same harness note as the turn's context (never committed to history): top-level pages, pages with a priority and a folder's only page by path, with their `size` and `description`, highest priority first; every other folder as one line with its page count and the `glob` that lists it. The first model call waits for the listing to build it. A server with a very large flat namespace makes a large index: organise pages into folders.
+
+A page is read with `resources/read` only when the agent asks for it. `read_file` waits only for the pages it names, reads them concurrently, and returns the ones that read with a note for each that did not. `glob` answers from the listing. `grep` reads the pages its path pattern matches, and fails if one of them cannot be read. Pages whose `annotations.priority` is at least the agent's `preload_priority` (1.2, default 1.0) are read in the background as the turn starts, so a read finds them loaded; a preloaded page counts as read only once the agent reads it.
+
+If the agent core cannot be listed, reads report that error. If an extra server cannot be listed, its last listing is kept (none on the turn it first fails), and reading one of its pages reports the server's error. Requests to a server with the newt extension carry `_meta: { "newt/session": "<session key>", "newt/state": <state> }`, so one server can serve every session; requests to any other server carry nothing of newt's. Each text resource becomes a page:
 
 | Page field | From the resource |
 |---|---|
@@ -177,7 +182,7 @@ At the start of each turn newt calls `resources/list` (every page) on each serve
 | `version` | The `sha256:` digest of the text |
 | `content` | The text contents whose `uri` matches |
 
-Resources with a `skill://` URI are skills, not pages, and are left out. A resource with no text contents is left out with a warning. Two pages with the same path, a page with an empty path or key, or an agent core resource whose name starts with an extra server's folder (`crm/…` when the agent core adds `crm`), fail the read. If an extra server fails a read, only its own pages are left out of it; if the agent core fails, the read fails.
+Resources with a `skill://` URI are skills, not pages, and are left out. A resource with no text contents is left out with a warning. Two pages with the same path, a page with an empty path or key, or an agent core resource whose name starts with an extra server's folder (`crm/…` when the agent core adds `crm`), fail the listing. A failed read fails only the pages it was for; readers waiting on the same read get the same error, and the next read tries again.
 
 A `resources/read` result from a server with the newt extension may carry `_meta["newt/state_patch"]`, a JSON merge patch applied to the session's state (1.3). A patch that is not an object fails the read.
 
@@ -188,7 +193,7 @@ Paths match `glob` patterns with `/` as a literal separator (`*` does not cross 
 - a tool's `newt/invalidates` (2.2) or a result's `newt/invalidate` (2.4) names a prefix of its key;
 - the server sends `notifications/resources/updated` for its URI, or `notifications/resources/list_changed` (which makes all of that server's pages stale). Once the pages are listed, newt opens `subscriptions/listen` with `resourceSubscriptions` set to the session's resource URIs, and `resourcesListChanged`, for the rest of the turn. The subscription follows the URIs of the latest listing and closes when the turn ends. A server that does not accept resource subscriptions still works: its pages are fresh at the start of each turn, and tool metadata can still invalidate them during one.
 
-The next read of a stale page lists the resources again and reads the matching ones, so a page that is no longer listed disappears and a new one appears; `grep` refreshes all stale pages first. After a tool call, stale pages the agent has already read in this turn are also refreshed in the background.
+The next read of a stale page reads it again. A server's `notifications/resources/list_changed` lists it again, so a page that is no longer listed disappears and a new one appears; a read of a key the last listing did not have also lists its server again, once for all readers waiting on it. After a tool call, stale pages the agent has already read in this turn are also refreshed in the background.
 
 A server's keys are its own: a key from an extra server's tool or notification only ever matches that server's pages. The agent core's empty key `[]` matches every page of the agent.
 
