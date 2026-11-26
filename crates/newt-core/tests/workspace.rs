@@ -4,7 +4,7 @@
     reason = "tests fail loudly on setup errors"
 )]
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,7 +20,9 @@ use newt_core::sink::NoSink;
 use newt_core::steering::NoSteering;
 use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
-use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
+use newt_core::workspace::{
+    Listed, Listing, ListingFuture, Page, PageFuture, PageKey, PageSource, Workspace,
+};
 use serde_json::json;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -33,7 +35,12 @@ fn key(parts: &[&str]) -> PageKey {
 struct Backing {
     pages: Mutex<BTreeMap<String, (PageKey, String, u32)>>,
     fetches: AtomicUsize,
+    lists: AtomicUsize,
+    fetched: Mutex<Vec<String>>,
     fail: AtomicBool,
+    failing: Mutex<HashSet<String>>,
+    slow: Mutex<HashSet<String>>,
+    slow_gate: tokio::sync::Notify,
     gate: Option<Arc<Semaphore>>,
 }
 
@@ -84,7 +91,31 @@ impl Backing {
 struct Source(Arc<Backing>);
 
 impl PageSource for Source {
-    fn fetch(&self, keys: Vec<PageKey>) -> PageFuture<'_> {
+    fn list(&self) -> ListingFuture<'_> {
+        let backing = Arc::clone(&self.0);
+        Box::pin(async move {
+            backing.lists.fetch_add(1, Ordering::SeqCst);
+            if let Some(gate) = &backing.gate {
+                gate.acquire().await.unwrap().forget();
+            }
+            if backing.fail.load(Ordering::SeqCst) {
+                return Err("home server unavailable".to_owned());
+            }
+            let pages = backing
+                .pages
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(path, (page_key, _, _))| Listed::new(page_key.clone(), path.clone()))
+                .collect();
+            Ok(Listing {
+                pages,
+                templates: Vec::new(),
+            })
+        })
+    }
+
+    fn read(&self, keys: Vec<PageKey>) -> PageFuture<'_> {
         let backing = Arc::clone(&self.0);
         Box::pin(async move {
             backing.fetches.fetch_add(1, Ordering::SeqCst);
@@ -99,11 +130,26 @@ impl PageSource for Source {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|(_, (page_key, _, _))| {
-                    keys.iter().any(|key| key.is_empty() || key == page_key)
-                })
+                .filter(|(_, (page_key, _, _))| keys.contains(page_key))
                 .map(|(path, _)| path.clone())
                 .collect();
+            backing
+                .fetched
+                .lock()
+                .unwrap()
+                .extend(paths.iter().cloned());
+            if paths
+                .iter()
+                .any(|path| backing.failing.lock().unwrap().contains(path))
+            {
+                return Err("that page's route failed".to_owned());
+            }
+            if paths
+                .iter()
+                .any(|path| backing.slow.lock().unwrap().contains(path))
+            {
+                backing.slow_gate.notified().await;
+            }
             Ok(paths.iter().map(|path| backing.page(path)).collect())
         })
     }
@@ -247,7 +293,7 @@ async fn a_page_the_provider_no_longer_returns_is_removed() {
     backing.pages.lock().unwrap().remove("roles/acme.md");
     workspace.invalidate(&[key(&["roles"])]);
     assert_eq!(workspace.read("roles/acme.md").await.unwrap(), None);
-    assert_eq!(workspace.paths(), vec!["profile.md"]);
+    assert_eq!(workspace.glob("**").await.unwrap(), vec!["profile.md"]);
 }
 
 #[tokio::test]
@@ -481,11 +527,14 @@ fn loading(backing: &Arc<Backing>) -> Workspace {
     Workspace::loading(Arc::new(Source(Arc::clone(backing))))
 }
 
+fn fetched(backing: &Backing) -> Vec<String> {
+    backing.fetched.lock().unwrap().clone()
+}
+
 #[tokio::test]
-async fn a_loading_workspace_serves_reads_after_one_shared_load() {
+async fn a_loading_workspace_lists_once_and_reads_only_the_pages_asked_for() {
     let backing = seeded(Backing::gated());
     let workspace = loading(&backing);
-    until_fetches(&backing, 1).await;
     let reads: Vec<_> = (0..3)
         .map(|_| {
             let workspace = workspace.clone();
@@ -495,48 +544,127 @@ async fn a_loading_workspace_serves_reads_after_one_shared_load() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(
         reads.iter().all(|read| !read.is_finished()),
-        "reads wait for the load"
+        "reads wait for the listing"
     );
+    backing.release();
     backing.release();
     for read in reads {
         assert_eq!(read.await.unwrap().unwrap().as_deref(), Some("Remote only"));
     }
-    assert_eq!(backing.fetches(), 1, "one load serves every read");
-    assert_eq!(workspace.glob("*.md").await.unwrap(), vec!["profile.md"]);
+    assert_eq!(
+        backing.lists.load(Ordering::SeqCst),
+        1,
+        "one listing serves every read"
+    );
+    assert_eq!(backing.fetches(), 1, "the three reads share one fetch");
+    assert_eq!(fetched(&backing), vec!["profile.md"]);
 }
 
 #[tokio::test]
-async fn an_invalidation_during_the_load_is_applied_when_it_lands() {
+async fn glob_answers_from_the_listing_without_reading_a_page() {
+    let backing = seeded(Backing::default());
+    let workspace = loading(&backing);
+    assert_eq!(
+        workspace.glob("**").await.unwrap(),
+        vec!["profile.md", "roles/acme.md"]
+    );
+    assert_eq!(backing.fetches(), 0);
+}
+
+#[tokio::test]
+async fn grep_reads_only_the_pages_its_glob_matches() {
+    let backing = seeded(Backing::default());
+    let workspace = loading(&backing);
+    let found = workspace
+        .grep("backend", Some("roles/*"), 10)
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(fetched(&backing), vec!["roles/acme.md"]);
+}
+
+#[tokio::test]
+async fn a_read_never_waits_for_a_page_it_did_not_name() {
+    let backing = seeded(Backing::default());
+    backing
+        .slow
+        .lock()
+        .unwrap()
+        .insert("roles/acme.md".to_owned());
+    let workspace = loading(&backing);
+    let slow = {
+        let workspace = workspace.clone();
+        tokio::spawn(async move { workspace.read("roles/acme.md").await })
+    };
+    until_fetches(&backing, 1).await;
+    let Ok(quick) =
+        tokio::time::timeout(Duration::from_secs(1), workspace.read("profile.md")).await
+    else {
+        panic!("the read of another page waited for the slow one");
+    };
+    assert_eq!(quick.unwrap().as_deref(), Some("Remote only"));
+    assert!(!slow.is_finished());
+    backing.slow_gate.notify_one();
+    assert_eq!(
+        slow.await.unwrap().unwrap().as_deref(),
+        Some("Acme: backend")
+    );
+}
+
+#[tokio::test]
+async fn a_page_that_fails_fails_only_its_own_read() {
+    let backing = seeded(Backing::default());
+    backing
+        .failing
+        .lock()
+        .unwrap()
+        .insert("roles/acme.md".to_owned());
+    let workspace = loading(&backing);
+    assert!(workspace.read("roles/acme.md").await.is_err());
+    assert_eq!(
+        workspace.read("profile.md").await.unwrap().as_deref(),
+        Some("Remote only")
+    );
+}
+
+#[tokio::test]
+async fn a_page_put_during_the_listing_is_not_dropped_by_it() {
     let backing = seeded(Backing::gated());
     let workspace = loading(&backing);
-    until_fetches(&backing, 1).await;
-    workspace.invalidate(&[key(&["customer"])]);
-    backing.write("profile.md", "Remote or Berlin");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    workspace.put(vec![Page {
+        key: key(&["notes", "fresh"]),
+        path: "notes/fresh.md".into(),
+        version: "1".into(),
+        content: "Written by a tool".into(),
+    }]);
     backing.release();
-    backing.release();
-    let content = workspace.read("profile.md").await.unwrap();
-    assert_eq!(content.as_deref(), Some("Remote or Berlin"));
-    assert_eq!(backing.fetches(), 2);
+    let content = workspace.read("notes/fresh.md").await.unwrap();
+    assert_eq!(content.as_deref(), Some("Written by a tool"));
+    assert_eq!(backing.fetches(), 0);
 }
 
 #[tokio::test]
-async fn data_put_during_the_load_is_not_overwritten_by_it() {
-    let backing = seeded(Backing::gated());
+async fn a_relist_drops_the_pages_the_source_no_longer_lists() {
+    let backing = seeded(Backing::default());
     let workspace = loading(&backing);
-    until_fetches(&backing, 1).await;
-    let mut fresh = backing.page("profile.md");
-    fresh.content = "Remote or Berlin".into();
-    workspace.put(vec![fresh]);
-    backing.release();
-    let content = workspace.read("profile.md").await.unwrap();
-    assert_eq!(content.as_deref(), Some("Remote or Berlin"));
+    assert!(workspace.read("roles/acme.md").await.unwrap().is_some());
+    backing.pages.lock().unwrap().remove("roles/acme.md");
+    workspace.relist();
+    assert_eq!(workspace.glob("**").await.unwrap(), vec!["profile.md"]);
+    assert_eq!(workspace.read("roles/acme.md").await.unwrap(), None);
 }
 
 #[tokio::test]
-async fn a_failed_load_fails_reads_loudly() {
+async fn a_failed_listing_fails_reads_loudly_and_the_next_read_lists_again() {
     let backing = seeded(Backing::default());
     backing.fail.store(true, Ordering::SeqCst);
     let workspace = loading(&backing);
     assert!(workspace.read("profile.md").await.is_err());
     assert!(workspace.glob("*").await.is_err());
+    backing.fail.store(false, Ordering::SeqCst);
+    assert_eq!(
+        workspace.read("profile.md").await.unwrap().as_deref(),
+        Some("Remote only")
+    );
 }

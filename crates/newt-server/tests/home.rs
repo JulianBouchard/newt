@@ -373,10 +373,13 @@ async fn the_home_server_is_the_agent_with_its_instructions_settings_and_pages()
         ana.workspace.read("tasks.md").await.unwrap().as_deref(),
         Some("- [ ] Call the bank\n")
     );
-    assert_eq!(ana.workspace.paths(), ["notes.md", "tasks.md"]);
+    assert_eq!(
+        ana.workspace.glob("**").await.unwrap(),
+        ["notes.md", "tasks.md"]
+    );
     let ben = prepare(&backend, "ben").await;
     ben.workspace.read("tasks.md").await.unwrap();
-    assert_eq!(ben.workspace.paths(), ["tasks.md"]);
+    assert_eq!(ben.workspace.glob("**").await.unwrap(), ["tasks.md"]);
 }
 
 #[tokio::test]
@@ -757,7 +760,7 @@ async fn an_added_servers_pages_live_under_its_folder() {
         Some("# Order 17\nShipped.\n")
     );
     assert_eq!(
-        prepared.workspace.paths(),
+        prepared.workspace.glob("**").await.unwrap(),
         ["notes.md", "partner/orders/order-17.md", "tasks.md"]
     );
     let seen = plain.seen_meta.lock().unwrap().clone();
@@ -882,7 +885,7 @@ async fn an_added_server_going_down_leaves_the_homes_pages_readable() {
     let prepared = prepare(&backend(home).await, "ana").await;
     prepared.workspace.read("tasks.md").await.unwrap();
     assert_eq!(
-        prepared.workspace.paths(),
+        prepared.workspace.glob("**").await.unwrap(),
         ["notes.md", "partner/orders/order-17.md", "tasks.md"]
     );
     stop.cancel();
@@ -897,14 +900,22 @@ async fn an_added_server_going_down_leaves_the_homes_pages_readable() {
             .as_deref(),
         Some("- [ ] Call the bank\n")
     );
-    assert_eq!(
+    assert!(
         prepared
             .workspace
             .read("partner/orders/order-17.md")
             .await
-            .unwrap(),
-        None,
-        "the down server's page is gone for this read, not an error"
+            .is_err(),
+        "the down server's page fails its read; it is not gone"
+    );
+    assert!(
+        prepared
+            .workspace
+            .glob("**")
+            .await
+            .unwrap()
+            .contains(&"partner/orders/order-17.md".to_owned()),
+        "and it stays listed"
     );
 }
 

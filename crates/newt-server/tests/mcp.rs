@@ -20,7 +20,9 @@ use newt_core::sink::NoSink;
 use newt_core::steering::NoSteering;
 use newt_core::tools::{CallContext, PageRead, Retention, ToolHost};
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
-use newt_core::workspace::{Page, PageFuture, PageKey, PageSource, Workspace};
+use newt_core::workspace::{
+    Listed, Listing, ListingFuture, Page, PageFuture, PageKey, PageSource, Workspace,
+};
 use newt_server::backend::{SessionState, TurnState};
 use newt_server::mcp::{CallLimits, McpAuth, McpServer, Toolset};
 use rmcp::model::{
@@ -476,7 +478,19 @@ struct ProfileSource {
 }
 
 impl PageSource for ProfileSource {
-    fn fetch(&self, _keys: Vec<PageKey>) -> PageFuture<'_> {
+    fn list(&self) -> ListingFuture<'_> {
+        Box::pin(async move {
+            Ok(Listing {
+                pages: vec![Listed::new(
+                    vec!["customer".into(), "profile".into()],
+                    "profile.md",
+                )],
+                templates: Vec::new(),
+            })
+        })
+    }
+
+    fn read(&self, _keys: Vec<PageKey>) -> PageFuture<'_> {
         self.fetches.fetch_add(1, Ordering::SeqCst);
         let content = self.calls.profile.lock().unwrap().clone();
         Box::pin(async move {

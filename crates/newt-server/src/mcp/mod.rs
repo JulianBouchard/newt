@@ -1,6 +1,6 @@
 //! Connecting to an agent's MCP servers and listing their tools: the home
 //! server, which is the agent, and the servers it adds. One call's path lives
-//! in `call.rs`, workspace pages in `pages.rs`.
+//! in `call.rs`, workspace pages in `pages.rs` and `server_pages.rs`.
 
 mod call;
 mod connection;
@@ -9,12 +9,14 @@ mod mrtr;
 mod pages;
 #[cfg(test)]
 mod props;
+mod server_pages;
 mod skills;
 mod tools;
 mod toolset;
 
 pub use connection::HomeConnection;
-pub use pages::{META_KEY, ServerPages, check_pages};
+pub use pages::META_KEY;
+pub use server_pages::{ServerPages, check_pages};
 pub use toolset::Toolset;
 
 use connection::Client;

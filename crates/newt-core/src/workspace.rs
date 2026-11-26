@@ -3,16 +3,16 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use globset::{GlobBuilder, GlobMatcher};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
+mod listing;
 mod refresh;
+mod search;
 
+pub use listing::Index;
 use refresh::Claimed;
-
-const GLOB_LIMIT: usize = 512;
+pub use search::GrepMatch;
 
 pub type PageKey = Vec<String>;
 
@@ -22,6 +22,43 @@ pub struct Page {
     pub path: String,
     pub version: String,
     pub content: String,
+}
+
+/// A page as its source lists it, before anyone reads it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Listed {
+    pub key: PageKey,
+    pub path: String,
+    pub size: Option<u64>,
+    pub description: Option<String>,
+    pub priority: Option<f32>,
+}
+
+impl Listed {
+    /// A listed page with nothing known about it but its key and path.
+    pub fn new(key: PageKey, path: impl Into<String>) -> Self {
+        Self {
+            key,
+            path: path.into(),
+            size: None,
+            description: None,
+            priority: None,
+        }
+    }
+}
+
+/// A collection a source serves by pattern, such as `roles/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Template {
+    pub path: String,
+    pub description: Option<String>,
+}
+
+/// What a source lists: its pages and its collections, no contents.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Listing {
+    pub pages: Vec<Listed>,
+    pub templates: Vec<Template>,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -35,28 +72,31 @@ pub enum WorkspaceError {
 }
 
 pub type PageFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<Page>, String>> + Send + 'a>>;
+pub type ListingFuture<'a> = Pin<Box<dyn Future<Output = Result<Listing, String>> + Send + 'a>>;
 
+/// Where a workspace's pages come from: a listing, and the contents of the
+/// pages it names.
 pub trait PageSource: Send + Sync {
-    fn fetch(&self, keys: Vec<PageKey>) -> PageFuture<'_>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GrepMatch {
-    pub path: String,
-    pub line: usize,
-    pub text: String,
+    fn list(&self) -> ListingFuture<'_>;
+    /// The pages for these keys. A key the source no longer has is left out.
+    fn read(&self, keys: Vec<PageKey>) -> PageFuture<'_>;
 }
 
 #[derive(Default)]
 struct State {
     pages: BTreeMap<String, Page>,
+    index: BTreeMap<String, Listed>,
+    templates: Vec<Template>,
+    list_wanted: bool,
+    list_epoch: u64,
+    list_attempt: u64,
+    list_failure: Option<(u64, String)>,
+    listing: Option<Arc<Notify>>,
     stale: HashSet<String>,
     in_flight: HashMap<String, Arc<Notify>>,
     read: HashSet<String>,
     generation: HashMap<String, u64>,
     clock: u64,
-    loading: bool,
-    invalidated_while_loading: Vec<PageKey>,
 }
 
 impl State {
@@ -67,6 +107,22 @@ impl State {
 
     fn generation_of(&self, path: &str) -> u64 {
         self.generation.get(path).copied().unwrap_or(0)
+    }
+
+    fn key_of(&self, path: &str) -> Option<PageKey> {
+        self.pages
+            .get(path)
+            .map(|page| page.key.clone())
+            .or_else(|| self.index.get(path).map(|listed| listed.key.clone()))
+    }
+
+    fn knows(&self, path: &str) -> bool {
+        self.pages.contains_key(path) || self.index.contains_key(path)
+    }
+
+    fn needs_fetch(&self, path: &str) -> bool {
+        self.stale.contains(path)
+            || (!self.pages.contains_key(path) && self.index.contains_key(path))
     }
 }
 
@@ -80,7 +136,6 @@ struct Inner {
     state: Mutex<State>,
     source: Option<Arc<dyn PageSource>>,
     background: Mutex<Vec<tokio::task::AbortHandle>>,
-    initial: tokio::sync::OnceCell<Result<(), String>>,
 }
 
 impl Drop for Inner {
@@ -102,9 +157,11 @@ pub struct Workspace {
 
 impl std::fmt::Debug for Workspace {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.lock();
         formatter
             .debug_struct("Workspace")
-            .field("pages", &self.lock().pages.len())
+            .field("listed", &state.index.len())
+            .field("loaded", &state.pages.len())
             .finish_non_exhaustive()
     }
 }
@@ -127,6 +184,14 @@ impl Invalidator {
     pub fn invalidate(&self, prefixes: &[PageKey]) -> Option<Vec<String>> {
         let inner = self.0.upgrade()?;
         Some(Workspace { inner }.invalidate(prefixes))
+    }
+
+    /// Asks for a fresh listing before the index is next used. `None` once
+    /// the workspace is gone.
+    pub fn relist(&self) -> Option<()> {
+        let inner = self.0.upgrade()?;
+        Workspace { inner }.relist();
+        Some(())
     }
 }
 
@@ -160,6 +225,15 @@ impl Workspace {
 
     fn from_pages(pages: Vec<Page>, source: Option<Arc<dyn PageSource>>) -> Self {
         let state = State {
+            index: pages
+                .iter()
+                .map(|page| {
+                    (
+                        page.path.clone(),
+                        Listed::new(page.key.clone(), page.path.clone()),
+                    )
+                })
+                .collect(),
             pages: pages
                 .into_iter()
                 .map(|page| (page.path.clone(), page))
@@ -171,21 +245,22 @@ impl Workspace {
                 state: Mutex::new(state),
                 source,
                 background: Mutex::new(Vec::new()),
-                initial: tokio::sync::OnceCell::new(),
             }),
         }
     }
 
+    /// A workspace whose pages are listed in the background as it starts,
+    /// and read only when asked for.
     pub fn loading(source: Arc<dyn PageSource>) -> Self {
         let workspace = Self::from_pages(Vec::new(), Some(source));
-        workspace.lock().loading = true;
+        workspace.relist();
         let weak = Arc::downgrade(&workspace.inner);
         let task = tokio::spawn(async move {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
-            if let Err(error) = (Self { inner }).loaded().await {
-                tracing::warn!(%error, "workspace pages did not load; reads will report it");
+            if let Err(error) = (Self { inner }).listed().await {
+                tracing::warn!(%error, "workspace pages could not be listed; reads will report it");
             }
         });
         workspace.track(task.abort_handle());
@@ -212,48 +287,11 @@ impl Workspace {
         background.push(handle);
     }
 
-    async fn loaded(&self) -> Result<(), WorkspaceError> {
-        if !self.lock().loading {
-            return Ok(());
-        }
-        self.inner
-            .initial
-            .get_or_init(|| self.load_all())
-            .await
-            .clone()
-            .map_err(WorkspaceError::Refresh)
-    }
-
-    async fn load_all(&self) -> Result<(), String> {
-        let source = self
-            .inner
-            .source
-            .clone()
-            .ok_or_else(|| "this workspace has no page source".to_owned())?;
-        let pages = source.fetch(vec![Vec::new()]).await?;
-        let pending = {
-            let mut state = self.lock();
-            for page in pages {
-                if !state.pages.contains_key(&page.path) {
-                    state.pages.insert(page.path.clone(), page);
-                }
-            }
-            state.loading = false;
-            std::mem::take(&mut state.invalidated_while_loading)
-        };
-        self.invalidate(&pending);
-        Ok(())
-    }
-
     fn lock(&self) -> MutexGuard<'_, State> {
         match self.inner.state.lock() {
             Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
         }
-    }
-
-    pub fn paths(&self) -> Vec<String> {
-        self.lock().pages.keys().cloned().collect()
     }
 
     pub fn pages_read(&self) -> Vec<crate::tools::PageRead> {
@@ -275,8 +313,10 @@ impl Workspace {
         self.lock().stale.contains(path)
     }
 
+    /// The page's content, fetched first when it is not loaded or is stale.
+    /// Waits only for this page, never for the rest of the workspace.
     pub async fn read(&self, path: &str) -> Result<Option<String>, WorkspaceError> {
-        self.loaded().await?;
+        self.listed().await?;
         loop {
             let next = {
                 let mut state = self.lock();
@@ -284,10 +324,12 @@ impl Workspace {
                     let mut waiting = Box::pin(Arc::clone(notify).notified_owned());
                     waiting.as_mut().enable();
                     Next::Wait(waiting)
-                } else if state.stale.contains(path) {
+                } else if state.needs_fetch(path) {
                     Next::Fetch(Self::claim(&mut state, std::iter::once(path.to_owned())))
                 } else {
-                    state.read.insert(path.to_owned());
+                    if state.knows(path) {
+                        state.read.insert(path.to_owned());
+                    }
                     Next::Done(state.pages.get(path).map(|page| page.content.clone()))
                 }
             };
@@ -299,55 +341,7 @@ impl Workspace {
         }
     }
 
-    pub async fn glob(&self, pattern: &str) -> Result<Vec<String>, WorkspaceError> {
-        let matcher = matcher(pattern)?;
-        self.loaded().await?;
-        Ok(self
-            .lock()
-            .pages
-            .keys()
-            .filter(|path| matcher.is_match(path.as_str()))
-            .cloned()
-            .collect())
-    }
-
-    pub async fn grep(
-        &self,
-        pattern: &str,
-        within: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<GrepMatch>, WorkspaceError> {
-        let regex =
-            Regex::new(pattern).map_err(|error| WorkspaceError::Regex(error.to_string()))?;
-        let within = within.map(matcher).transpose()?;
-        self.loaded().await?;
-        let outdated: Vec<String> = self.lock().stale.iter().cloned().collect();
-        self.refresh(outdated).await?;
-        let state = self.lock();
-        Ok(state
-            .pages
-            .iter()
-            .filter(|(path, _)| {
-                within
-                    .as_ref()
-                    .is_none_or(|glob| glob.is_match(path.as_str()))
-            })
-            .flat_map(|(path, page)| {
-                page.content
-                    .lines()
-                    .enumerate()
-                    .filter(|(_, text)| regex.is_match(text))
-                    .map(|(index, text)| GrepMatch {
-                        path: path.clone(),
-                        line: index + 1,
-                        text: text.to_owned(),
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .take(limit)
-            .collect())
-    }
-
+    /// Takes pages a tool result carried as fresh, and lists them.
     pub fn put(&self, pages: Vec<Page>) -> Vec<String> {
         let mut state = self.lock();
         pages
@@ -356,44 +350,41 @@ impl Workspace {
                 let path = page.path.clone();
                 state.touch(&path);
                 state.stale.remove(&path);
+                state
+                    .index
+                    .entry(path.clone())
+                    .or_insert_with(|| Listed::new(page.key.clone(), path.clone()));
                 state.pages.insert(path.clone(), page);
                 path
             })
             .collect()
     }
 
+    /// Marks every page whose key starts with one of `prefixes` stale,
+    /// listed pages not read yet and reads in flight included.
     pub fn invalidate(&self, prefixes: &[PageKey]) -> Vec<String> {
         let mut state = self.lock();
-        let matched: Vec<String> = state
+        let under_prefix =
+            |key: &PageKey| prefixes.iter().any(|prefix| key_starts_with(key, prefix));
+        let mut matched: Vec<String> = state
             .pages
             .values()
-            .filter(|page| {
-                prefixes
-                    .iter()
-                    .any(|prefix| key_starts_with(&page.key, prefix))
-            })
+            .filter(|page| under_prefix(&page.key))
             .map(|page| page.path.clone())
+            .chain(
+                state
+                    .index
+                    .values()
+                    .filter(|listed| under_prefix(&listed.key))
+                    .map(|listed| listed.path.clone()),
+            )
             .collect();
+        matched.sort();
+        matched.dedup();
         for path in &matched {
             state.touch(path);
             state.stale.insert(path.clone());
         }
-        if state.loading {
-            state
-                .invalidated_while_loading
-                .extend(prefixes.iter().cloned());
-        }
         matched
     }
-}
-
-fn matcher(pattern: &str) -> Result<GlobMatcher, WorkspaceError> {
-    if pattern.len() > GLOB_LIMIT {
-        return Err(WorkspaceError::Glob("longer than 512 bytes".to_owned()));
-    }
-    Ok(GlobBuilder::new(pattern)
-        .literal_separator(true)
-        .build()
-        .map_err(|error| WorkspaceError::Glob(error.to_string()))?
-        .compile_matcher())
 }

@@ -1,11 +1,12 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
+use futures_util::future::join_all;
 use tokio::sync::Notify;
 
-use super::{Claim, PageKey, State, Workspace, WorkspaceError};
+use super::{Claim, Listed, PageKey, State, Workspace, WorkspaceError};
 
 impl Workspace {
+    /// Refetches, in the background, the stale pages the turn has read.
     pub fn refresh_read_pages_in_background(&self) {
         let active: Vec<String> = {
             let state = self.lock();
@@ -31,13 +32,15 @@ impl Workspace {
         self.track(task.abort_handle());
     }
 
+    /// Fetches those of `paths` that are listed but not loaded, or stale,
+    /// waiting for any fetch of them already in flight.
     pub async fn refresh(&self, paths: Vec<String>) -> Result<(), WorkspaceError> {
         loop {
             let (claimed, waits) = {
                 let mut state = self.lock();
                 let outdated: Vec<String> = paths
                     .iter()
-                    .filter(|path| state.stale.contains(*path))
+                    .filter(|path| state.needs_fetch(path))
                     .cloned()
                     .collect();
                 let mut waits = Vec::new();
@@ -80,44 +83,67 @@ impl Workspace {
         Claimed { claims, notify }
     }
 
+    /// Fetches the claimed pages one by one, so a page that fails leaves
+    /// the others loaded; errs naming every page that failed.
     pub(super) async fn fetch_claimed(&self, claimed: &Claimed) -> Result<(), WorkspaceError> {
         let _release = Release {
             workspace: self,
             claimed,
         };
-        let keys: Vec<PageKey> = {
+        let Some(source) = &self.inner.source else {
+            return Err(WorkspaceError::Refresh(
+                "this workspace has no page source".to_owned(),
+            ));
+        };
+        let keys: Vec<Option<PageKey>> = {
             let state = self.lock();
             claimed
                 .claims
                 .iter()
-                .filter_map(|claim| state.pages.get(&claim.path).map(|page| page.key.clone()))
+                .map(|claim| state.key_of(&claim.path))
                 .collect()
         };
-        let pages = match &self.inner.source {
-            Some(source) => source.fetch(keys).await,
-            None => Err("this workspace has no page source".to_owned()),
-        }
-        .map_err(WorkspaceError::Refresh)?;
+        let reads = join_all(keys.into_iter().map(|key| async move {
+            match key {
+                Some(key) => source.read(vec![key]).await,
+                None => Ok(Vec::new()),
+            }
+        }))
+        .await;
         let mut state = self.lock();
-        let unchanged: HashSet<String> = claimed
-            .claims
-            .iter()
-            .filter(|claim| state.generation_of(&claim.path) == claim.generation)
-            .map(|claim| claim.path.clone())
-            .collect();
-        let returned: HashSet<String> = pages.iter().map(|page| page.path.clone()).collect();
-        for path in &unchanged {
-            state.stale.remove(path);
-            if !returned.contains(path) {
-                state.pages.remove(path);
+        let mut failures = Vec::new();
+        for (claim, read) in claimed.claims.iter().zip(reads) {
+            let pages = match read {
+                Ok(pages) => pages,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", claim.path));
+                    continue;
+                }
+            };
+            let unchanged = state.generation_of(&claim.path) == claim.generation;
+            if unchanged {
+                state.stale.remove(&claim.path);
+                if !pages.iter().any(|page| page.path == claim.path) {
+                    state.pages.remove(&claim.path);
+                    state.index.remove(&claim.path);
+                }
+            }
+            for page in pages {
+                let fresh = page.path != claim.path || unchanged;
+                if fresh || !state.pages.contains_key(&page.path) {
+                    state
+                        .index
+                        .entry(page.path.clone())
+                        .or_insert_with(|| Listed::new(page.key.clone(), page.path.clone()));
+                    state.pages.insert(page.path.clone(), page);
+                }
             }
         }
-        for page in pages {
-            if unchanged.contains(&page.path) || !state.pages.contains_key(&page.path) {
-                state.pages.insert(page.path.clone(), page);
-            }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(WorkspaceError::Refresh(failures.join("; ")))
         }
-        Ok(())
     }
 }
 

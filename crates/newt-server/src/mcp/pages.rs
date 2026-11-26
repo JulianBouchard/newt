@@ -6,15 +6,16 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use futures_util::future::{join_all, try_join_all};
-use newt_core::workspace::{Invalidator, Page, PageFuture, PageKey, PageSource, key_starts_with};
+use futures_util::future::try_join_all;
+use newt_core::workspace::{Invalidator, Listed, Page, PageKey};
 use rmcp::model::{
-    PaginatedRequestParams, ReadResourceRequestParams, RequestMetaObject, Resource,
-    ResourceContents, ServerNotification, SubscriptionFilter, sha256_digest,
+    PaginatedRequestParams, ReadResourceRequestParams, RequestMetaObject, ResourceContents,
+    ServerNotification, SubscriptionFilter, sha256_digest,
 };
 use serde_json::Value;
 use tokio::sync::watch;
 
+use super::server_pages::{check_entries, check_pages};
 use super::{Client, META_SESSION, META_STATE, META_STATE_PATCH, Owner, meta_field};
 use crate::backend::SessionState;
 
@@ -25,14 +26,22 @@ const SKILL_SCHEME: &str = "skill://";
 /// The resources one server lists for one session, as workspace pages.
 pub(super) struct McpPages {
     client: Arc<Client>,
-    server: String,
+    pub(super) server: String,
     session: String,
     speaks_newt: bool,
-    owner: Owner,
+    pub(super) owner: Owner,
     state: SessionState,
     /// The added servers' folders, which the home's pages may not use.
     folders: Arc<HashSet<String>>,
-    listed: watch::Sender<Arc<Vec<(String, PageKey)>>>,
+    listed: watch::Sender<Arc<Vec<Known>>>,
+    relisting: tokio::sync::Mutex<()>,
+}
+
+/// A resource as the last listing named it.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Known {
+    uri: String,
+    listed: Listed,
 }
 
 impl std::fmt::Debug for McpPages {
@@ -64,6 +73,7 @@ impl McpPages {
             state,
             folders,
             listed: watch::Sender::new(Arc::new(Vec::new())),
+            relisting: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -81,7 +91,7 @@ impl McpPages {
         Some(meta)
     }
 
-    async fn list(&self) -> Result<Vec<(Resource, PageKey)>, String> {
+    async fn list(&self) -> Result<Vec<Known>, String> {
         let mut listed = Vec::new();
         let mut cursor = None;
         loop {
@@ -128,27 +138,44 @@ impl McpPages {
                 break;
             }
         }
-        let uris: Vec<(String, PageKey)> = listed
-            .iter()
-            .map(|(resource, key)| (resource.uri.clone(), key.clone()))
+        let uris: Vec<Known> = listed
+            .into_iter()
+            .map(|(resource, key)| Known {
+                listed: Listed {
+                    path: self.owner.path(&resource.name),
+                    key,
+                    size: resource.size,
+                    description: resource.description,
+                    priority: resource
+                        .annotations
+                        .as_ref()
+                        .and_then(|annotations| annotations.priority),
+                },
+                uri: resource.uri,
+            })
             .collect();
+        check_entries(
+            uris.iter()
+                .map(|known| (known.listed.path.as_str(), &known.listed.key)),
+        )
+        .map_err(|error| format!("MCP server `{}`: {error}", self.server))?;
         self.listed.send_if_modified(|current| {
             let changed = **current != uris;
             if changed {
-                *current = Arc::new(uris);
+                *current = Arc::new(uris.clone());
             }
             changed
         });
-        Ok(listed)
+        Ok(uris)
     }
 
-    async fn read(&self, resource: Resource, key: PageKey) -> Result<Option<Page>, String> {
-        let mut params = ReadResourceRequestParams::new(resource.uri.clone());
+    async fn read(&self, known: &Known) -> Result<Option<Page>, String> {
+        let mut params = ReadResourceRequestParams::new(known.uri.clone());
         params.meta = self.meta();
         let result = self.client.read_resource(params).await.map_err(|error| {
             format!(
                 "MCP server `{}`: reading `{}`: {error}",
-                self.server, resource.uri
+                self.server, known.uri
             )
         })?;
         if self.speaks_newt {
@@ -161,7 +188,7 @@ impl McpPages {
                 Err(why) => {
                     return Err(format!(
                         "MCP server `{}`, resource `{}`: {why}",
-                        self.server, resource.uri
+                        self.server, known.uri
                     ));
                 }
             }
@@ -170,18 +197,18 @@ impl McpPages {
             .contents
             .into_iter()
             .find_map(|contents| match contents {
-                ResourceContents::TextResourceContents { uri, text, .. } if uri == resource.uri => {
+                ResourceContents::TextResourceContents { uri, text, .. } if uri == known.uri => {
                     Some(text)
                 }
                 _ => None,
             });
         let Some(content) = text else {
-            tracing::warn!(server = %self.server, uri = %resource.uri, "MCP resource is not text; left out of the workspace");
+            tracing::warn!(server = %self.server, uri = %known.uri, "MCP resource is not text; left out of the workspace");
             return Ok(None);
         };
         Ok(Some(Page {
-            key,
-            path: self.owner.path(&resource.name),
+            key: known.listed.key.clone(),
+            path: known.listed.path.clone(),
             version: sha256_digest(content.as_bytes()),
             content,
         }))
@@ -190,7 +217,7 @@ impl McpPages {
     /// Marks a page stale whenever the server reports its resource updated,
     /// and every page when the server's resource list changes. Follows the
     /// URIs of the latest listing until the workspace or the stream ends.
-    async fn watch(self: Arc<Self>, invalidator: Invalidator) {
+    pub(super) async fn watch(self: Arc<Self>, invalidator: Invalidator) {
         let mut listed = self.listed.subscribe();
         loop {
             let uris = Arc::clone(&listed.borrow_and_update());
@@ -202,7 +229,7 @@ impl McpPages {
             }
             let filter = SubscriptionFilter::builder()
                 .resources_list_changed()
-                .resource_subscriptions(uris.iter().map(|(uri, _)| uri.clone()))
+                .resource_subscriptions(uris.iter().map(|known| known.uri.clone()))
                 .build();
             let mut subscription = match self.client.peer().listen(filter).await {
                 Ok(subscription)
@@ -235,10 +262,13 @@ impl McpPages {
                         let stale: Vec<PageKey> = match next {
                             Ok(Some(ServerNotification::ResourceUpdatedNotification(update))) => uris
                                 .iter()
-                                .filter(|(uri, _)| *uri == update.params.uri)
-                                .map(|(_, key)| key.clone())
+                                .filter(|known| known.uri == update.params.uri)
+                                .map(|known| known.listed.key.clone())
                                 .collect(),
                             Ok(Some(ServerNotification::ResourceListChangedNotification(_))) => {
+                                if invalidator.relist().is_none() {
+                                    return;
+                                }
                                 vec![self.owner.key(Vec::new())]
                             }
                             Ok(Some(_)) => continue,
@@ -255,95 +285,47 @@ impl McpPages {
 }
 
 impl McpPages {
-    async fn fetch_owned(&self, keys: &[PageKey]) -> Result<Vec<Page>, String> {
-        let wanted = self
+    pub(super) async fn listing(&self) -> Result<Vec<Listed>, String> {
+        Ok(self
             .list()
             .await?
             .into_iter()
-            .filter(|(_, key)| keys.iter().any(|prefix| key_starts_with(key, prefix)));
-        let pages = try_join_all(wanted.map(|(resource, key)| self.read(resource, key))).await?;
+            .map(|known| known.listed)
+            .collect())
+    }
+
+    /// The pages as the last listing that worked named them.
+    pub(super) fn remembered(&self) -> Vec<Listed> {
+        self.listed
+            .borrow()
+            .iter()
+            .map(|known| known.listed.clone())
+            .collect()
+    }
+
+    /// The pages for `keys`, read by the URIs the last listing gave them;
+    /// lists again first, once for every caller waiting, when one of them is
+    /// not known yet.
+    pub(super) async fn read_owned(&self, keys: &[PageKey]) -> Result<Vec<Page>, String> {
+        let unknown = |known: &[Known]| {
+            keys.iter()
+                .any(|key| !known.iter().any(|resource| &resource.listed.key == key))
+        };
+        let mut known = Arc::clone(&self.listed.borrow());
+        if unknown(&known) {
+            let _relisting = self.relisting.lock().await;
+            known = Arc::clone(&self.listed.borrow());
+            if unknown(&known) {
+                self.list().await?;
+                known = Arc::clone(&self.listed.borrow());
+            }
+        }
+        let wanted = known
+            .iter()
+            .filter(|resource| keys.contains(&resource.listed.key));
+        let pages = try_join_all(wanted.map(|resource| self.read(resource))).await?;
         let pages: Vec<Page> = pages.into_iter().flatten().collect();
         check_pages(&pages).map_err(|error| format!("MCP server `{}`: {error}", self.server))?;
         Ok(pages)
     }
-}
-
-/// The workspace pages of every server of an agent that offers resources,
-/// for one session.
-pub struct ServerPages {
-    servers: Vec<Arc<McpPages>>,
-}
-
-impl std::fmt::Debug for ServerPages {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("ServerPages")
-            .field("servers", &self.servers.len())
-            .finish()
-    }
-}
-
-impl ServerPages {
-    pub(super) fn new(servers: Vec<McpPages>) -> Self {
-        Self {
-            servers: servers.into_iter().map(Arc::new).collect(),
-        }
-    }
-
-    /// Marks pages stale as each server reports its resources updated, until
-    /// the workspace or the streams end.
-    pub async fn watch(self: Arc<Self>, invalidator: Invalidator) {
-        join_all(
-            self.servers
-                .iter()
-                .map(|server| Arc::clone(server).watch(invalidator.clone())),
-        )
-        .await;
-    }
-}
-
-impl PageSource for ServerPages {
-    /// The pages for these keys from every server that may own them. The
-    /// home's failure fails the fetch; an added server's only leaves its own
-    /// pages out, as when it was unreachable at the start of the turn.
-    fn fetch(&self, keys: Vec<PageKey>) -> PageFuture<'_> {
-        Box::pin(async move {
-            let fetches = self.servers.iter().filter_map(|server| {
-                let owned: Vec<PageKey> = keys
-                    .iter()
-                    .filter(|key| server.owner.may_own(key))
-                    .cloned()
-                    .collect();
-                (!owned.is_empty())
-                    .then_some(async move { (server, server.fetch_owned(&owned).await) })
-            });
-            let mut pages = Vec::new();
-            for (server, fetched) in join_all(fetches).await {
-                match fetched {
-                    Ok(owned_pages) => pages.extend(owned_pages),
-                    Err(error) if server.owner == Owner::HOME => return Err(error),
-                    Err(error) => {
-                        tracing::warn!(server = %server.server, %error, "MCP server's pages left out of this read");
-                    }
-                }
-            }
-            check_pages(&pages)?;
-            Ok(pages)
-        })
-    }
-}
-
-/// Checks a list of pages: every page has a path and a key, and no path
-/// appears twice.
-pub fn check_pages(pages: &[Page]) -> Result<(), String> {
-    let mut paths = HashSet::new();
-    for page in pages {
-        if page.path.trim().is_empty() || page.key.is_empty() {
-            return Err("every page needs a path and a key".to_owned());
-        }
-        if !paths.insert(page.path.as_str()) {
-            return Err(format!("page path `{}` appears twice", page.path));
-        }
-    }
-    Ok(())
 }
