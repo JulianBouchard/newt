@@ -45,15 +45,15 @@ impl Store {
         lease: &Lease,
         turn_id: &str,
         first_seq: i32,
-        entries: &[JournalEntry],
+        entries: Vec<JournalEntry>,
         durable: bool,
     ) -> Owned<bool> {
         let pool = self.pool().clone();
         let lease = lease.clone();
         let turn_id = turn_id.to_owned();
         let kinds: Vec<&'static str> = entries.iter().map(entry_kind).collect();
-        let payloads: Vec<Json<JournalEntry>> = entries.iter().cloned().map(Json).collect();
         let expected = entries.len();
+        let payloads: Vec<Json<JournalEntry>> = entries.into_iter().map(Json).collect();
         Box::pin(async move {
             let statement = if durable {
                 FENCED_BATCH

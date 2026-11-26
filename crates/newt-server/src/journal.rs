@@ -41,11 +41,12 @@ impl Writer {
                 Ok(())
             }
         } else {
+            let count = entries.len();
             let written = self
                 .store
-                .append_journal_batch(&self.lease, &self.turn_id, self.seq, &entries, durable)
+                .append_journal_batch(&self.lease, &self.turn_id, self.seq, entries, durable)
                 .await;
-            self.seq += i32::try_from(entries.len()).unwrap_or(i32::MAX);
+            self.seq += i32::try_from(count).unwrap_or(i32::MAX);
             let result = match written {
                 Ok(true) => Ok(()),
                 Ok(false) => {
@@ -56,7 +57,7 @@ impl Writer {
             };
             if let Err(error) = &result {
                 self.broken.store(true, Ordering::Relaxed);
-                tracing::warn!(%error, entries = entries.len(), "journal entries not written");
+                tracing::warn!(%error, entries = count, "journal entries not written");
             }
             result
         };
