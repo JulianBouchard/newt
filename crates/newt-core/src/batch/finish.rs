@@ -119,6 +119,7 @@ pub(super) fn apply_workspace_changes(
         if output.is_error {
             continue;
         }
+        workspace.prefetch(std::mem::take(&mut output.prefetch));
         let mut prefixes = std::mem::take(&mut output.invalidate);
         if let Some(declared) = context.invalidates.get(&call.name) {
             prefixes.extend(declared.iter().cloned());

@@ -52,6 +52,7 @@ struct App {
     read_patch: Option<Value>,
     result_meta: Option<Value>,
     listings: Arc<AtomicUsize>,
+    links: Vec<&'static str>,
 }
 
 impl App {
@@ -206,7 +207,13 @@ impl ServerHandler for App {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         self.seen(&format!("call {}", request.name), &context.meta);
-        let mut result = CallToolResult::success(vec![ContentBlock::text("done")]);
+        let mut blocks = vec![ContentBlock::text("done")];
+        blocks.extend(
+            self.links
+                .iter()
+                .map(|uri| ContentBlock::resource_link(Resource::new(*uri, *uri))),
+        );
+        let mut result = CallToolResult::success(blocks);
         if let Some(meta) = &self.result_meta {
             let mut fields = MetaObject::new();
             for (key, value) in object(meta.clone()) {
@@ -1038,4 +1045,35 @@ async fn an_added_tool_named_like_a_home_tool_leaves_that_server_out() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_page_a_tool_result_links_to_is_read_ahead_from_its_servers_listing() {
+    let mut plain = App::plain();
+    plain.links = vec!["orders://order-17"];
+    let home = App::home();
+    home.settings(json!({
+        "model": "default",
+        "servers": [{ "name": "partner", "url": serve(plain.clone()).await }],
+    }));
+    let backend = backend(home).await;
+    let prepared = prepare(&backend, "ana").await;
+    let output = prepared
+        .host
+        .call(&call("partner__search_orders"), &context())
+        .await;
+    assert_eq!(output.content, "done\n[resource]");
+    assert_eq!(output.prefetch.len(), 1);
+    prepared.workspace.prefetch(output.prefetch);
+    let reads = || {
+        plain
+            .seen_meta
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(what, _)| what == "read")
+            .count()
+    };
+    eventually(|| reads() == 1).await;
+    assert_eq!(prepared.workspace.pages_read(), Vec::new());
 }

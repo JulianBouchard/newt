@@ -61,6 +61,9 @@ pub struct ToolOutput {
     pub invalidate: Vec<PageKey>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Page>,
+    /// Keys of pages the result links to, read ahead for the model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefetch: Vec<PageKey>,
     /// Overrides the tool's [`ToolDef::ends_turn`] for this one call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ends_turn: Option<bool>,

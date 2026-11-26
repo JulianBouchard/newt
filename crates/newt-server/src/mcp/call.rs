@@ -147,7 +147,7 @@ impl McpHost {
     /// carries; any other server's `newt/*` fields are ignored.
     fn output(&self, remote: &Remote, result: CallToolResult) -> ToolOutput {
         if !remote.speaks_newt {
-            return plain_output(result);
+            return plain_output(result, &remote.owner);
         }
         let meta = result.meta.as_deref();
         if let Ok(Some(state)) = meta_field::<Value>(meta, META_TURN_STATE) {
@@ -258,7 +258,8 @@ impl ToolHost for McpHost {
     }
 }
 
-fn plain_output(result: CallToolResult) -> ToolOutput {
+fn plain_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
+    let prefetch = super::links::linked_pages(&result, owner);
     let mut content: Vec<String> = result
         .content
         .into_iter()
@@ -277,6 +278,7 @@ fn plain_output(result: CallToolResult) -> ToolOutput {
     ToolOutput {
         content: content.join("\n"),
         is_error: result.is_error == Some(true),
+        prefetch,
         ..ToolOutput::default()
     }
 }
@@ -285,7 +287,7 @@ fn plain_output(result: CallToolResult) -> ToolOutput {
 /// server's own pages.
 pub(super) fn tool_output(result: CallToolResult, owner: &Owner) -> ToolOutput {
     let meta = result.meta.clone();
-    let mut output = plain_output(result);
+    let mut output = plain_output(result, owner);
     let meta = meta.as_deref();
     let summary = meta_field::<String>(meta, META_SUMMARY);
     let invalidate = meta_field::<Vec<PageKey>>(meta, META_INVALIDATE);

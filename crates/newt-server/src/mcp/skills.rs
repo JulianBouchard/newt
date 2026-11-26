@@ -170,7 +170,7 @@ impl McpHost {
         };
         let content = match self.verified(served, listed).await {
             Ok(content) => content,
-            Err(error) => return error,
+            Err(error) => return ToolOutput::error(error),
         };
         if file.is_some() {
             return ToolOutput::ok(content);
@@ -190,11 +190,7 @@ impl McpHost {
         ToolOutput::ok(out)
     }
 
-    async fn verified(
-        &self,
-        served: &Served,
-        listed: &SkillResource,
-    ) -> Result<String, ToolOutput> {
+    async fn verified(&self, served: &Served, listed: &SkillResource) -> Result<String, String> {
         let key = (served.remote.server.clone(), listed.uri.clone());
         if let Some((digest, content)) = cache(&self.verified).get(&key)
             && *digest == listed.digest
@@ -223,21 +219,17 @@ impl McpHost {
                 }),
             Ok(Err(error)) => {
                 tracing::warn!(server = %served.remote.server, uri = %listed.uri, %error, "MCP skill file could not be read");
-                return Err(ToolOutput::error(format!(
-                    "The skill file could not be read: {error}"
-                )));
+                return Err(format!("The skill file could not be read: {error}"));
             }
             Err(_) => {
-                return Err(ToolOutput::error(format!(
+                return Err(format!(
                     "The skill file did not arrive within {} seconds.",
                     self.limits.quiet.as_secs()
-                )));
+                ));
             }
         };
         let Some(text) = text else {
-            return Err(ToolOutput::error(
-                "The server sent the skill file as something other than text.",
-            ));
+            return Err("The server sent the skill file as something other than text.".to_owned());
         };
         let mismatch = listed
             .verify(text.as_bytes())
@@ -252,9 +244,7 @@ impl McpHost {
         if let Err(why) = mismatch {
             tracing::warn!(server = %served.remote.server, uri = %listed.uri, "MCP skill file failed verification: {why}");
             served.remote.stale.store(true, Ordering::Relaxed);
-            return Err(ToolOutput::error(
-                "The skill changed on its server since it was listed, so it was not loaded. Newt lists the skills again before the next turn.",
-            ));
+            return Err("The skill changed on its server since it was listed, so it was not loaded. Newt lists the skills again before the next turn.".to_owned());
         }
         cache(&self.verified).insert(key, (listed.digest.clone(), text.clone()));
         Ok(text)

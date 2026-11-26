@@ -114,3 +114,16 @@ async fn a_lower_threshold_preloads_more_and_pages_without_a_priority_never() {
     read.sort();
     assert_eq!(read, vec!["notes.md".to_owned(), "profile.md".to_owned()]);
 }
+
+#[tokio::test]
+async fn linked_pages_are_read_ahead_and_unknown_keys_are_ignored() {
+    let (pages, workspace) = workspace();
+    workspace.prefetch(vec![
+        vec!["archive.md".to_owned()],
+        vec!["missing.md".to_owned()],
+    ]);
+    until_read(&pages, 1).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(*pages.read.lock().unwrap(), vec!["archive.md".to_owned()]);
+    assert_eq!(workspace.pages_read(), Vec::new());
+}
