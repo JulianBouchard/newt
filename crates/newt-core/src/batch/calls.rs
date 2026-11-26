@@ -70,7 +70,7 @@ pub(super) fn call_context(context: &TurnContext<'_>, call: &ToolCall) -> CallCo
         idempotency_key: format!("{}:{}:{}", context.ids.session, context.ids.turn, call.id),
         skills_loaded: context.skills_loaded(),
         pages_read: context.workspace.pages_read(),
-        traceparent: Some(crate::otlp::tool_traceparent(
+        traceparent: Some(crate::trace::tool_traceparent(
             context.ids.session,
             context.ids.turn,
             context.ids.started,

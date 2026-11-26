@@ -13,13 +13,12 @@ use axum::http::HeaderMap;
 use axum::routing::post;
 use newt_core::event::{Event, EventKind};
 use newt_core::message::{Message, Part, Role, ToolCall};
-use newt_core::otlp::{
-    Hooks, OtlpConfig, OtlpSink, Profile, Redactor, parse_headers, tool_traceparent,
-};
+use newt_core::otlp::{Hooks, OtlpConfig, OtlpSink, Profile, Redactor, parse_headers};
 use newt_core::prompt::LayerFingerprint;
 use newt_core::provider::{CallTiming, StopReason, Usage};
 use newt_core::sink::EventSink;
 use newt_core::tools::Retention;
+use newt_core::trace::tool_traceparent;
 use serde_json::Value;
 
 type Captured = Arc<Mutex<Vec<(Option<String>, Value)>>>;

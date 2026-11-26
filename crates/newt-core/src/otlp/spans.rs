@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
-use crate::prompt::fnv1a;
+use crate::trace::{attempt, hex64, tool_span_id, trace_id};
 
 use super::assemble::{CallTrace, ToolTrace, TurnTrace};
 use super::{Hooks, OtlpConfig, Profile};
@@ -9,42 +9,6 @@ use super::{Hooks, OtlpConfig, Profile};
 const KIND_INTERNAL: u8 = 1;
 const KIND_CLIENT: u8 = 3;
 const STATUS_ERROR: u8 = 2;
-
-fn hex64(parts: &[&str]) -> String {
-    format!("{:016x}", fnv1a(parts.join("\u{0}").as_bytes()))
-}
-
-fn attempt(started: OffsetDateTime) -> String {
-    started.unix_timestamp_nanos().to_string()
-}
-
-fn trace_id(session: &str, turn: &str, attempt: &str) -> String {
-    format!(
-        "{}{}",
-        hex64(&["trace", session, turn, attempt]),
-        hex64(&["trace-low", session, turn, attempt])
-    )
-}
-
-fn tool_span_id(session: &str, turn: &str, attempt: &str, call_id: &str) -> String {
-    hex64(&["tool", session, turn, attempt, call_id])
-}
-
-/// The W3C `traceparent` of a tool call's span, as the exporter will later
-/// emit it, so a tool server can parent its own spans under newt's.
-pub fn tool_traceparent(
-    session: &str,
-    turn: &str,
-    started: OffsetDateTime,
-    call_id: &str,
-) -> String {
-    let attempt = attempt(started);
-    format!(
-        "00-{}-{}-01",
-        trace_id(session, turn, &attempt),
-        tool_span_id(session, turn, &attempt, call_id)
-    )
-}
 
 fn nanos(at: OffsetDateTime) -> String {
     at.unix_timestamp_nanos().to_string()

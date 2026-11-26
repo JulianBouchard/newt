@@ -26,5 +26,6 @@ pub mod skills;
 pub mod sse;
 pub mod steering;
 pub mod tools;
+pub mod trace;
 pub mod turn;
 pub mod workspace;

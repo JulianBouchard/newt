@@ -14,7 +14,6 @@ use crate::event::Event;
 use crate::sink::EventSink;
 
 use assemble::{Assembler, TurnTrace};
-pub use spans::tool_traceparent;
 
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_EXPORTS_IN_FLIGHT: usize = 4;
