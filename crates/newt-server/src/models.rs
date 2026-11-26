@@ -6,12 +6,11 @@ use newt_core::prompt::{Lane, ModelRequest};
 use newt_core::provider::{
     Model, ModelResponse, Protocol as CoreProtocol, ProviderClient, ProviderError, StreamEvent,
 };
-use newt_otlp::parse_headers;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{Protocol, Route as RouteConfig, ServerConfig};
+use crate::config::{Protocol, Route as RouteConfig, ServerConfig, parse_headers};
 
 #[derive(Debug)]
 pub struct Admission {

@@ -18,7 +18,7 @@ use newt_core::provider::{CallTiming, StopReason, Usage};
 use newt_core::sink::EventSink;
 use newt_core::tools::Retention;
 use newt_core::trace::tool_traceparent;
-use newt_otlp::{Hooks, OtlpConfig, OtlpSink, Profile, Redactor, parse_headers};
+use newt_otlp::{Hooks, OtlpConfig, OtlpSink, Profile, Redactor};
 use serde_json::Value;
 
 type Captured = Arc<Mutex<Vec<(Option<String>, Value)>>>;
@@ -181,8 +181,10 @@ async fn export_events(
     let (sink, exporter) = OtlpSink::spawn(
         OtlpConfig {
             endpoint,
-            headers: parse_headers("Authorization=Basic abc, x-langfuse-ingestion-version=4")
-                .unwrap(),
+            headers: vec![
+                ("Authorization".to_owned(), "Basic abc".to_owned()),
+                ("x-langfuse-ingestion-version".to_owned(), "4".to_owned()),
+            ],
             profile,
             capture_content,
             service_name: "newt-test".into(),
@@ -285,12 +287,6 @@ async fn without_content_capture_no_messages_leave_the_process() {
     let body = exports[0].1.to_string();
     assert!(!body.contains("my phone"), "{body}");
     assert!(!body.contains("profile.md"), "{body}");
-}
-
-#[test]
-fn malformed_headers_are_rejected() {
-    assert!(parse_headers("Authorization").is_err());
-    assert_eq!(parse_headers("").unwrap(), Vec::new());
 }
 
 #[tokio::test]

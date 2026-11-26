@@ -5,13 +5,13 @@ use std::time::Instant;
 
 use anyhow::Context;
 use newt_core::sink::{JsonlSink, SinkError};
-use newt_otlp::{Hooks, OtlpConfig, OtlpSink, parse_headers};
+use newt_otlp::{Hooks, OtlpConfig, OtlpSink};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-use newt_server::config::ServerConfig;
+use newt_server::config::{ServerConfig, parse_headers};
 use newt_server::events::{Instrumentation, Record, ServerEvent, ServerEventKind};
 use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::http::{self, AppState};

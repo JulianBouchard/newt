@@ -14,7 +14,7 @@ use newt_core::steering::NoSteering;
 use newt_core::tools::NoTools;
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
-use newt_otlp::{Hooks, OtlpConfig, OtlpSink, Profile, parse_headers};
+use newt_otlp::{Hooks, OtlpConfig, OtlpSink, Profile};
 use tokio_util::sync::CancellationToken;
 
 const SYSTEM: &str = "You are a concise personal assistant. Read the workspace before answering. \
@@ -22,16 +22,21 @@ You cannot message the person directly in this demo: answer in plain text, then 
 
 type Exporter = (OtlpSink, tokio::task::JoinHandle<()>);
 
-fn otlp_from_env() -> Result<Option<Exporter>, Box<dyn std::error::Error>> {
+fn otlp_from_env() -> Option<Exporter> {
     let Ok(endpoint) = std::env::var("NEWT_OTLP_ENDPOINT") else {
-        return Ok(None);
+        return None;
     };
-    let headers = parse_headers(&std::env::var("NEWT_OTLP_HEADERS").unwrap_or_default())?;
+    let headers = std::env::var("NEWT_OTLP_HEADERS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+        .collect();
     let profile = match std::env::var("NEWT_OTLP_PROFILE").as_deref() {
         Ok("langfuse") => Profile::Langfuse,
         _ => Profile::Generic,
     };
-    Ok(Some(OtlpSink::spawn(
+    Some(OtlpSink::spawn(
         OtlpConfig {
             endpoint,
             headers,
@@ -41,7 +46,7 @@ fn otlp_from_env() -> Result<Option<Exporter>, Box<dyn std::error::Error>> {
         },
         Hooks::default(),
         1024,
-    )))
+    ))
 }
 
 fn env(name: &str) -> Result<String, String> {
@@ -75,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (jsonl, writer) = JsonlSink::<Event>::spawn(events_path.clone(), 1024);
     let jsonl = jsonl.capturing_content(true);
     let mut sinks: Vec<Arc<dyn EventSink>> = vec![Arc::new(jsonl.clone())];
-    let otlp = otlp_from_env()?;
+    let otlp = otlp_from_env();
     if let Some((exporter_sink, _)) = &otlp {
         sinks.push(Arc::new(exporter_sink.clone()));
     }

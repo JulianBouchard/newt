@@ -7,8 +7,7 @@ use time::OffsetDateTime;
 
 use crate::prompt::fnv1a;
 
-/// 16 hex digits hashed from `parts`.
-pub fn hex64(parts: &[&str]) -> String {
+fn hex64(parts: &[&str]) -> String {
     format!("{:016x}", fnv1a(parts.join("\u{0}").as_bytes()))
 }
 
@@ -24,6 +23,23 @@ pub fn trace_id(session: &str, turn: &str, attempt: &str) -> String {
         hex64(&["trace", session, turn, attempt]),
         hex64(&["trace-low", session, turn, attempt])
     )
+}
+
+/// The span id of the turn's root span in one attempt of a turn.
+pub fn root_span_id(session: &str, turn: &str, attempt: &str) -> String {
+    hex64(&["root", session, turn, attempt])
+}
+
+/// The span id of the model call at `index` in one attempt of a turn.
+/// `conversation` is the session, or its [`session_hash`] when content is
+/// not captured.
+pub fn model_call_span_id(conversation: &str, turn: &str, attempt: &str, index: u32) -> String {
+    hex64(&["call", conversation, turn, attempt, &index.to_string()])
+}
+
+/// The session as a hash, for traces that must not carry its key.
+pub fn session_hash(session: &str) -> String {
+    hex64(&["session", session])
 }
 
 /// The span id of a tool call in one attempt of a turn.

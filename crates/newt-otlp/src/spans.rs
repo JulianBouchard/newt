@@ -1,7 +1,9 @@
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
-use newt_core::trace::{attempt, hex64, tool_span_id, trace_id};
+use newt_core::trace::{
+    attempt, model_call_span_id, root_span_id, session_hash, tool_span_id, trace_id,
+};
 
 use crate::assemble::{CallTrace, ToolTrace, TurnTrace};
 use crate::{Hooks, OtlpConfig, Profile};
@@ -83,12 +85,12 @@ pub(crate) fn spans(trace: &TurnTrace, config: &OtlpConfig, hooks: &Hooks) -> Ve
     let attempt = trace.started.map(attempt).unwrap_or_default();
     let ids = Ids {
         trace: trace_id(session, turn, &attempt),
-        root: hex64(&["root", session, turn, &attempt]),
+        root: root_span_id(session, turn, &attempt),
         session,
         conversation: if config.capture_content {
             session.to_owned()
         } else {
-            hex64(&["session", session])
+            session_hash(session)
         },
         agent: session.split('/').next().unwrap_or(session),
         attempt,
@@ -232,13 +234,7 @@ fn chat_span(
     if config.profile == Profile::Langfuse {
         attributes.extend(langfuse_generation(call, call_started, config, hooks));
     }
-    let call_id = hex64(&[
-        "call",
-        &ids.conversation,
-        ids.turn,
-        &ids.attempt,
-        &index.to_string(),
-    ]);
+    let call_id = model_call_span_id(&ids.conversation, ids.turn, &ids.attempt, index);
     span(
         (&ids.trace, &call_id, Some(&ids.root)),
         format!("chat {}", call.model),

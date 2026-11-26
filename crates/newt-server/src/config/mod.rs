@@ -131,6 +131,20 @@ impl ServerConfig {
     }
 }
 
+/// Headers written `name=value,name=value`, as in an environment variable.
+pub fn parse_headers(raw: &str) -> Result<Vec<(String, String)>, String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            pair.split_once('=')
+                .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+                .filter(|(name, _)| !name.is_empty())
+                .ok_or_else(|| "headers must look like name=value,name=value".to_owned())
+        })
+        .collect()
+}
+
 fn is_http_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
 }
@@ -148,6 +162,19 @@ mod tests {
     use super::*;
 
     const EXAMPLE: &str = include_str!("../../../../server.example.toml");
+
+    #[test]
+    fn malformed_headers_are_rejected() {
+        assert!(parse_headers("Authorization").is_err());
+        assert_eq!(parse_headers("").unwrap(), Vec::new());
+        assert_eq!(
+            parse_headers(" a = 1 ,b=2").unwrap(),
+            vec![
+                ("a".to_owned(), "1".to_owned()),
+                ("b".to_owned(), "2".to_owned())
+            ]
+        );
+    }
 
     #[test]
     fn the_example_config_parses() {

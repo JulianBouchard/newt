@@ -46,7 +46,7 @@ Model output reaches the world only through tools.
 
 - Message content is stored in Postgres: inbox payloads, history, checkpoints and the turn journal hold event text, model output and tool output. Protect the database accordingly. `events.capture_content` does not affect it.
 - The JSONL event file (`[events] jsonl`) is off unless a path is set. When it is set, message content is removed from events unless `[events] capture_content = true` (default `false`; `crates/newt-core/src/sink.rs`, `event.rs`).
-- OTLP export exists only if a `[tracing]` section is present. Inside that section, `capture_content` defaults to `true`: the messages new to each model call and its response are exported. Set `capture_content = false` to export timings, token counts and tool names only; that setting also hashes the session key used as the conversation id and replaces error text with `failed` (`crates/newt-core/src/otlp/spans.rs`). Library users can add a `Redactor` that runs over captured content.
+- OTLP export exists only if a `[tracing]` section is present. Inside that section, `capture_content` defaults to `true`: the messages new to each model call and its response are exported. Set `capture_content = false` to export timings, token counts and tool names only; that setting also hashes the session key used as the conversation id and replaces error text with `failed` (`crates/newt-otlp/src/spans.rs`). Library users can add a `Redactor` that runs over captured content.
 - The live feed (`/v1/agents/{agent}/sessions/{key}/live`) carries event ids, tool names, counts and error text. It does not carry message text.
 - Operator logs (`RUST_LOG`) can include error messages from providers and MCP servers.
 

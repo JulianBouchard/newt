@@ -89,19 +89,6 @@ impl std::fmt::Debug for Hooks {
     }
 }
 
-pub fn parse_headers(raw: &str) -> Result<Vec<(String, String)>, String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            pair.split_once('=')
-                .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
-                .filter(|(name, _)| !name.is_empty())
-                .ok_or_else(|| "headers must look like name=value,name=value".to_owned())
-        })
-        .collect()
-}
-
 #[derive(Debug, Clone)]
 pub struct OtlpSink {
     sender: mpsc::Sender<Event>,
