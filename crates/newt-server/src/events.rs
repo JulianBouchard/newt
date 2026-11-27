@@ -120,22 +120,16 @@ impl LogLine for Record {
     }
 }
 
-/// Watches what the server does: a turn's events as the loop in newt-core
-/// emits them, and the server's own events around them. An observer runs
-/// on the session's task, so it must not block: one with slow work queues
-/// it, as the event log does.
-pub trait Observer: Send + Sync {
-    /// A turn's event: a model call, a tool call, the turn's end.
-    fn turn(&self, _event: &Event) {}
+/// Watches what the server does: a turn's events, as any [`EventSink`]
+/// receives them from the loop in newt-core, and the server's own events
+/// around them. An observer runs on the session's task, so it must not
+/// block: one with slow work queues it, as the event log does.
+pub trait Observer: EventSink {
     /// A server event: an event accepted, a claim, a commit, a compaction.
     fn server(&self, _event: &ServerEvent) {}
 }
 
 impl<T: Observer + ?Sized> Observer for Arc<T> {
-    fn turn(&self, event: &Event) {
-        (**self).turn(event);
-    }
-
     fn server(&self, event: &ServerEvent) {
         (**self).server(event);
     }
@@ -177,29 +171,24 @@ impl Observers {
 
 impl EventSink for Observers {
     fn emit(&self, event: Event) {
-        for observer in &self.0 {
-            observer.turn(&event);
+        if let Some((last, rest)) = self.0.split_last() {
+            for observer in rest {
+                observer.emit(event.clone());
+            }
+            last.emit(event);
         }
     }
 }
 
 /// The event log: every turn event and every server event, in order.
 impl Observer for JsonlSink<Record> {
-    fn turn(&self, event: &Event) {
-        self.emit(event.clone());
-    }
-
     fn server(&self, event: &ServerEvent) {
         self.write(Record::Server(event.clone()));
     }
 }
 
 /// The trace exporter: a turn's events only.
-impl Observer for OtlpSink {
-    fn turn(&self, event: &Event) {
-        self.emit(event.clone());
-    }
-}
+impl Observer for OtlpSink {}
 
 #[cfg(test)]
 mod tests {

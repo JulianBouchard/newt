@@ -706,15 +706,17 @@ async fn a_turn_end_refused_too_often_is_given_up(pool: PgPool) {
 #[derive(Default)]
 struct Recorder(Mutex<Vec<String>>);
 
-impl newt_server::events::Observer for Recorder {
-    fn turn(&self, event: &newt_core::event::Event) {
+impl newt_core::sink::EventSink for Recorder {
+    fn emit(&self, event: newt_core::event::Event) {
         let kind = serde_json::to_value(&event.kind).unwrap();
         self.0
             .lock()
             .unwrap()
             .push(format!("turn {}", kind["type"].as_str().unwrap()));
     }
+}
 
+impl newt_server::events::Observer for Recorder {
     fn server(&self, event: &newt_server::events::ServerEvent) {
         let kind = serde_json::to_value(&event.kind).unwrap();
         self.0

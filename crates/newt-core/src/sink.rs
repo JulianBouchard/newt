@@ -14,6 +14,12 @@ pub trait EventSink: Send + Sync {
     fn emit(&self, event: Event);
 }
 
+impl<T: EventSink + ?Sized> EventSink for Arc<T> {
+    fn emit(&self, event: Event) {
+        (**self).emit(event);
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct MultiSink(pub Vec<Arc<dyn EventSink>>);
 
