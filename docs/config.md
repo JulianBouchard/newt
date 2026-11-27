@@ -67,7 +67,7 @@ These are constants in `RunnerConfig::default()` (`crates/newt-server/src/runner
 | Lease TTL | 30 s. A heartbeat renews running leases every 10 s. |
 | Sweep interval | 1 s. Each sweep wakes up to 100 sessions with pending events and no live lease. |
 | Retry backoff after a failed turn | 2 s doubling per failed attempt, capped at 300 s. |
-| Attempts before dead-lettering a turn that had no effects | 5 |
+| Attempts before dead-lettering a turn that had no effects | 5. Taking over a turn that never finished, as a crash mid-turn leaves it once its lease expires, counts as an attempt too, unless the turn made an outward call; a commit resets the count. |
 | Shutdown grace period | 8 s, then running turns are cancelled and given 5 s more. |
 
 ## `[retention]`

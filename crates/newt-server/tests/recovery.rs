@@ -387,3 +387,141 @@ async fn a_crash_while_a_write_starts_reports_it_interrupted_too(pool: PgPool) {
     assert_eq!(recovered.keys.len(), 1);
     assert!(recovered.results[0].starts_with("Interrupted:"));
 }
+
+/// A session whose turn `t-crashed` started on its one event and was left
+/// unfinished, with `entries` journaled after the start, by an owner that
+/// let its lease expire after `failed_attempts` earlier attempts. `released`
+/// leaves the lease released instead, as an ordinary failure does.
+async fn left_unfinished(
+    pool: &PgPool,
+    entries: &[serde_json::Value],
+    failed_attempts: i32,
+    released: bool,
+) {
+    let store = Store::new(pool.clone());
+    let event: InboundEvent =
+        serde_json::from_value(json!({ "id": "e1", "text": "Tell them yes." })).unwrap();
+    let accepted = store
+        .accept_event("assistant", "k", &event, false)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into turn_journal (agent, key, turn_id, seq, kind, payload) \
+         values ('assistant', 'k', 't-crashed', 0, 'start', jsonb_build_object('inbox_ids', jsonb_build_array($1::bigint)))",
+    )
+    .bind(accepted.inbox_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    for (seq, entry) in (1..).zip(entries) {
+        sqlx::query(
+            "insert into turn_journal (agent, key, turn_id, seq, kind, payload) \
+             values ('assistant', 'k', 't-crashed', $1, $2->>'entry', $2)",
+        )
+        .bind(seq)
+        .bind(entry)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    let owner = if released { None } else { Some("crashed") };
+    sqlx::query(
+        "update sessions set lease_owner = $1, lease_epoch = lease_epoch + 1, \
+         lease_expires_at = now() - interval '1 second', failed_attempts = $2 where key = 'k'",
+    )
+    .bind(owner)
+    .bind(failed_attempts)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn settled(pool: &PgPool, script: Vec<Message>) -> (Option<String>, usize) {
+    let store = Store::new(pool.clone());
+    let world = Arc::new(World::default());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let recovering = runner(pool, &world, script, &calls);
+    let _loops = recovering.spawn_loops();
+    until("the session to settle", || async {
+        let status = store
+            .session_status("assistant", "k")
+            .await
+            .unwrap()
+            .unwrap();
+        status.pending_events == 0 && status.lease_owner.is_none()
+    })
+    .await;
+    let reason: Option<String> =
+        sqlx::query_scalar("select dead_letter from inbox where key = 'k'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    (reason, calls.load(Ordering::Relaxed))
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_turn_that_keeps_crashing_newt_is_dead_lettered_after_five_interrupted_runs(
+    pool: PgPool,
+) {
+    left_unfinished(&pool, &[], 4, false).await;
+    let (reason, calls) = settled(&pool, Vec::new()).await;
+    assert_eq!(
+        reason.as_deref(),
+        Some("the turn was interrupted before it finished")
+    );
+    assert_eq!(calls, 0, "the turn is not run again");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_crashing_turn_that_made_an_outward_call_is_run_again_not_given_up(pool: PgPool) {
+    left_unfinished(
+        &pool,
+        &[json!({ "entry": "outward_intent", "call_id": "s1" })],
+        4,
+        false,
+    )
+    .await;
+    let world = Arc::new(World::default());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let recovering = runner(
+        &pool,
+        &world,
+        vec![tool_call(
+            "e1",
+            "end_turn",
+            json!({ "nothing_new": "done" }),
+        )],
+        &calls,
+    );
+    let _loops = recovering.spawn_loops();
+    until("the turn to run again", || async {
+        calls.load(Ordering::Relaxed) > 0
+    })
+    .await;
+    let reason: Option<String> =
+        sqlx::query_scalar("select dead_letter from inbox where key = 'k'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        reason, None,
+        "a turn with an outward call is never given up"
+    );
+    recovering.shutdown().await;
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_turn_retried_after_an_ordinary_failure_runs_without_being_asked_about(pool: PgPool) {
+    left_unfinished(&pool, &[], 4, true).await;
+    let (reason, calls) = settled(
+        &pool,
+        vec![tool_call(
+            "e1",
+            "end_turn",
+            json!({ "nothing_new": "done" }),
+        )],
+    )
+    .await;
+    assert_eq!(reason, None, "the turn committed");
+    assert_eq!(calls, 1);
+}

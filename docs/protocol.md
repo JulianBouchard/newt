@@ -249,7 +249,7 @@ Sent to the agent core after a turn commits, when it declares `turn_end: true`.
 
 | Field | Meaning |
 |---|---|
-| `outcome` | `completed`; `failed` for a turn that failed after it had effects (an outward call or a durable tool) and was committed with what it did; `dead_lettered` when newt gave up on the events of a turn that failed with no effects: by default once it was cancelled or on its fifth failed attempt, as the server's failure policy decides. A failed turn with no effects that will be retried does not send `newt/turn_end`. |
+| `outcome` | `completed`; `failed` for a turn that failed after it had effects (an outward call or a durable tool) and was committed with what it did; `dead_lettered` when newt gave up on the events of a turn that failed with no effects: by default once it was cancelled or on its fifth failed attempt, as the server's failure policy decides. Taking over a turn that never finished, which is what a crash mid-turn leaves once its lease expires, counts as an attempt; a turn with no outward call given up that way, before it runs again, does not send `newt/turn_end`, and its events carry the reason `the turn was interrupted before it finished`. A failed turn with no effects that will be retried does not send `newt/turn_end`. |
 | `events` | Every event the turn consumed, as `{ id, meta }`, oldest first: the ones it started on and any that steered it. For `dead_lettered`, the events given up on. |
 | `state` | The session's state after the turn (unchanged for `dead_lettered`). |
 | `turn_state` | The turn state when the turn ended (2.3). After a crash and resume, only what calls made since the resume set. |

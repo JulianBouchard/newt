@@ -17,6 +17,13 @@ pub struct Lease {
     pub key: String,
     pub owner: String,
     pub epoch: i64,
+    /// Failed attempts at the session's turn when the lease was taken: each
+    /// failed turn counts, and so does taking over a lease that expired,
+    /// which is what a crash mid-turn leaves. A commit resets it.
+    pub failed_attempts: i32,
+    /// Whether the lease was taken over from an owner that let it expire
+    /// instead of releasing it.
+    pub taken_over: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

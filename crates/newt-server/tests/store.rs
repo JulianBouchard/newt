@@ -473,3 +473,31 @@ async fn the_received_frame_carries_meta_only_for_agents_that_opt_in(pool: PgPoo
     assert!(received_frame(&pool, "m2").await.get("meta").is_none());
     assert!(received_frame(&pool, "m3").await.get("meta").is_none());
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn taking_over_an_expired_lease_counts_an_attempt_and_a_released_one_does_not(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    store
+        .accept_event("assistant", "crash", &event("e1", "hi"), false)
+        .await
+        .unwrap();
+    let first = claimed(&store, "crash", "a").await;
+    assert_eq!((first.failed_attempts, first.taken_over), (0, false));
+    expire(&pool, "crash").await;
+    let second = claimed(&store, "crash", "b").await;
+    assert_eq!(
+        (second.failed_attempts, second.taken_over),
+        (1, true),
+        "a crash mid-turn leaves the lease to expire"
+    );
+    expire(&pool, "crash").await;
+    let third = claimed(&store, "crash", "c").await;
+    assert_eq!(third.failed_attempts, 2);
+    store.release(&third).await.unwrap();
+    let fourth = claimed(&store, "crash", "d").await;
+    assert_eq!(
+        (fourth.failed_attempts, fourth.taken_over),
+        (2, false),
+        "a released lease is no crash"
+    );
+}

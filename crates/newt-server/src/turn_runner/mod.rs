@@ -73,6 +73,7 @@ async fn session_loop<B: Backend, M: Model>(
     let (agent, key) = (lease.agent.as_str(), lease.key.as_str());
     let lease = lease.clone();
     let mut changes = first_changes;
+    let mut first = true;
     loop {
         if inner.stopping.is_cancelled() {
             inner.store.release(&lease).await?;
@@ -108,6 +109,12 @@ async fn session_loop<B: Backend, M: Model>(
                 state,
             },
         };
+        if std::mem::take(&mut first)
+            && lease.taken_over
+            && ending::given_up_before_running(inner, &lease, &plan).await?
+        {
+            return Ok(());
+        }
         if !run_one_turn(inner, &lease, plan, changes).await? {
             return Ok(());
         }

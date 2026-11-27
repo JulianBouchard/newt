@@ -316,6 +316,8 @@ async fn a_long_session_stays_under_its_history_budget(pool: PgPool) {
         key: "k".into(),
         owner: "test".into(),
         epoch: 0,
+        failed_attempts: 0,
+        taken_over: false,
     };
     let history = format!("{:?}", store.history(&lease).await.unwrap());
     assert!(

@@ -445,6 +445,8 @@ async fn compaction_after_a_reset_only_sees_what_came_after_it(pool: PgPool) {
         key: "k".into(),
         owner: "test".into(),
         epoch: 0,
+        failed_attempts: 0,
+        taken_over: false,
     };
     let before = store.compaction_state(&lease).await.unwrap();
     assert_eq!(before.open_commitments, vec!["call the bank"]);

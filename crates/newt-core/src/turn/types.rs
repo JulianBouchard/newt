@@ -95,6 +95,10 @@ pub enum TurnError {
     DuplicateTool(String),
     #[error("{0}")]
     History(String),
+    /// The turn was picked up again after it never finished, as a crash
+    /// leaves it.
+    #[error("the turn was interrupted before it finished")]
+    Interrupted,
 }
 
 impl TurnError {

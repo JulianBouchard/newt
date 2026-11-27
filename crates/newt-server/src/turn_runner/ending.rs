@@ -1,3 +1,4 @@
+use super::preparation::TurnPlan;
 use super::retry_later;
 use crate::backend::{Backend, Prepared, SessionState, TurnEvent, TurnState};
 use crate::counters::Counter;
@@ -219,6 +220,51 @@ pub(super) async fn finish_turn<B: Backend, M: Model>(
     tracing::error!(attempts, cancelled, agent = %lease.agent, key = %lease.key, "giving up on the turn, dead-lettering its events");
     give_up(inner, lease, &ending, &turn_id, consumed, reason).await?;
     Ok(false)
+}
+
+/// Asks the failure policy about a turn left unfinished by an owner whose
+/// lease expired, before it runs again: a turn that crashes newt every time
+/// it runs would otherwise be picked up forever. Only a turn that started
+/// and sent nothing outward is asked about; one with an outward call is
+/// always run again, as every turn with effects is. Whether it was given
+/// up, its events dead-lettered and the lease released. It is not
+/// prepared, so it sends no turn end.
+pub(super) async fn given_up_before_running<B: Backend, M: Model>(
+    inner: &Inner<B, M>,
+    lease: &Lease,
+    plan: &TurnPlan,
+) -> anyhow::Result<bool> {
+    let sent_outward = plan.replay.iter().any(|entry| {
+        matches!(
+            entry,
+            newt_core::journal::JournalEntry::OutwardIntent { .. }
+        )
+    });
+    if plan.fresh || sent_outward {
+        return Ok(false);
+    }
+    let interrupted = TurnError::Interrupted;
+    let AfterFailure::DeadLetter { reason } = inner.failures.on_failure(&FailedTurn {
+        agent: &lease.agent,
+        session: &lease.key,
+        error: &interrupted,
+        attempts: lease.failed_attempts,
+    }) else {
+        return Ok(false);
+    };
+    tracing::error!(attempts = lease.failed_attempts, agent = %lease.agent, key = %lease.key, "giving up on a turn picked up again too often, dead-lettering its events");
+    let consumed: Vec<i64> = plan.events.iter().map(|event| event.inbox_id).collect();
+    let count = consumed.len();
+    if inner
+        .store
+        .dead_letter(lease, consumed, reason, None)
+        .await?
+    {
+        inner.metrics.count_many(Counter::DeadLetters, count);
+    } else {
+        tracing::warn!(agent = %lease.agent, key = %lease.key, "lease lost before the events were dead-lettered");
+    }
+    Ok(true)
 }
 
 async fn give_up<B: Backend, M: Model>(

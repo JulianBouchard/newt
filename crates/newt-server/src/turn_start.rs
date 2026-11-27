@@ -43,12 +43,14 @@ type NextRow = (
     Option<Json<Value>>,
 );
 
-const CLAIM: &str = "update sessions set lease_owner = $3, lease_epoch = lease_epoch + 1, \
-       lease_expires_at = now() + make_interval(secs => $4) \
-     where agent = $1 and key = $2 \
-       and (lease_owner is null or lease_expires_at < now()) \
-       and (retry_after is null or retry_after <= now()) \
-     returning lease_epoch";
+const CLAIM: &str = "update sessions s set lease_owner = $3, lease_epoch = s.lease_epoch + 1, \
+       lease_expires_at = now() + make_interval(secs => $4), \
+       failed_attempts = s.failed_attempts + (before.lease_owner is not null)::int \
+     from (select lease_owner from sessions where agent = $1 and key = $2) before \
+     where s.agent = $1 and s.key = $2 \
+       and (s.lease_owner is null or s.lease_expires_at < now()) \
+       and (s.retry_after is null or s.retry_after <= now()) \
+     returning s.lease_epoch, s.failed_attempts, before.lease_owner is not null";
 
 const NEXT_OR_RELEASE: &str = "with released as ( \
        update sessions s set lease_owner = null, lease_expires_at = null \
@@ -142,18 +144,20 @@ impl Store {
         let (agent, key, owner) = (agent.to_owned(), key.to_owned(), owner.to_owned());
         Box::pin(async move {
             let (mut connection, waited) = timed_connection(&pool).await?;
-            let epoch: Option<i64> = sqlx::query_scalar(CLAIM)
+            let claimed: Option<(i64, i32, bool)> = sqlx::query_as(CLAIM)
                 .bind(&agent)
                 .bind(&key)
                 .bind(&owner)
                 .bind(seconds(ttl))
                 .fetch_optional(&mut *connection)
                 .await?;
-            let lease = epoch.map(|epoch| Lease {
+            let lease = claimed.map(|(epoch, failed_attempts, taken_over)| Lease {
                 agent,
                 key,
                 owner,
                 epoch,
+                failed_attempts,
+                taken_over,
             });
             Ok((lease, waited))
         })
