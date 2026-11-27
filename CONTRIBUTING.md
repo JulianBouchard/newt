@@ -53,7 +53,7 @@ These come from `[workspace.lints]` in `Cargo.toml`. With `-D warnings`, every w
 
 ## Style the compiler does not check
 
-- Errors: `thiserror` enums in `newt-core`, `anyhow` with `.context(...)` in `newt-server`. Do not drop the source error.
+- Errors: `thiserror` enums in the library crates (`newt-core`, `newt-providers`), `anyhow` with `.context(...)` in `newt-server`. Do not drop the source error.
 - Fail loudly on bad config or a bad provider response instead of falling back.
 - Prefer concrete types. Add a trait only where the design already has a seam (`EventSink`, `Model`, `ToolHost`, `Journal`).
 - Do not block the async runtime. Use tokio's APIs or `spawn_blocking`.

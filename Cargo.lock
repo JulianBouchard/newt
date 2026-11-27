@@ -1305,8 +1305,6 @@ dependencies = [
 name = "newt-core"
 version = "2.4.0"
 dependencies = [
- "axum",
- "bytes",
  "futures-util",
  "globset",
  "proptest",
@@ -1347,7 +1345,6 @@ dependencies = [
  "anyhow",
  "axum",
  "futures-util",
- "newt-core",
  "newt-providers",
  "newt-server",
  "reqwest",
@@ -1382,7 +1379,6 @@ name = "newt-providers"
 version = "2.4.0"
 dependencies = [
  "axum",
- "bytes",
  "futures-util",
  "newt-core",
  "proptest",
@@ -1393,7 +1389,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
- "tracing",
 ]
 
 [[package]]

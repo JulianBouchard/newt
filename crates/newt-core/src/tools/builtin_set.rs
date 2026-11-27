@@ -19,7 +19,7 @@ impl Default for BuiltinTools {
 }
 
 impl BuiltinTools {
-    pub const ALL: Self = Self(u32::MAX);
+    pub const ALL: Self = Self((1 << BUILTINS.len()) - 1);
     pub const NONE: Self = Self(0);
 
     fn bit(name: &str) -> Option<u32> {

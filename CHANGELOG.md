@@ -4,6 +4,25 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+The workspace reads a page only when the turn asks for it, newt-core keeps only the turn loop and the traits around it, and three hooks let an app change what the server does without forking it.
+
+### Added
+
+- **The turn opens with an index of the workspace's pages**: path, size and description, priority first, a large folder as one line with the glob that lists it. `page_index_wait_ms` in the agent's `newt` settings (default 2000) bounds how long the first model call waits for it; `0` leaves it out.
+- **Pages are read ahead without counting as read**: those whose `annotations.priority` is at least `preload_priority` (default 1.0) as the turn starts, and those a tool result links to with `resource_link`.
+- **MCP resource templates**: a template named like `orders/{id}.md` with a matching `uriTemplate` serves the pages its pattern matches.
+- **Hooks on `Runner::builder`**: `.observe(...)` adds an `Observer` (an `EventSink` that can also hear server events), `.history(...)` sets the `HistoryPolicy` that decides what of a turn becomes history (`Retained` by default, `KeepAllToolCalls` as an alternative), and `.failures(...)` sets the `FailurePolicy` that decides when a failed turn is dead-lettered (`GiveUpAfter { attempts: 5 }` by default). A turn with effects outside is always retried.
+
+### Changed
+
+- **The workspace lists pages at turn start and reads a page only when asked.** A read waits for the pages it names, never for the slowest one, and a page that fails fails only its own read. `grep` searches the pages that read and names the ones it skipped.
+- **MCP requests reuse pooled connections** instead of opening one per request.
+- **Provider clients move to their own crate, `newt-providers`.** For Rust users: `ProviderClient`, `Protocol` and `sse` are now under `newt_providers`; newt-core keeps `Model` and its types and no longer depends on an HTTP client. `ProviderError::Http` and `Timeout` box their error, and `Sse` carries its message.
+- **`Runner::new` is replaced by `Runner::builder(store, backend, model)`**, and `RunnerConfig::max_attempts` by the failure policy. `TurnDeps` takes a `history` policy.
+- **Built-in tools are one table, `BUILTINS`.** `BUILTIN_TOOL_NAMES` is gone; the names come from the table.
+
+The `newt` binary's config, event log, journal and HTTP API are unchanged; `server.toml` gains no keys.
+
 ## [2.4.0] - 2026-11-26
 
 newt-core now holds only the turn loop: tracing is its own crate and the server's own concerns live in the server. The `newt` binary, its config, the event log and the journal are unchanged. Two fixes for several instances sharing one Postgres.

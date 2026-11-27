@@ -10,7 +10,7 @@
 //! ```text
 //! NEWT_PROTOCOL=openai NEWT_BASE_URL=... NEWT_API_KEY=... NEWT_MODEL=... \
 //! EVAL_OUT=results.jsonl EVAL_CASES=10 EVAL_LENGTHS=5,11,23 EVAL_SIZES=short,long \
-//! EVAL_PARALLEL=3 cargo run --release -p newt-core --example recitation_eval
+//! EVAL_PARALLEL=3 cargo run --release -p newt-providers --example recitation_eval
 //! ```
 
 use std::collections::BTreeSet;

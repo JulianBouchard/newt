@@ -7,8 +7,9 @@
 //! to history, and `outward` calls are journaled before they run so a crash replays them
 //! with the same idempotency key.
 //!
-//! Start at [`turn::run_turn`]; the workspace is in [`workspace`], providers in
-//! [`provider`], and observability sinks in [`sink`].
+//! Start at [`turn::run_turn`]; the workspace is in [`workspace`], the
+//! [`Model`](provider::Model) trait a turn calls in [`provider`] (its clients
+//! are in newt-providers), and observability sinks in [`sink`].
 
 mod batch;
 pub mod batch_tool;
