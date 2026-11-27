@@ -6,7 +6,7 @@ use crate::event::{Event, EventKind, FailureReason};
 use crate::journal::Journal;
 use crate::message::{Message, ToolCall};
 use crate::prompt::{LayerFingerprint, Prompt, ToolSpec};
-use crate::provider::{Model, ProviderError};
+use crate::provider::Model;
 use crate::skills::{Skill, with_index};
 use crate::steering::Steering;
 use crate::tools::{Retention, ToolHost};
@@ -158,8 +158,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
                 turn: ids.turn.to_owned(),
                 error: error.to_string(),
                 committed_messages: committed.len(),
-                reason: matches!(error, TurnError::Provider(ProviderError::Cancelled))
-                    .then_some(FailureReason::Cancelled),
+                reason: error.is_cancelled().then_some(FailureReason::Cancelled),
             }));
             Err(TurnFailure {
                 error,
@@ -186,8 +185,15 @@ fn keep_history(
         kept: &state.kept,
         harness_notes: &state.harness_notes,
     };
-    match committed_messages(history, std::mem::take(&mut state.scratch), &rules) {
-        Ok(committed) => (result, committed),
-        Err(broken) => (Err(TurnError::History(broken)), Vec::new()),
+    match (
+        committed_messages(history, std::mem::take(&mut state.scratch), &rules),
+        result,
+    ) {
+        (Ok(committed), result) => (result, committed),
+        (Err(broken), Ok(_)) => (Err(TurnError::History(broken)), Vec::new()),
+        (Err(broken), Err(error)) => {
+            tracing::error!(%broken, %error, "the history policy broke a failed turn's history; committing none of it");
+            (Err(error), Vec::new())
+        }
     }
 }

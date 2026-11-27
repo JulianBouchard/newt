@@ -16,8 +16,15 @@ pub trait HistoryPolicy: Send + Sync {
     fn commit(&self, turn: TurnRecord<'_>) -> Vec<Message>;
 }
 
+impl<T: HistoryPolicy + ?Sized> HistoryPolicy for std::sync::Arc<T> {
+    fn commit(&self, turn: TurnRecord<'_>) -> Vec<Message> {
+        (**self).commit(turn)
+    }
+}
+
 /// A finished turn, with harness notes and reasoning already taken out.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TurnRecord<'a> {
     pub messages: Vec<Message>,
     /// Each tool's retention, by tool name.

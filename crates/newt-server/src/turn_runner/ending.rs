@@ -7,6 +7,7 @@ use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{CommitError, Lease, PendingEvent, TurnCommit};
 use newt_core::message::Message;
 use newt_core::provider::Model;
+use newt_core::turn::TurnError;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -145,7 +146,7 @@ pub(super) async fn finish_turn<B: Backend, M: Model>(
             None,
         ),
     };
-    let cancelled = failure.as_ref().is_some_and(FailedTurn::is_cancelled);
+    let cancelled = failure.as_ref().is_some_and(TurnError::is_cancelled);
     inner.metrics.count(match &failure {
         None => Counter::TurnsCompleted,
         Some(_) if cancelled => Counter::TurnsCancelled,
@@ -207,7 +208,6 @@ pub(super) async fn finish_turn<B: Backend, M: Model>(
         session: &lease.key,
         error: &error,
         attempts,
-        cancelled,
     });
     let AfterFailure::DeadLetter { reason } = decision else {
         retry_later(inner, lease).await?;

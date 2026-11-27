@@ -211,7 +211,7 @@ async fn accept_event(
     } else {
         Counter::EventsAccepted
     });
-    if !accepted.duplicate {
+    if !accepted.duplicate && !state.observers.is_empty() {
         state.observers.server(ServerEventKind::EventAccepted {
             session: format!("{agent}/{key}"),
             inbox_id: accepted.inbox_id,

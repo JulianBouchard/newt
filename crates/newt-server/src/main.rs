@@ -99,10 +99,10 @@ async fn main() -> anyhow::Result<()> {
     .live(live_topics.clone())
     .live_stream(access.live_stream.clone());
     if let Some((log, _)) = &jsonl {
-        runner = runner.observe(Arc::new(log.clone()));
+        runner = runner.observe(log.clone());
     }
     if let Some((traces, _)) = &otlp {
-        runner = runner.observe(Arc::new(traces.clone()));
+        runner = runner.observe(traces.clone());
     }
     let runner = runner.build();
     let loops = runner.spawn_loops();

@@ -176,8 +176,8 @@ impl<B: Backend, M: Model + 'static> RunnerBuilder<B, M> {
 
     /// Adds an observer, told every turn and server event.
     #[must_use]
-    pub fn observe(mut self, observer: Arc<dyn Observer>) -> Self {
-        self.observers.push(observer);
+    pub fn observe(mut self, observer: impl Observer + 'static) -> Self {
+        self.observers.push(Arc::new(observer));
         self
     }
 

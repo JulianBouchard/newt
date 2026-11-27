@@ -748,8 +748,8 @@ async fn every_observer_sees_a_turns_events_and_its_commit(pool: PgPool) {
         },
     )
     .config(fast())
-    .observe(Arc::clone(&first) as _)
-    .observe(Arc::clone(&second) as _)
+    .observe(Arc::clone(&first))
+    .observe(Arc::clone(&second))
     .build();
     runner.wake("assistant", "t9");
     wait_for(&store, "t9", |s| {

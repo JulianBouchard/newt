@@ -97,6 +97,13 @@ pub enum TurnError {
     History(String),
 }
 
+impl TurnError {
+    /// Whether the turn ended because it was cancelled.
+    pub const fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Provider(ProviderError::Cancelled))
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("turn failed: {error}")]
 pub struct TurnFailure {

@@ -3,7 +3,8 @@
 //! tool calls already reached the outside world is always run again, so a
 //! policy is never asked about one.
 
-use newt_core::provider::ProviderError;
+use std::sync::Arc;
+
 use newt_core::turn::TurnError;
 
 /// Decides whether a failed turn runs again or its events are dead-lettered.
@@ -11,21 +12,21 @@ pub trait FailurePolicy: Send + Sync {
     fn on_failure(&self, failure: &FailedTurn<'_>) -> AfterFailure;
 }
 
+impl<T: FailurePolicy + ?Sized> FailurePolicy for Arc<T> {
+    fn on_failure(&self, failure: &FailedTurn<'_>) -> AfterFailure {
+        (**self).on_failure(failure)
+    }
+}
+
 /// A turn that failed with no effect outside.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct FailedTurn<'a> {
     pub agent: &'a str,
     pub session: &'a str,
     pub error: &'a TurnError,
     /// Failed attempts at this turn, this one included; 0 when cancelled.
     pub attempts: i32,
-    pub cancelled: bool,
-}
-
-impl FailedTurn<'_> {
-    pub const fn is_cancelled(error: &TurnError) -> bool {
-        matches!(error, TurnError::Provider(ProviderError::Cancelled))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +52,7 @@ impl Default for GiveUpAfter {
 
 impl FailurePolicy for GiveUpAfter {
     fn on_failure(&self, failure: &FailedTurn<'_>) -> AfterFailure {
-        if failure.cancelled {
+        if failure.error.is_cancelled() {
             AfterFailure::DeadLetter {
                 reason: "cancelled".to_owned(),
             }
@@ -67,6 +68,8 @@ impl FailurePolicy for GiveUpAfter {
 
 #[cfg(test)]
 mod tests {
+    use newt_core::provider::ProviderError;
+
     use super::*;
 
     fn failed(error: &TurnError, attempts: i32) -> FailedTurn<'_> {
@@ -75,7 +78,6 @@ mod tests {
             session: "ana",
             error,
             attempts,
-            cancelled: FailedTurn::is_cancelled(error),
         }
     }
 

@@ -131,6 +131,16 @@ pub trait Observer: Send + Sync {
     fn server(&self, _event: &ServerEvent) {}
 }
 
+impl<T: Observer + ?Sized> Observer for Arc<T> {
+    fn turn(&self, event: &Event) {
+        (**self).turn(event);
+    }
+
+    fn server(&self, event: &ServerEvent) {
+        (**self).server(event);
+    }
+}
+
 /// The observers a server was built with, each told every event.
 #[derive(Clone, Default)]
 pub struct Observers(Vec<Arc<dyn Observer>>);
