@@ -1,26 +1,16 @@
 use serde::{Deserialize, Deserializer};
 
-use super::builtin::{END_TURN, REMEMBER};
-use crate::batch_tool::BATCH;
-use crate::checkpoint::CHECKPOINT;
-use crate::skills::LOAD_SKILL;
+use super::builtin::{BUILTINS, END_TURN};
 
-/// Every tool newt itself offers, in the order the model sees them.
-pub const BUILTIN_TOOL_NAMES: [&str; 8] = [
-    "read_file",
-    "glob",
-    "grep",
-    END_TURN,
-    REMEMBER,
-    BATCH,
-    CHECKPOINT,
-    LOAD_SKILL,
-];
+const _: () = assert!(
+    BUILTINS.len() <= 32,
+    "BuiltinTools holds one bit per built-in"
+);
 
 /// Which of newt's built-in tools the agent is offered. Tools that are not
 /// built in are not affected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BuiltinTools(u8);
+pub struct BuiltinTools(u32);
 
 impl Default for BuiltinTools {
     fn default() -> Self {
@@ -29,13 +19,13 @@ impl Default for BuiltinTools {
 }
 
 impl BuiltinTools {
-    pub const ALL: Self = Self(u8::MAX);
+    pub const ALL: Self = Self(u32::MAX);
     pub const NONE: Self = Self(0);
 
-    fn bit(name: &str) -> Option<u8> {
-        BUILTIN_TOOL_NAMES
+    fn bit(name: &str) -> Option<u32> {
+        BUILTINS
             .iter()
-            .position(|builtin| *builtin == name)
+            .position(|builtin| builtin.name == name)
             .map(|index| 1 << index)
     }
 
@@ -50,7 +40,7 @@ impl BuiltinTools {
             Self::bit(name).map(|bit| Self(set.0 | bit)).ok_or_else(|| {
                 format!(
                     "`{name}` is not a built-in tool; they are {}",
-                    BUILTIN_TOOL_NAMES.join(", ")
+                    BUILTINS.map(|builtin| builtin.name).join(", ")
                 )
             })
         })
@@ -100,6 +90,22 @@ mod tests {
 
     fn parsed(value: serde_json::Value) -> Result<BuiltinTools, String> {
         BuiltinTools::deserialize(value).map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn every_builtin_has_its_own_name_and_all_but_load_skill_define_a_tool() {
+        let names: Vec<&str> = BUILTINS.iter().map(|builtin| builtin.name).collect();
+        let unique: std::collections::HashSet<&&str> = names.iter().collect();
+        assert_eq!(unique.len(), names.len());
+        let defined: Vec<String> = super::super::builtin_tools(false)
+            .into_iter()
+            .map(|tool| tool.spec.name)
+            .collect();
+        let expected: Vec<&str> = names
+            .into_iter()
+            .filter(|name| *name != crate::skills::LOAD_SKILL)
+            .collect();
+        assert_eq!(defined, expected);
     }
 
     #[test]

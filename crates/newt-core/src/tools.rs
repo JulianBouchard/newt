@@ -15,8 +15,10 @@ mod fuzz;
 mod workspace;
 
 pub(crate) use builtin::remember;
-pub use builtin::{END_TURN, READ_FILE, REMEMBER, REMEMBER_LIMIT, builtin_tools};
-pub use builtin_set::{BUILTIN_TOOL_NAMES, BuiltinTools};
+pub use builtin::{
+    BUILTINS, Builtin, END_TURN, READ_FILE, REMEMBER, REMEMBER_LIMIT, builtin_tools,
+};
+pub use builtin_set::BuiltinTools;
 pub use end_turn::{ENDS_TURN_NOTE, EndTurn};
 pub(crate) use workspace::{is_workspace_tool, run_workspace_tool};
 
