@@ -4,6 +4,15 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-11-27
+
+Two fixes from an architecture review. The config, the event API and the database are unchanged.
+
+### Fixed
+
+- **A turn that crashes newt every time it runs is given up.** A crash mid-turn leaves the session's lease to expire, and the next instance picks the turn up again; that never counted as an attempt, so a turn that crashed newt each time was picked up forever. Taking over an expired lease now counts as a failed attempt (a commit resets the count), and the failure policy decides before such a turn runs again: by default, after five interrupted runs its events are dead-lettered with the reason `the turn was interrupted before it finished`, and no `newt/turn_end` is sent for it. A turn that already made an outward call is never given up this way; like every turn with effects, it runs again.
+- **A failed journal write no longer leaves a hole in the journal.** After one write failed, later entries of the same turn were still written, so a crash before the turn ended could replay its steps out of line. Once a write fails, nothing more of that turn is journaled: a call that must be journaled before it runs fails the turn, and a resume replays only what was saved.
+
 ## [2.5.0] - 2026-11-27
 
 The workspace reads a page only when the turn asks for it, newt-core keeps only the turn loop and the traits around it, and three hooks let an app change what the server does without forking it.

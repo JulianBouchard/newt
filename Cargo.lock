@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "newt-core"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "futures-util",
  "globset",
@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "newt-demo"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1340,7 +1340,7 @@ dependencies = [
 
 [[package]]
 name = "newt-loadtest"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1360,7 +1360,7 @@ dependencies = [
 
 [[package]]
 name = "newt-otlp"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "axum",
  "newt-core",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "newt-providers"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "axum",
  "futures-util",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "newt-server"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "anyhow",
  "axum",

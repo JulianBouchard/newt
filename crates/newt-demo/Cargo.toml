@@ -1,6 +1,6 @@
 [package]
 name = "newt-demo"
-version = "2.5.0"
+version = "2.5.1"
 description = "A small personal assistant for newt: one MCP server, over HTTP or stdio"
 edition.workspace = true
 rust-version.workspace = true
@@ -22,7 +22,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
-newt-core = { version = "2.5.0", path = "../newt-core" }
-newt-server = { version = "2.5.0", path = "../newt-server" }
+newt-core = { version = "2.5.1", path = "../newt-core" }
+newt-server = { version = "2.5.1", path = "../newt-server" }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "macros"] }
 tokio-util = "0.7.20"
