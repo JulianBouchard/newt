@@ -3,14 +3,12 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use newt_core::prompt::{Lane, ModelRequest};
-use newt_core::provider::{
-    Model, ModelResponse, Protocol as CoreProtocol, ProviderClient, ProviderError, StreamEvent,
-};
+use newt_core::provider::{Model, ModelResponse, ProviderClient, ProviderError, StreamEvent};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{Protocol, Route as RouteConfig, ServerConfig, parse_headers};
+use crate::config::{Route as RouteConfig, ServerConfig, parse_headers};
 
 #[derive(Debug)]
 pub struct Admission {
@@ -76,10 +74,7 @@ fn route_headers(route: &RouteConfig, variable: &str, raw: &str) -> anyhow::Resu
     let key_header = route
         .api_key_header
         .as_deref()
-        .unwrap_or(match route.protocol {
-            Protocol::AnthropicMessages => "x-api-key",
-            Protocol::OpenaiResponses | Protocol::OpenaiChat => "authorization",
-        });
+        .unwrap_or(route.protocol.key_header());
     let mut headers = HeaderMap::new();
     for (name, value) in pairs {
         let header = HeaderName::from_bytes(name.as_bytes())
@@ -103,12 +98,7 @@ impl Routes {
         for (name, route) in &config.routes {
             let key = std::env::var(&route.key_env)
                 .with_context(|| format!("environment variable {} is not set", route.key_env))?;
-            let protocol = match route.protocol {
-                Protocol::AnthropicMessages => CoreProtocol::AnthropicMessages,
-                Protocol::OpenaiResponses => CoreProtocol::OpenaiResponses,
-                Protocol::OpenaiChat => CoreProtocol::OpenaiChat,
-            };
-            let mut client = ProviderClient::new(protocol, &route.base_url, key)?;
+            let mut client = ProviderClient::new(route.protocol, &route.base_url, key)?;
             if let Some(header) = &route.api_key_header {
                 client = client.with_api_key_header(header);
             }
@@ -229,7 +219,7 @@ mod tests {
 
     fn route_config(api_key_header: Option<&str>) -> RouteConfig {
         RouteConfig {
-            protocol: Protocol::OpenaiResponses,
+            protocol: crate::config::Protocol::OpenaiResponses,
             model: "m".to_owned(),
             base_url: "http://localhost:3456".to_owned(),
             key_env: "K".to_owned(),
@@ -285,7 +275,8 @@ mod tests {
 
     fn route(base: &str) -> Arc<Route> {
         Arc::new(Route {
-            client: ProviderClient::new(CoreProtocol::OpenaiResponses, base, "key").unwrap(),
+            client: ProviderClient::new(crate::config::Protocol::OpenaiResponses, base, "key")
+                .unwrap(),
             model: "upstream".to_owned(),
             admission: Admission::new(4),
         })

@@ -160,13 +160,7 @@ pub(super) const fn default_replay_reasoning() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Protocol {
-    AnthropicMessages,
-    OpenaiResponses,
-    OpenaiChat,
-}
+pub use newt_core::provider::Protocol;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

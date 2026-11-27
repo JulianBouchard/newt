@@ -61,7 +61,7 @@ impl ProviderClient {
             .read_timeout(IDLE_TIMEOUT)
             .build()?;
         let auth = match protocol {
-            Protocol::AnthropicMessages => Auth::Header("x-api-key".to_owned()),
+            Protocol::AnthropicMessages => Auth::Header(protocol.key_header().to_owned()),
             Protocol::OpenaiResponses | Protocol::OpenaiChat => Auth::Bearer,
         };
         Ok(Self {
