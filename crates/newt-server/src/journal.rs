@@ -34,12 +34,16 @@ struct Writer {
 
 impl Writer {
     async fn write(&mut self, entries: Vec<JournalEntry>, durable: bool, acks: Vec<Ack>) {
-        let result = if entries.is_empty() {
-            if self.broken.load(Ordering::Relaxed) {
-                Err(BROKEN.to_owned())
-            } else {
-                Ok(())
+        let result = if self.broken.load(Ordering::Relaxed) {
+            if !entries.is_empty() {
+                tracing::warn!(
+                    entries = entries.len(),
+                    "journal entries not written: an earlier write failed"
+                );
             }
+            Err(BROKEN.to_owned())
+        } else if entries.is_empty() {
+            Ok(())
         } else {
             let count = entries.len();
             let written = self
