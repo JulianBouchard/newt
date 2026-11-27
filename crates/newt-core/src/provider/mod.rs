@@ -1,16 +1,11 @@
-mod anthropic;
-mod capture;
-mod chat;
-mod client;
+//! What the turn loop needs from a model: the [`Model`] trait and the
+//! types it speaks. The provider clients that implement it live in
+//! newt-providers.
+
+mod arguments;
 #[cfg(test)]
 mod fuzz;
-mod openai;
-mod stream;
 mod types;
 
-pub use client::ProviderClient;
-pub(crate) use stream::tool_arguments;
-use stream::{Decoded, Decoder, Emitter, decode};
-pub use types::{
-    CallTiming, Model, ModelResponse, Protocol, ProviderError, StopReason, StreamEvent, Usage,
-};
+pub use arguments::tool_arguments;
+pub use types::{CallTiming, Model, ModelResponse, ProviderError, StopReason, StreamEvent, Usage};

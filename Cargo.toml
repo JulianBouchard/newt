@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/newt-core", "crates/newt-otlp", "crates/newt-server", "crates/newt-demo", "crates/newt-loadtest"]
+members = ["crates/newt-core", "crates/newt-providers", "crates/newt-otlp", "crates/newt-server", "crates/newt-demo", "crates/newt-loadtest"]
 
 [workspace.package]
 edition = "2024"

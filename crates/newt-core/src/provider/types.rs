@@ -7,28 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::message::Message;
 use crate::prompt::ModelRequest;
-use crate::sse::SseError;
-
-/// The wire protocol of a model provider, as `server.toml` names it
-/// (`anthropic-messages`, `openai-responses`, `openai-chat`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Protocol {
-    AnthropicMessages,
-    OpenaiResponses,
-    /// Chat Completions, which vLLM, Ollama and most other hosts speak.
-    OpenaiChat,
-}
-
-impl Protocol {
-    /// The header that carries the API key unless a route names another.
-    pub const fn key_header(self) -> &'static str {
-        match self {
-            Self::AnthropicMessages => "x-api-key",
-            Self::OpenaiResponses | Self::OpenaiChat => "authorization",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
@@ -101,15 +79,15 @@ pub enum StreamEvent {
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("request to model provider failed")]
-    Http(#[source] reqwest::Error),
+    Http(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("model provider went silent past the idle timeout")]
-    Timeout(#[source] reqwest::Error),
+    Timeout(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("model call ran past its {}s deadline", .0.as_secs())]
     Deadline(Duration),
     #[error("model provider returned {status}: {body}")]
     Status { status: u16, body: String },
-    #[error(transparent)]
-    Sse(#[from] SseError),
+    #[error("{0}")]
+    Sse(String),
     #[error("could not decode `{event}` from the model provider: {snippet}")]
     Decode {
         event: String,
@@ -148,16 +126,6 @@ impl ProviderError {
             | Self::Capture(_)
             | Self::UnknownModel(_)
             | Self::Cancelled => false,
-        }
-    }
-}
-
-impl From<reqwest::Error> for ProviderError {
-    fn from(error: reqwest::Error) -> Self {
-        if error.is_timeout() {
-            Self::Timeout(error)
-        } else {
-            Self::Http(error)
         }
     }
 }

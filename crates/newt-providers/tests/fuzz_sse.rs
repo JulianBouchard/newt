@@ -1,6 +1,6 @@
 #![expect(clippy::unwrap_used, reason = "tests fail loudly on setup errors")]
 
-use newt_core::sse::{SseEvent, SseParser};
+use newt_providers::sse::{SseEvent, SseParser};
 use proptest::prelude::*;
 
 fn sse_text() -> impl Strategy<Value = String> {

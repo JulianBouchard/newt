@@ -1,5 +1,6 @@
 use newt_core::message::Part;
-use newt_core::provider::{Protocol, StopReason, StreamEvent};
+use newt_core::provider::{StopReason, StreamEvent};
+use newt_providers::Protocol;
 use serde_json::{Value, json};
 
 use super::{Fixture, Outcome, check_tool_stream, run_chunks, single_chunk};

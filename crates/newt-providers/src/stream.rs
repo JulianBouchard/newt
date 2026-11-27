@@ -3,13 +3,14 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::capture::CaptureStream;
-use super::{CallTiming, ModelResponse, ProviderError, StopReason, StreamEvent, Usage};
-use crate::message::{INVALID_ARGUMENTS_KEY, Message, Part, Role};
+use crate::capture::CaptureStream;
 use crate::sse::{SseEvent, SseParser};
+use newt_core::message::{Message, Part, Role};
+use newt_core::provider::{
+    CallTiming, ModelResponse, ProviderError, StopReason, StreamEvent, Usage,
+};
 
 const ERROR_BODY_LIMIT: usize = 2000;
 const DECODE_SNIPPET_LIMIT: usize = 200;
@@ -83,7 +84,7 @@ impl Emitter<'_> {
         });
     }
 
-    pub(super) fn tool_ready(&mut self, call: &crate::message::ToolCall) {
+    pub(super) fn tool_ready(&mut self, call: &newt_core::message::ToolCall) {
         (self.on_event)(StreamEvent::ToolCallReady(call.clone()));
     }
 
@@ -119,7 +120,7 @@ pub(super) async fn run_stream<D: Decoder>(
     let response = tokio::select! {
         biased;
         () = cancel.cancelled() => return Err(ProviderError::Cancelled),
-        response = request.send() => response?,
+        response = request.send() => response.map_err(crate::http)?,
     };
     emit.headers_received();
     let correlation_ids = request_ids(response.headers());
@@ -162,7 +163,7 @@ pub(super) async fn run_stream<D: Decoder>(
                 "stream ended before the response completed".to_owned(),
             ));
         };
-        let chunk = chunk?;
+        let chunk = chunk.map_err(crate::http)?;
         if let Some(capture) = capture.as_mut() {
             capture
                 .write(&chunk)
@@ -219,33 +220,4 @@ pub(super) fn decode<T: DeserializeOwned>(event: &SseEvent) -> Result<T, Provide
         snippet: event.data.chars().take(DECODE_SNIPPET_LIMIT).collect(),
         source,
     })
-}
-
-pub(crate) fn tool_arguments(raw: &str) -> Value {
-    if raw.trim().is_empty() {
-        return json!({});
-    }
-    match serde_json::from_str::<Value>(raw) {
-        Ok(value @ Value::Object(_)) => value,
-        _ => json!({ INVALID_ARGUMENTS_KEY: raw }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tool_arguments_keep_objects_and_flag_everything_else() {
-        assert_eq!(tool_arguments(""), json!({}));
-        assert_eq!(tool_arguments("{\"a\":1}"), json!({ "a": 1 }));
-        assert_eq!(
-            tool_arguments("{\"a\": [1, 2"),
-            json!({ INVALID_ARGUMENTS_KEY: "{\"a\": [1, 2" })
-        );
-        assert_eq!(
-            tool_arguments("[1]"),
-            json!({ INVALID_ARGUMENTS_KEY: "[1]" })
-        );
-    }
 }

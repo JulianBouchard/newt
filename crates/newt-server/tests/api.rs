@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use newt_core::sse::SseParser;
+use newt_providers::sse::SseParser;
 use newt_server::http::{AppState, router};
 use newt_server::live::spawn_listener;
 use newt_server::store::{Accepted, SessionStatus, Store};

@@ -21,12 +21,12 @@ use std::time::Instant;
 use newt_core::journal::NoJournal;
 use newt_core::message::{Message, Part, Role, ToolCall};
 use newt_core::prompt::{Effort, Lane, ToolSpec};
-use newt_core::provider::{Protocol, ProviderClient};
 use newt_core::sink::NoSink;
 use newt_core::steering::NoSteering;
 use newt_core::tools::{CallContext, Retention, ToolDef, ToolHost, ToolOutput};
 use newt_core::turn::{TurnDeps, TurnInput, TurnSettings, run_turn};
 use newt_core::workspace::Workspace;
+use newt_providers::{Protocol, ProviderClient};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 

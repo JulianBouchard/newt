@@ -1311,7 +1311,6 @@ dependencies = [
  "globset",
  "proptest",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -1349,6 +1348,7 @@ dependencies = [
  "axum",
  "futures-util",
  "newt-core",
+ "newt-providers",
  "newt-server",
  "reqwest",
  "rmcp",
@@ -1367,10 +1367,30 @@ version = "2.4.0"
 dependencies = [
  "axum",
  "newt-core",
+ "newt-providers",
  "reqwest",
  "serde",
  "serde_json",
  "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "newt-providers"
+version = "2.4.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures-util",
+ "newt-core",
+ "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1385,6 +1405,7 @@ dependencies = [
  "futures-util",
  "newt-core",
  "newt-otlp",
+ "newt-providers",
  "postgresql_archive",
  "postgresql_embedded",
  "proptest",

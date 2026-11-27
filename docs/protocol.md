@@ -8,7 +8,7 @@ This document specifies what an application implements for newt, and the small e
 
 There is nothing else to implement: an agent is its agent core, plus any extra servers. The guides on the docs site explain how to use each part; this page is the exact contract.
 
-It is written from `crates/newt-server/src/home/`, `crates/newt-server/src/http.rs`, `crates/newt-server/src/mcp/`, `crates/newt-core/src/{workspace,tools,skills,checkpoint,batch,commit}.rs` and the reference agent in `crates/newt-demo`. Anything not confirmed in code is marked "(unverified)".
+It is written from `crates/newt-server/src/home/`, `crates/newt-server/src/http.rs`, `crates/newt-server/src/mcp/`, `crates/newt-core/src/{workspace,tools,skills,checkpoint,batch,commit}.rs`, `crates/newt-providers` and the reference agent in `crates/newt-demo`. Anything not confirmed in code is marked "(unverified)".
 
 Terms: an **agent** is a name in `[agents.<name>]` in `server.toml`. A **session** is one conversation of one agent, identified by a **session key**, a string of 1 to 200 bytes with no `/`. A **turn** is one run of the model loop over the events that arrived for a session. A server **has the newt extension** when it declares `capabilities.extensions.newt`; the agent core always counts as one.
 

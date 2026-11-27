@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use newt_core::prompt::{Lane, ModelRequest};
-use newt_core::provider::{Model, ModelResponse, ProviderClient, ProviderError, StreamEvent};
+use newt_core::provider::{Model, ModelResponse, ProviderError, StreamEvent};
+use newt_providers::ProviderClient;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio_util::sync::CancellationToken;
@@ -215,7 +216,8 @@ mod tests {
 
     use super::*;
 
-    const OPENAI_STREAM: &str = include_str!("../../newt-core/tests/fixtures/openai_tool_use.sse");
+    const OPENAI_STREAM: &str =
+        include_str!("../../newt-providers/tests/fixtures/openai_tool_use.sse");
 
     fn route_config(api_key_header: Option<&str>) -> RouteConfig {
         RouteConfig {

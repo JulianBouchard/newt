@@ -15,9 +15,8 @@ use axum::routing::post;
 use futures_util::{StreamExt, stream};
 use newt_core::message::{Message, Part, Reasoning, Role, ToolCall, ToolResult};
 use newt_core::prompt::{Effort, Lane, ModelRequest, Prompt, ToolSpec};
-use newt_core::provider::{
-    Model, Protocol, ProviderClient, ProviderError, StopReason, StreamEvent,
-};
+use newt_core::provider::{Model, ProviderError, StopReason, StreamEvent};
+use newt_providers::{Protocol, ProviderClient};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;

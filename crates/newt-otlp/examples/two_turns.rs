@@ -6,7 +6,7 @@ use newt_core::event::Event;
 use newt_core::journal::NoJournal;
 use newt_core::message::Message;
 use newt_core::prompt::{Effort, Lane};
-use newt_core::provider::{Protocol, ProviderClient};
+use newt_providers::{Protocol, ProviderClient};
 use std::sync::Arc;
 
 use newt_core::sink::{EventSink, JsonlSink, MultiSink};

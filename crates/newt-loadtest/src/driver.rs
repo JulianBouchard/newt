@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use newt_core::sse::SseParser;
+use newt_providers::sse::SseParser;
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 

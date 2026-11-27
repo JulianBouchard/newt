@@ -5,11 +5,12 @@ use std::time::Duration;
 use reqwest::header::HeaderMap;
 use tokio_util::sync::CancellationToken;
 
-use super::capture::Capture;
-use super::stream::run_stream;
-use super::{Model, ModelResponse, Protocol, ProviderError, StreamEvent};
-use super::{anthropic, chat, openai};
-use crate::prompt::ModelRequest;
+use crate::Protocol;
+use crate::capture::Capture;
+use crate::stream::run_stream;
+use crate::{anthropic, chat, openai};
+use newt_core::prompt::ModelRequest;
+use newt_core::provider::{Model, ModelResponse, ProviderError, StreamEvent};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -59,7 +60,8 @@ impl ProviderClient {
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(IDLE_TIMEOUT)
-            .build()?;
+            .build()
+            .map_err(crate::http)?;
         let auth = match protocol {
             Protocol::AnthropicMessages => Auth::Header(protocol.key_header().to_owned()),
             Protocol::OpenaiResponses | Protocol::OpenaiChat => Auth::Bearer,

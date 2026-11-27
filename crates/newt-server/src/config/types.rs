@@ -160,7 +160,7 @@ pub(super) const fn default_replay_reasoning() -> bool {
     true
 }
 
-pub use newt_core::provider::Protocol;
+pub use newt_providers::Protocol;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -60,7 +60,7 @@ With `"auto"` newt counts each agent's model calls over the last minute and keep
 
 ### Fixed runner settings
 
-These are constants in `RunnerConfig::default()` (`crates/newt-server/src/runner.rs`), not config keys:
+These are constants in `RunnerConfig::default()` (`crates/newt-server/src/runner/mod.rs`) and the default failure policy, `GiveUpAfter` (`crates/newt-server/src/failures.rs`), not config keys:
 
 | Setting | Value |
 |---|---|

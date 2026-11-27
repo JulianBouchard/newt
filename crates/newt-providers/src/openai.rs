@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{Decoded, Emitter, ProviderError, StopReason, Usage, decode, tool_arguments};
-use crate::message::{Message, Part, Reasoning, Role, ToolCall};
-use crate::prompt::{Effort, ModelRequest};
 use crate::sse::SseEvent;
+use crate::{Decoded, Emitter, decode};
+use newt_core::message::{Message, Part, Reasoning, Role, ToolCall};
+use newt_core::prompt::{Effort, ModelRequest};
+use newt_core::provider::{ProviderError, StopReason, Usage, tool_arguments};
 
 pub(super) fn request_body(request: &ModelRequest<'_>, replay_reasoning: bool) -> Value {
     let prompt = request.prompt;
