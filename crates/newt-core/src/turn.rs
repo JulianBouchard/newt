@@ -119,7 +119,13 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
         history_fingerprint: layers.history_fingerprint(),
     };
     sink.emit(started);
-    let turn_context = turn_context(input.workspace, settings.builtin_tools, input.context).await;
+    let turn_context = turn_context(
+        input.workspace,
+        settings.builtin_tools,
+        settings.page_index_wait,
+        input.context,
+    )
+    .await;
     let mut state = TurnState::new(turn_context, input.events, input.replay);
 
     let result = drive(deps, &context, settings, &mut state).await;

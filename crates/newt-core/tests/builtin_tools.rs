@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use newt_core::journal::NoJournal;
 use newt_core::message::{Message, Part, Role, ToolCall};
@@ -15,7 +16,7 @@ use newt_core::skills::Skill;
 use newt_core::steering::NoSteering;
 use newt_core::tools::{BuiltinTools, NoTools, Retention, ToolDef};
 use newt_core::turn::{Compaction, TurnDeps, TurnInput, TurnOutcome, TurnSettings, run_turn};
-use newt_core::workspace::Workspace;
+use newt_core::workspace::{ListingFuture, PageFuture, PageKey, PageSource, Workspace};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -105,13 +106,30 @@ async fn turn(
     builtin_tools: BuiltinTools,
     compaction: Option<&[String]>,
 ) -> (Option<TurnOutcome>, Vec<Request>) {
+    let workspace = Workspace::new(BTreeMap::from([("notes.md".to_owned(), "x".to_owned())]));
+    turn_on(
+        script,
+        builtin_tools,
+        compaction,
+        &workspace,
+        Duration::from_secs(2),
+    )
+    .await
+}
+
+async fn turn_on(
+    script: Vec<Message>,
+    builtin_tools: BuiltinTools,
+    compaction: Option<&[String]>,
+    workspace: &Workspace,
+    page_index_wait: Duration,
+) -> (Option<TurnOutcome>, Vec<Request>) {
     let model = Scripted {
         script: Mutex::new(script.into()),
         seen: Mutex::new(Vec::new()),
     };
     let tools = add_task();
     let skills = skills();
-    let workspace = Workspace::new(BTreeMap::from([("notes.md".to_owned(), "x".to_owned())]));
     let outcome = run_turn(
         &TurnDeps {
             model: &model,
@@ -131,7 +149,7 @@ async fn turn(
             context: None,
             skills: &skills,
             events: vec![Message::user_text("hello")],
-            workspace: &workspace,
+            workspace,
             replay: Vec::new(),
         },
         &TurnSettings {
@@ -144,6 +162,7 @@ async fn turn(
             recite: false,
             require_end_turn: false,
             builtin_tools,
+            page_index_wait,
             lane: Lane::Interactive,
             reset: false,
             compaction: compaction.map(|open_commitments| Compaction {
@@ -217,6 +236,44 @@ async fn the_page_index_opens_the_turn_only_when_the_agent_can_read_pages() {
         "{}",
         opening(&seen)
     );
+}
+
+struct NeverListed;
+
+impl PageSource for NeverListed {
+    fn list(&self) -> ListingFuture<'_> {
+        Box::pin(std::future::pending())
+    }
+
+    fn read(&self, _keys: Vec<PageKey>) -> PageFuture<'_> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+}
+
+#[tokio::test]
+async fn a_listing_that_is_not_ready_in_time_starts_the_turn_without_the_index() {
+    let workspace = Workspace::loading(Arc::new(NeverListed));
+    let script = vec![says(vec![Part::text("Hi.")])];
+    let started = std::time::Instant::now();
+    let (outcome, seen) = turn_on(
+        script,
+        BuiltinTools::ALL,
+        None,
+        &workspace,
+        Duration::from_millis(50),
+    )
+    .await;
+    assert!(outcome.is_some());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(!format!("{:?}", seen[0].scratch.first()).contains("<workspace>"));
+}
+
+#[tokio::test]
+async fn a_zero_wait_leaves_the_index_out() {
+    let workspace = Workspace::new(BTreeMap::from([("notes.md".to_owned(), "x".to_owned())]));
+    let script = vec![says(vec![Part::text("Hi.")])];
+    let (_, seen) = turn_on(script, BuiltinTools::ALL, None, &workspace, Duration::ZERO).await;
+    assert!(!format!("{:?}", seen[0].scratch.first()).contains("<workspace>"));
 }
 
 #[tokio::test]

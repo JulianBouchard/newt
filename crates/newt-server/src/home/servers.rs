@@ -57,6 +57,10 @@ pub struct Settings {
     /// the background as each turn starts.
     #[serde(default = "default_preload_priority")]
     pub preload_priority: f32,
+    /// How long a turn's first model call waits for the page index, in
+    /// milliseconds; 0 leaves the index out.
+    #[serde(default = "default_page_index_wait_ms")]
+    pub page_index_wait_ms: u64,
     /// Ask the home with `newt/turn` before each turn.
     #[serde(default)]
     pub turn: bool,
@@ -80,6 +84,7 @@ impl Settings {
             recite: self.recite,
             require_end_turn: self.require_end_turn,
             builtin_tools: self.builtin_tools,
+            page_index_wait: std::time::Duration::from_millis(self.page_index_wait_ms),
             history_budget: self.history_budget,
         }
     }
@@ -102,6 +107,10 @@ pub(super) const fn default_history_budget() -> u32 {
 
 pub(super) const fn default_preload_priority() -> f32 {
     1.0
+}
+
+pub(super) const fn default_page_index_wait_ms() -> u64 {
+    2_000
 }
 
 pub(super) const fn default_max_output_tokens() -> u32 {

@@ -197,6 +197,7 @@ pub struct AgentSettings {
     pub recite: bool,
     pub require_end_turn: bool,
     pub builtin_tools: BuiltinTools,
+    pub page_index_wait: std::time::Duration,
     pub history_budget: u32,
 }
 
@@ -213,6 +214,7 @@ impl AgentSettings {
             recite: self.recite,
             require_end_turn: self.require_end_turn,
             builtin_tools: self.builtin_tools,
+            page_index_wait: self.page_index_wait,
             lane,
             reset,
             compaction: None,
@@ -232,6 +234,7 @@ impl AgentSettings {
             recite: false,
             require_end_turn: false,
             builtin_tools: self.builtin_tools,
+            page_index_wait: self.page_index_wait,
             lane: Lane::Background,
             reset: false,
             compaction: Some(compaction),
@@ -296,6 +299,7 @@ impl Backend for StaticBackend {
                 recite: false,
                 require_end_turn: false,
                 builtin_tools: BuiltinTools::ALL,
+                page_index_wait: std::time::Duration::from_secs(2),
                 history_budget: 60_000,
             },
             state: SessionState::starting_from(request.state.clone()),

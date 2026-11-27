@@ -261,6 +261,7 @@ async fn run_with(
             recite,
             require_end_turn,
             builtin_tools: BuiltinTools::ALL,
+            page_index_wait: std::time::Duration::from_secs(2),
             lane: Lane::Interactive,
             reset: false,
             compaction: compaction.map(|open_commitments| Compaction {
@@ -750,6 +751,7 @@ async fn a_cancelled_turn_starts_no_outward_calls_and_reports_cancellation() {
             recite: true,
             require_end_turn: true,
             builtin_tools: BuiltinTools::ALL,
+            page_index_wait: std::time::Duration::from_secs(2),
             lane: Lane::Interactive,
             reset: false,
             compaction: None,

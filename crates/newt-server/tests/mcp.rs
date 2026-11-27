@@ -598,6 +598,7 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
             recite: true,
             require_end_turn: true,
             builtin_tools: newt_core::tools::BuiltinTools::ALL,
+            page_index_wait: std::time::Duration::from_secs(2),
             lane: Lane::Interactive,
             reset: false,
             compaction: None,

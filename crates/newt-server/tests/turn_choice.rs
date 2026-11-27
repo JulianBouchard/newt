@@ -112,6 +112,7 @@ impl Backend for Provider {
                 recite: false,
                 require_end_turn: true,
                 builtin_tools: newt_core::tools::BuiltinTools::ALL,
+                page_index_wait: std::time::Duration::from_secs(2),
                 history_budget: 60_000,
             },
             state: SessionState::starting_from(request.state.clone()),

@@ -26,17 +26,26 @@ pub(super) fn turn_started(
 }
 
 /// The turn's opening note: the workspace's page index when the agent can
-/// read pages, then the context its server gave for the turn.
+/// read pages and the listing is ready within `wait`, then the context its
+/// server gave for the turn.
 pub(super) async fn turn_context(
     workspace: &Workspace,
     builtin: BuiltinTools,
+    wait: std::time::Duration,
     context: Option<String>,
 ) -> Option<String> {
-    let index = if builtin.offers(READ_FILE) {
-        match workspace.index().await {
-            Ok(index) => index.render(),
-            Err(error) => {
+    let index = if builtin.offers(READ_FILE) && !wait.is_zero() {
+        match tokio::time::timeout(wait, workspace.index()).await {
+            Ok(Ok(index)) => index.render(),
+            Ok(Err(error)) => {
                 tracing::warn!(%error, "the workspace could not be listed; the turn starts without its page index");
+                None
+            }
+            Err(_) => {
+                tracing::info!(
+                    wait_ms = wait.as_millis(),
+                    "the workspace listing was not ready; the turn starts without its page index"
+                );
                 None
             }
         }

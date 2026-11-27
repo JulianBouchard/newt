@@ -220,6 +220,7 @@ fn run(script: Vec<Message>, require_end_turn: bool) -> Ran {
                     recite: true,
                     require_end_turn,
                     builtin_tools: newt_core::tools::BuiltinTools::ALL,
+                    page_index_wait: std::time::Duration::from_secs(2),
                     lane: Lane::Interactive,
                     reset: false,
                     compaction: None,

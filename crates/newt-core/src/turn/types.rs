@@ -52,6 +52,10 @@ pub struct TurnSettings<'a> {
     /// Which of newt's built-in tools the agent is offered. A compaction turn
     /// is always offered `checkpoint`.
     pub builtin_tools: crate::tools::BuiltinTools,
+    /// How long the first model call waits for the workspace's listing to
+    /// open the turn with its page index. Past it the turn starts without
+    /// the index; zero leaves the index out.
+    pub page_index_wait: std::time::Duration,
     pub lane: Lane,
     pub reset: bool,
     pub compaction: Option<Compaction<'a>>,
