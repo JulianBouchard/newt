@@ -11,6 +11,7 @@ use newt_core::provider::{
 };
 use newt_core::workspace::Workspace;
 use newt_server::backend::StaticBackend;
+use newt_server::failures::{AfterFailure, FailedTurn, FailurePolicy, GiveUpAfter};
 use newt_server::http::{AppState, router};
 use newt_server::live::{Topics, spawn_listener};
 use newt_server::runner::{Runner, RunnerConfig};
@@ -81,7 +82,6 @@ fn fast() -> RunnerConfig {
         sweep_every: Duration::from_millis(50),
         shutdown_grace: Duration::from_secs(1),
         backoff_base: Duration::from_millis(10),
-        max_attempts: 3,
         max_sessions: 8,
         reserved_interactive: 2,
         max_waiting: 64,
@@ -133,6 +133,7 @@ fn slow_runner(
         },
     )
     .config(fast())
+    .failures(GiveUpAfter { attempts: 3 })
     .live(notifications)
     .build()
 }
@@ -768,4 +769,51 @@ async fn every_observer_sees_a_turns_events_and_its_commit(pool: PgPool) {
         );
     }
     assert_eq!(seen, *second.0.lock().unwrap());
+}
+
+struct GiveUpAtOnce;
+
+impl FailurePolicy for GiveUpAtOnce {
+    fn on_failure(&self, failure: &FailedTurn<'_>) -> AfterFailure {
+        AfterFailure::DeadLetter {
+            reason: format!("given up on {} after {}", failure.session, failure.attempts),
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_failure_policy_decides_when_a_turn_is_dead_lettered(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    store
+        .accept_event("assistant", "t10", &event("e1", "hi"), false)
+        .await
+        .unwrap();
+    let runner = Runner::builder(
+        Store::new(pool.clone()),
+        StaticBackend {
+            system: "You are a helpful agent.".into(),
+            model: "test".into(),
+            workspace: Workspace::default(),
+        },
+        ScriptedModel {
+            script: Mutex::new(VecDeque::new()),
+            steal_lease: None,
+            delay: Duration::ZERO,
+            started: Arc::new(tokio::sync::Notify::new()),
+        },
+    )
+    .config(fast())
+    .failures(GiveUpAtOnce)
+    .build();
+    runner.wake("assistant", "t10");
+    wait_for(&store, "t10", |s| {
+        s.pending_events == 0 && s.lease_owner.is_none()
+    })
+    .await;
+    let (reason,): (Option<String>,) =
+        sqlx::query_as("select dead_letter from inbox where key = 't10'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(reason.as_deref(), Some("given up on t10 after 1"));
 }

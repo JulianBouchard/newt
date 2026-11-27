@@ -220,7 +220,6 @@ fn runner(
         sweep_every: Duration::from_millis(50),
         shutdown_grace: Duration::from_secs(1),
         backoff_base: Duration::from_millis(10),
-        max_attempts: 5,
         max_sessions: 8,
         reserved_interactive: 2,
         max_waiting: 64,

@@ -17,6 +17,7 @@ pub mod db;
 #[cfg(feature = "embedded-postgres")]
 pub mod embedded;
 pub mod events;
+pub mod failures;
 pub mod fork;
 pub mod home;
 pub mod http;

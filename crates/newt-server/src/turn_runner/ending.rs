@@ -2,11 +2,11 @@ use super::retry_later;
 use crate::backend::{Backend, Prepared, SessionState, TurnEvent, TurnState};
 use crate::counters::Counter;
 use crate::events::ServerEventKind;
+use crate::failures::{AfterFailure, FailedTurn};
 use crate::runner::{Inner, elapsed_ms};
 use crate::sessions::{CommitError, Lease, PendingEvent, TurnCommit};
 use newt_core::message::Message;
-use newt_core::provider::{Model, ProviderError};
-use newt_core::turn::TurnError;
+use newt_core::provider::Model;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -145,7 +145,7 @@ pub(super) async fn finish_turn<B: Backend, M: Model>(
             None,
         ),
     };
-    let cancelled = matches!(failure, Some(TurnError::Provider(ProviderError::Cancelled)));
+    let cancelled = failure.as_ref().is_some_and(FailedTurn::is_cancelled);
     inner.metrics.count(match &failure {
         None => Counter::TurnsCompleted,
         Some(_) if cancelled => Counter::TurnsCancelled,
@@ -193,24 +193,30 @@ pub(super) async fn finish_turn<B: Backend, M: Model>(
         return Ok(true);
     };
     tracing::error!(%error, agent = %lease.agent, key = %lease.key, "turn failed");
-    let attempts = if cancelled || effects {
+    if effects {
+        retry_later(inner, lease).await?;
+        return Ok(false);
+    }
+    let attempts = if cancelled {
         0
     } else {
         inner.store.failed_attempts(lease).await? + 1
     };
-    if effects || !(cancelled || attempts >= inner.config.max_attempts) {
+    let decision = inner.failures.on_failure(&FailedTurn {
+        agent: &lease.agent,
+        session: &lease.key,
+        error: &error,
+        attempts,
+        cancelled,
+    });
+    let AfterFailure::DeadLetter { reason } = decision else {
         retry_later(inner, lease).await?;
         return Ok(false);
-    }
+    };
     if !cancelled {
         inner.metrics.count(Counter::Retries);
     }
     tracing::error!(attempts, cancelled, agent = %lease.agent, key = %lease.key, "giving up on the turn, dead-lettering its events");
-    let reason = if cancelled {
-        "cancelled".to_owned()
-    } else {
-        error.to_string()
-    };
     give_up(inner, lease, &ending, &turn_id, consumed, reason).await?;
     Ok(false)
 }

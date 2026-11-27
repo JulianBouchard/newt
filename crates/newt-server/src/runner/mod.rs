@@ -14,6 +14,7 @@ use crate::backend::Backend;
 use crate::cache_keys::{Buckets, CacheKeys};
 use crate::cancel::RunningTurns;
 use crate::events::{Observer, Observers, ServerEventKind};
+use crate::failures::{FailurePolicy, GiveUpAfter};
 use crate::live::Topics;
 use crate::metrics::Metrics;
 use crate::retention::Retention;
@@ -33,7 +34,6 @@ pub struct RunnerConfig {
     pub sweep_every: Duration,
     pub shutdown_grace: Duration,
     pub backoff_base: Duration,
-    pub max_attempts: i32,
     pub max_sessions: usize,
     /// Slots only interactive turns may use: background turns share the
     /// other `max_sessions - reserved_interactive`, and at least one.
@@ -52,7 +52,6 @@ impl Default for RunnerConfig {
             sweep_every: Duration::from_secs(1),
             shutdown_grace: Duration::from_secs(8),
             backoff_base: Duration::from_secs(2),
-            max_attempts: 5,
             max_sessions: 16,
             reserved_interactive: default_reserved_interactive(16),
             max_waiting: default_max_waiting(16),
@@ -108,6 +107,7 @@ pub(crate) struct Inner<B, M> {
     pub(crate) cache_keys: CacheKeys,
     pub(crate) observers: Observers,
     pub(crate) history: Arc<dyn HistoryPolicy>,
+    pub(crate) failures: Arc<dyn FailurePolicy>,
     pub(crate) notifications: Topics,
     pub(crate) live_stream: HashSet<String>,
     in_flight: Mutex<HashSet<Session>>,
@@ -153,6 +153,7 @@ pub struct RunnerBuilder<B, M> {
     config: RunnerConfig,
     observers: Observers,
     history: Arc<dyn HistoryPolicy>,
+    failures: Arc<dyn FailurePolicy>,
     notifications: Topics,
     live_stream: HashSet<String>,
 }
@@ -187,6 +188,14 @@ impl<B: Backend, M: Model + 'static> RunnerBuilder<B, M> {
         self
     }
 
+    /// Whether a failed turn runs again or is dead-lettered;
+    /// [`GiveUpAfter`] five attempts unless set.
+    #[must_use]
+    pub fn failures(mut self, policy: impl FailurePolicy + 'static) -> Self {
+        self.failures = Arc::new(policy);
+        self
+    }
+
     /// The Postgres notifications the runner wakes and cancels on.
     #[must_use]
     pub fn live(mut self, notifications: Topics) -> Self {
@@ -209,6 +218,7 @@ impl<B: Backend, M: Model + 'static> RunnerBuilder<B, M> {
             config,
             observers,
             history,
+            failures,
             notifications,
             live_stream,
         } = self;
@@ -228,6 +238,7 @@ impl<B: Backend, M: Model + 'static> RunnerBuilder<B, M> {
                 cache_keys: CacheKeys::new(config.cache_key_buckets),
                 observers,
                 history,
+                failures,
                 notifications,
                 live_stream,
                 in_flight: Mutex::new(HashSet::new()),
@@ -255,6 +266,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
             config: RunnerConfig::default(),
             observers: Observers::default(),
             history: Arc::new(Retained),
+            failures: Arc::new(GiveUpAfter::default()),
             notifications: Topics::default(),
             live_stream: HashSet::new(),
         }
