@@ -34,7 +34,7 @@ impl Workspace {
         pattern: &str,
         within: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<GrepMatch>, WorkspaceError> {
+    ) -> Result<Grep, WorkspaceError> {
         let regex =
             Regex::new(pattern).map_err(|error| WorkspaceError::Regex(error.to_string()))?;
         let within = within.map(matcher).transpose()?;
@@ -50,9 +50,22 @@ impl Workspace {
             })
             .cloned()
             .collect();
-        self.refresh(candidates.clone()).await?;
+        let refreshed = self.refresh(candidates.clone()).await;
         let state = self.lock();
-        Ok(candidates
+        let unreadable: Vec<String> = candidates
+            .iter()
+            .filter(|path| refreshed.is_err() && state.needs_fetch(path))
+            .map(|path| match state.failed.get(path.as_str()) {
+                Some((_, error)) => format!("{path}: {error}"),
+                None => path.clone(),
+            })
+            .collect();
+        if let Err(error) = refreshed
+            && unreadable.len() == candidates.len()
+        {
+            return Err(error);
+        }
+        let matches = candidates
             .iter()
             .filter_map(|path| state.pages.get(path))
             .flat_map(|page| {
@@ -68,8 +81,20 @@ impl Workspace {
                     .collect::<Vec<_>>()
             })
             .take(limit)
-            .collect())
+            .collect();
+        Ok(Grep {
+            matches,
+            unreadable,
+        })
     }
+}
+
+/// What a grep found, and the pages it had to skip because they could not
+/// be read, each with its error.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Grep {
+    pub matches: Vec<GrepMatch>,
+    pub unreadable: Vec<String>,
 }
 
 fn matcher(pattern: &str) -> Result<GlobMatcher, WorkspaceError> {

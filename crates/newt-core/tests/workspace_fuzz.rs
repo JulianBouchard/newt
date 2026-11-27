@@ -192,7 +192,7 @@ async fn apply(workspace: &Workspace, world: &World, op: Op) {
         }
         Op::Grep(within) => {
             if let Ok(found) = workspace.grep("a", Some(within), 1000).await {
-                for line in found {
+                for line in found.matches {
                     assert!(
                         world
                             .history
@@ -381,7 +381,8 @@ fn a_workspace_of_twenty_thousand_pages_lists_fast_and_reads_only_what_it_is_ask
         let found = workspace
             .grep("x", Some("deep/a/b/d2*.md"), 10_000)
             .await
-            .unwrap();
+            .unwrap()
+            .matches;
         assert_eq!(found.len(), world.read_paths.lock().unwrap().len() - 1);
         assert!(
             world.read_paths.lock().unwrap().len() < 2_000,

@@ -14,7 +14,7 @@ mod template;
 
 pub use listing::Index;
 use refresh::Claimed;
-pub use search::GrepMatch;
+pub use search::{Grep, GrepMatch};
 
 pub type PageKey = Vec<String>;
 

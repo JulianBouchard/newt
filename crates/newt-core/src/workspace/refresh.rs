@@ -60,10 +60,14 @@ impl Workspace {
             if claimed.claims.is_empty() && waits.is_empty() {
                 return Ok(());
             }
-            if !claimed.claims.is_empty() {
-                self.fetch_claimed(&claimed).await?;
-            }
             let mut failures = Vec::new();
+            if !claimed.claims.is_empty() {
+                match self.fetch_claimed(&claimed).await {
+                    Ok(()) => {}
+                    Err(WorkspaceError::Refresh(error)) => failures.push(error),
+                    Err(other) => return Err(other),
+                }
+            }
             for (waiting, path, claim) in waits {
                 waiting.await;
                 failures.extend(self.failure_of(&path, claim));

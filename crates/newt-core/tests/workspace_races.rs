@@ -221,7 +221,15 @@ async fn a_template_path_that_fails_to_read_does_not_stay_listed() {
     assert!(workspace.read("orders/999.md").await.is_err());
     gated.fail_reads.store(false, Ordering::SeqCst);
     assert_eq!(workspace.glob("**").await.unwrap(), vec!["a.md"]);
-    assert_eq!(workspace.grep("hello", None, 10).await.unwrap().len(), 1);
+    assert_eq!(
+        workspace
+            .grep("hello", None, 10)
+            .await
+            .unwrap()
+            .matches
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]

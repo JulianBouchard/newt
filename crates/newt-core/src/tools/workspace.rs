@@ -84,21 +84,27 @@ async fn glob(workspace: &Workspace, pattern: &str) -> Result<String, String> {
 }
 
 async fn grep(workspace: &Workspace, args: &GrepArgs) -> Result<String, String> {
-    let matches = workspace
+    let found = workspace
         .grep(&args.pattern, args.glob.as_deref(), GREP_LIMIT + 1)
         .await
         .map_err(|error| error.to_string())?;
-    if matches.is_empty() {
-        return Ok("(no matches)".to_owned());
-    }
+    let matches = &found.matches;
     let mut out = matches
         .iter()
         .take(GREP_LIMIT)
         .map(|found| format!("{}:{}: {}\n", found.path, found.line, found.text))
         .collect::<Vec<_>>()
         .concat();
+    if matches.is_empty() {
+        out.push_str("(no matches)\n");
+    }
     if matches.len() > GREP_LIMIT {
         out.push_str("(more matches not shown: narrow the pattern or the glob)\n");
+    }
+    if !found.unreadable.is_empty() {
+        out.push_str("(not searched, could not be read: ");
+        out.push_str(&found.unreadable.join("; "));
+        out.push_str(")\n");
     }
     Ok(out)
 }
@@ -185,6 +191,20 @@ mod tests {
             result
                 .content
                 .contains("--- broken.md ---\n(could not read this page:")
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_searches_the_pages_that_read_and_names_the_one_it_skipped() {
+        let workspace = Workspace::loading(std::sync::Arc::new(HalfBroken));
+        let result =
+            run_workspace_tool(&call("grep", json!({ "pattern": "fine" })), &workspace).await;
+        assert!(!result.is_error);
+        assert!(result.content.starts_with("good.md:1: fine\n"));
+        assert!(
+            result
+                .content
+                .contains("(not searched, could not be read: broken.md: ")
         );
     }
 

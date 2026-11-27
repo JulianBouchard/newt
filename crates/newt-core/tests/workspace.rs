@@ -302,7 +302,7 @@ async fn grep_refreshes_stale_pages_before_searching() {
     let workspace = workspace(&backing);
     backing.write("roles/acme.md", "Acme: staff engineer");
     workspace.invalidate(&[key(&["roles"])]);
-    let found = workspace.grep("staff", None, 10).await.unwrap();
+    let found = workspace.grep("staff", None, 10).await.unwrap().matches;
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].path, "roles/acme.md");
 }
@@ -480,7 +480,7 @@ async fn grep_waits_for_a_refetch_already_in_flight() {
         async move { workspace.grep("staff", None, 10).await }
     });
     backing.release();
-    let found = search.await.unwrap().unwrap();
+    let found = search.await.unwrap().unwrap().matches;
     assert_eq!(found.len(), 1, "grep must search the refetched page");
     assert_eq!(backing.fetches(), 1);
 }
@@ -579,7 +579,8 @@ async fn grep_reads_only_the_pages_its_glob_matches() {
     let found = workspace
         .grep("backend", Some("roles/*"), 10)
         .await
-        .unwrap();
+        .unwrap()
+        .matches;
     assert_eq!(found.len(), 1);
     assert_eq!(fetched(&backing), vec!["roles/acme.md"]);
 }
@@ -667,5 +668,25 @@ async fn a_failed_listing_fails_reads_loudly_and_the_next_read_lists_again() {
     assert_eq!(
         workspace.read("profile.md").await.unwrap().as_deref(),
         Some("Remote only")
+    );
+}
+
+#[tokio::test]
+async fn grep_skips_a_page_it_cannot_read_and_names_it() {
+    let backing = seeded(Backing::default());
+    backing
+        .failing
+        .lock()
+        .unwrap()
+        .insert("roles/acme.md".to_owned());
+    let workspace = loading(&backing);
+    let found = workspace.grep("Remote", None, 10).await.unwrap();
+    assert_eq!(found.matches.len(), 1);
+    assert_eq!(found.matches[0].path, "profile.md");
+    assert_eq!(found.unreadable.len(), 1);
+    assert!(found.unreadable[0].starts_with("roles/acme.md: "));
+    assert!(
+        workspace.grep("Acme", Some("roles/*"), 10).await.is_err(),
+        "a grep that could read none of its pages fails"
     );
 }
