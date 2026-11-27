@@ -159,11 +159,50 @@ pub(super) async fn connect(server: &McpServer) -> Result<Client, String> {
     }
     Handler::default()
         .serve_with_lifecycle(
-            StreamableHttpClientTransport::from_config(config),
+            StreamableHttpClientTransport::with_client(http_client(), config),
             lifecycle(),
         )
         .await
         .map_err(|error| format!("MCP server `{}`: connecting: {error}", server.name))
+}
+
+/// The one HTTP client every MCP connection shares, so requests to a
+/// server reuse its pooled connections instead of opening one each (rmcp's
+/// own client turns pooling off). Redirects follow rmcp's rule: only a
+/// same-origin 307 or 308, at most ten.
+fn http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            let redirects = reqwest::redirect::Policy::custom(|attempt| {
+                let keeps_body = matches!(
+                    attempt.status(),
+                    reqwest::StatusCode::TEMPORARY_REDIRECT
+                        | reqwest::StatusCode::PERMANENT_REDIRECT
+                );
+                let same_origin = attempt
+                    .previous()
+                    .first()
+                    .is_some_and(|original| original.origin() == attempt.url().origin());
+                if !keeps_body || !same_origin {
+                    attempt.stop()
+                } else if attempt.previous().len() > 10 {
+                    attempt.error("more than 10 redirects")
+                } else {
+                    attempt.follow()
+                }
+            });
+            #[expect(
+                clippy::expect_used,
+                reason = "building a client with no TLS or proxy settings of its own cannot fail"
+            )]
+            reqwest::Client::builder()
+                .tcp_nodelay(true)
+                .redirect(redirects)
+                .build()
+                .expect("the MCP HTTP client builds")
+        })
+        .clone()
 }
 
 /// Starts the server's command and speaks MCP over its stdin and stdout. Its
