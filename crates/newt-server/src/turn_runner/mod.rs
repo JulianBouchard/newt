@@ -183,6 +183,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             host: &prepared.host,
             steering: &steering,
             journal: &journal,
+            history: &*inner.history,
             sink: &TeeSink {
                 live: &live,
                 observers: &inner.observers,

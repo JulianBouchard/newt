@@ -13,7 +13,7 @@
 mod batch;
 pub mod batch_tool;
 pub mod checkpoint;
-mod commit;
+pub mod commit;
 pub mod event;
 pub mod journal;
 pub mod message;

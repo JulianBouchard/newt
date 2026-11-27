@@ -5,6 +5,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use newt_core::commit::{HistoryPolicy, KeepAllToolCalls, Retained};
 use newt_core::journal::NoJournal;
 use newt_core::message::{Message, Part, Role, ToolCall};
 use newt_core::prompt::{Lane, ModelRequest, ToolSpec};
@@ -113,6 +114,7 @@ async fn turn(
         compaction,
         &workspace,
         Duration::from_secs(2),
+        &Retained,
     )
     .await
 }
@@ -123,6 +125,7 @@ async fn turn_on(
     compaction: Option<&[String]>,
     workspace: &Workspace,
     page_index_wait: Duration,
+    history: &dyn HistoryPolicy,
 ) -> (Option<TurnOutcome>, Vec<Request>) {
     let model = Scripted {
         script: Mutex::new(script.into()),
@@ -136,6 +139,7 @@ async fn turn_on(
             host: &NoTools,
             steering: &NoSteering,
             journal: &NoJournal,
+            history,
             sink: &NoSink,
             cancel: &CancellationToken::new(),
         },
@@ -261,6 +265,7 @@ async fn a_listing_that_is_not_ready_in_time_starts_the_turn_without_the_index()
         None,
         &workspace,
         Duration::from_millis(50),
+        &Retained,
     )
     .await;
     assert!(outcome.is_some());
@@ -272,7 +277,15 @@ async fn a_listing_that_is_not_ready_in_time_starts_the_turn_without_the_index()
 async fn a_zero_wait_leaves_the_index_out() {
     let workspace = Workspace::new(BTreeMap::from([("notes.md".to_owned(), "x".to_owned())]));
     let script = vec![says(vec![Part::text("Hi.")])];
-    let (_, seen) = turn_on(script, BuiltinTools::ALL, None, &workspace, Duration::ZERO).await;
+    let (_, seen) = turn_on(
+        script,
+        BuiltinTools::ALL,
+        None,
+        &workspace,
+        Duration::ZERO,
+        &Retained,
+    )
+    .await;
     assert!(!format!("{:?}", seen[0].scratch.first()).contains("<workspace>"));
 }
 
@@ -315,4 +328,49 @@ async fn a_compaction_turn_is_always_offered_checkpoint() {
     let (outcome, seen) = turn(script, BuiltinTools::NONE, Some(&[])).await;
     assert_eq!(seen[0].tools, ["checkpoint", "add_task"]);
     assert!(outcome.unwrap().checkpoint.is_some());
+}
+
+#[tokio::test]
+async fn the_history_policy_decides_whether_a_read_stays_in_history() {
+    let script = || {
+        vec![
+            says(vec![call(
+                "r1",
+                "read_file",
+                json!({ "paths": ["notes.md"] }),
+            )]),
+            says(vec![Part::text("Done.")]),
+        ]
+    };
+    let workspace = || Workspace::new(BTreeMap::from([("notes.md".to_owned(), "x".to_owned())]));
+    let wait = Duration::from_secs(2);
+    let (retained, _) = turn_on(
+        script(),
+        BuiltinTools::ALL,
+        None,
+        &workspace(),
+        wait,
+        &Retained,
+    )
+    .await;
+    let (kept, _) = turn_on(
+        script(),
+        BuiltinTools::ALL,
+        None,
+        &workspace(),
+        wait,
+        &KeepAllToolCalls,
+    )
+    .await;
+    let reads = |outcome: Option<TurnOutcome>| {
+        outcome
+            .unwrap()
+            .committed
+            .iter()
+            .flat_map(Message::tool_calls)
+            .filter(|call| call.name == "read_file")
+            .count()
+    };
+    assert_eq!(reads(retained), 0);
+    assert_eq!(reads(kept), 1);
 }

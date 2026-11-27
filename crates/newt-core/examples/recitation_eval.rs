@@ -389,6 +389,7 @@ async fn run_job(client: &ProviderClient, model: &str, job: &Job, run: u64) -> V
             host: &host,
             steering: &NoSteering,
             journal: &NoJournal,
+            history: &newt_core::commit::Retained,
             sink: &NoSink,
             cancel: &CancellationToken::new(),
         },

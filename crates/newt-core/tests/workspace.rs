@@ -407,6 +407,7 @@ async fn write_then_read_with(
             host: &host,
             steering: &NoSteering,
             journal: &NoJournal,
+            history: &newt_core::commit::Retained,
             sink: &NoSink,
             cancel: &CancellationToken::new(),
         },

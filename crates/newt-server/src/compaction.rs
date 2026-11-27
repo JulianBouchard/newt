@@ -42,6 +42,7 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
             host: &prepared.host,
             steering: &NoSteering,
             journal: &NoJournal,
+            history: &*inner.history,
             sink,
             cancel: &cancel,
         },

@@ -127,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 host: &NoTools,
                 steering: &NoSteering,
                 journal: &NoJournal,
+                history: &newt_core::commit::Retained,
                 sink: &sink,
                 cancel: &CancellationToken::new(),
             },

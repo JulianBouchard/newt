@@ -18,6 +18,7 @@ use crate::live::Topics;
 use crate::metrics::Metrics;
 use crate::retention::Retention;
 use crate::store::Store;
+use newt_core::commit::{HistoryPolicy, Retained};
 
 const SWEEP_LIMIT: i64 = 100;
 const FINAL_WAIT: Duration = Duration::from_secs(5);
@@ -106,6 +107,7 @@ pub(crate) struct Inner<B, M> {
     pub(crate) config: RunnerConfig,
     pub(crate) cache_keys: CacheKeys,
     pub(crate) observers: Observers,
+    pub(crate) history: Arc<dyn HistoryPolicy>,
     pub(crate) notifications: Topics,
     pub(crate) live_stream: HashSet<String>,
     in_flight: Mutex<HashSet<Session>>,
@@ -150,6 +152,7 @@ pub struct RunnerBuilder<B, M> {
     model: M,
     config: RunnerConfig,
     observers: Observers,
+    history: Arc<dyn HistoryPolicy>,
     notifications: Topics,
     live_stream: HashSet<String>,
 }
@@ -177,6 +180,13 @@ impl<B: Backend, M: Model + 'static> RunnerBuilder<B, M> {
         self
     }
 
+    /// What of each turn becomes history; [`Retained`] unless set.
+    #[must_use]
+    pub fn history(mut self, policy: impl HistoryPolicy + 'static) -> Self {
+        self.history = Arc::new(policy);
+        self
+    }
+
     /// The Postgres notifications the runner wakes and cancels on.
     #[must_use]
     pub fn live(mut self, notifications: Topics) -> Self {
@@ -198,6 +208,7 @@ impl<B: Backend, M: Model + 'static> RunnerBuilder<B, M> {
             model,
             config,
             observers,
+            history,
             notifications,
             live_stream,
         } = self;
@@ -216,6 +227,7 @@ impl<B: Backend, M: Model + 'static> RunnerBuilder<B, M> {
                 config,
                 cache_keys: CacheKeys::new(config.cache_key_buckets),
                 observers,
+                history,
                 notifications,
                 live_stream,
                 in_flight: Mutex::new(HashSet::new()),
@@ -242,6 +254,7 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
             model,
             config: RunnerConfig::default(),
             observers: Observers::default(),
+            history: Arc::new(Retained),
             notifications: Topics::default(),
             live_stream: HashSet::new(),
         }

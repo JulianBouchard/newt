@@ -93,6 +93,8 @@ pub enum TurnError {
     OverBudget(u64),
     #[error("two tools share the name `{0}`")]
     DuplicateTool(String),
+    #[error("{0}")]
+    History(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -112,6 +114,8 @@ pub struct TurnDeps<'a, M, H, S, J> {
     pub host: &'a H,
     pub steering: &'a S,
     pub journal: &'a J,
+    /// What of the turn becomes history.
+    pub history: &'a dyn crate::commit::HistoryPolicy,
     pub sink: &'a dyn EventSink,
     pub cancel: &'a CancellationToken,
 }

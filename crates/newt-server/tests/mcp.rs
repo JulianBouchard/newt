@@ -572,6 +572,7 @@ async fn an_mcp_write_invalidates_a_page_and_the_next_read_refetches_it() {
             host: &host,
             steering: &NoSteering,
             journal: &NoJournal,
+            history: &newt_core::commit::Retained,
             sink: &NoSink,
             cancel: &CancellationToken::new(),
         },

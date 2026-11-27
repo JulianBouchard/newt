@@ -194,6 +194,7 @@ fn run(script: Vec<Message>, require_end_turn: bool) -> Ran {
                     host: &Host,
                     steering: &NoSteering,
                     journal: &NoJournal,
+                    history: &newt_core::commit::Retained,
                     sink: &NoSink,
                     cancel: &CancellationToken::new(),
                 },

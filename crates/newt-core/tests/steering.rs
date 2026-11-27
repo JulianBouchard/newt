@@ -152,6 +152,7 @@ async fn turn(model: &SlowModel, steering: &ScheduledSteering, events: &Events) 
             host: &NoTools,
             steering,
             journal: &NoJournal,
+            history: &newt_core::commit::Retained,
             sink: events,
             cancel: &CancellationToken::new(),
         },

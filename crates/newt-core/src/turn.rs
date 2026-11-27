@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
 
-use crate::commit::{CommitRules, committed_messages};
+use crate::commit::{CommitRules, HistoryPolicy, committed_messages};
 use crate::event::{Event, EventKind, FailureReason};
 use crate::journal::Journal;
 use crate::message::{Message, ToolCall};
@@ -129,15 +129,7 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
     let mut state = TurnState::new(turn_context, input.events, input.replay);
 
     let result = drive(deps, &context, settings, &mut state).await;
-    let committed = committed_messages(
-        state.scratch,
-        &CommitRules {
-            retention: &tools.retention,
-            summaries: &state.summaries,
-            kept: &state.kept,
-            harness_notes: &state.harness_notes,
-        },
-    );
+    let (result, committed) = keep_history(deps.history, &mut state, &tools.retention, result);
     let ids = &context.ids;
     match result {
         Ok(Finish {
@@ -177,5 +169,25 @@ pub async fn run_turn<M: Model, H: ToolHost, S: Steering, J: Journal>(
                 effects: state.effects,
             })
         }
+    }
+}
+
+/// The turn's history as its policy keeps it. A policy that keeps a tool
+/// call apart from its result fails the turn, which then commits nothing.
+fn keep_history(
+    history: &dyn HistoryPolicy,
+    state: &mut TurnState,
+    retention: &HashMap<String, Retention>,
+    result: Result<Finish, TurnError>,
+) -> (Result<Finish, TurnError>, Vec<Message>) {
+    let rules = CommitRules {
+        retention,
+        summaries: &state.summaries,
+        kept: &state.kept,
+        harness_notes: &state.harness_notes,
+    };
+    match committed_messages(history, std::mem::take(&mut state.scratch), &rules) {
+        Ok(committed) => (result, committed),
+        Err(broken) => (Err(TurnError::History(broken)), Vec::new()),
     }
 }

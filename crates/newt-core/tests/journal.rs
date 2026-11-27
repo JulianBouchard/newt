@@ -165,6 +165,7 @@ async fn run(
             host,
             steering: &NoSteering,
             journal,
+            history: &newt_core::commit::Retained,
             sink: &Quiet,
             cancel: &CancellationToken::new(),
         },
