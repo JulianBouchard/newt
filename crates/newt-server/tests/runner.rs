@@ -118,7 +118,7 @@ fn slow_runner(
     delay: Duration,
     started: Arc<tokio::sync::Notify>,
 ) -> Runner<StaticBackend, ScriptedModel> {
-    Runner::new(
+    Runner::builder(
         Store::new(pool.clone()),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -131,10 +131,10 @@ fn slow_runner(
             delay,
             started,
         },
-        fast(),
-        None,
-        notifications,
     )
+    .config(fast())
+    .live(notifications)
+    .build()
 }
 
 async fn wait_for(
@@ -171,7 +171,7 @@ async fn a_posted_event_runs_a_turn_and_commits_it(pool: PgPool) {
         )])),
         live,
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::default(),
         metrics: Arc::default(),
@@ -413,7 +413,7 @@ async fn a_session_whose_task_panics_recovers_after_its_lease_expires(pool: PgPo
         .accept_event("assistant", "t7", &event("e1", "hi"), false)
         .await
         .unwrap();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         Store::new(pool.clone()),
         PanicsOnce {
             fired: std::sync::atomic::AtomicBool::new(false),
@@ -429,10 +429,9 @@ async fn a_session_whose_task_panics_recovers_after_its_lease_expires(pool: PgPo
             delay: Duration::ZERO,
             started: Arc::new(tokio::sync::Notify::new()),
         },
-        fast(),
-        None,
-        Topics::default(),
-    );
+    )
+    .config(fast())
+    .build();
 
     let _loops = runner.spawn_loops();
     let status = wait_for(&store, "t7", |s| {
@@ -543,7 +542,7 @@ async fn the_provider_state_carries_to_the_next_turn_and_each_turn_end_is_delive
         turn_ends: Mutex::new(Vec::new()),
         refuse_turn_ends: std::sync::atomic::AtomicBool::new(false),
     };
-    let runner = Runner::new(
+    let runner = Runner::builder(
         store.clone(),
         backend,
         ScriptedModel {
@@ -552,10 +551,9 @@ async fn the_provider_state_carries_to_the_next_turn_and_each_turn_end_is_delive
             delay: Duration::ZERO,
             started: Arc::new(tokio::sync::Notify::new()),
         },
-        fast(),
-        None,
-        Topics::default(),
-    );
+    )
+    .config(fast())
+    .build();
     let first: InboundEvent =
         serde_json::from_value(json!({ "id": "e1", "text": "hi", "meta": { "channel": "email" } }))
             .unwrap();
@@ -610,7 +608,7 @@ async fn the_provider_state_carries_to_the_next_turn_and_each_turn_end_is_delive
 }
 
 fn remembering_runner(pool: &PgPool, script: Vec<Message>) -> Runner<Remembers, ScriptedModel> {
-    Runner::new(
+    Runner::builder(
         Store::new(pool.clone()),
         Remembers {
             inner: StaticBackend {
@@ -628,10 +626,9 @@ fn remembering_runner(pool: &PgPool, script: Vec<Message>) -> Runner<Remembers, 
             delay: Duration::ZERO,
             started: Arc::new(tokio::sync::Notify::new()),
         },
-        fast(),
-        None,
-        Topics::default(),
     )
+    .config(fast())
+    .build()
 }
 
 async fn make_turn_ends_due(pool: &PgPool) {
@@ -703,4 +700,72 @@ async fn a_turn_end_refused_too_often_is_given_up(pool: PgPool) {
         runner.backend().turn_ends.lock().unwrap().is_empty(),
         "an abandoned turn end is not sent"
     );
+}
+
+#[derive(Default)]
+struct Recorder(Mutex<Vec<String>>);
+
+impl newt_server::events::Observer for Recorder {
+    fn turn(&self, event: &newt_core::event::Event) {
+        let kind = serde_json::to_value(&event.kind).unwrap();
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("turn {}", kind["type"].as_str().unwrap()));
+    }
+
+    fn server(&self, event: &newt_server::events::ServerEvent) {
+        let kind = serde_json::to_value(&event.kind).unwrap();
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("server {}", kind["type"].as_str().unwrap()));
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn every_observer_sees_a_turns_events_and_its_commit(pool: PgPool) {
+    let store = Store::new(pool.clone());
+    store
+        .accept_event("assistant", "t9", &event("e1", "one"), false)
+        .await
+        .unwrap();
+    let first = Arc::new(Recorder::default());
+    let second = Arc::new(Recorder::default());
+    let runner = Runner::builder(
+        Store::new(pool.clone()),
+        StaticBackend {
+            system: "You are a helpful agent.".into(),
+            model: "test".into(),
+            workspace: Workspace::default(),
+        },
+        ScriptedModel {
+            script: Mutex::new(vec![reply_and_end("a")].into()),
+            steal_lease: None,
+            delay: Duration::ZERO,
+            started: Arc::new(tokio::sync::Notify::new()),
+        },
+    )
+    .config(fast())
+    .observe(Arc::clone(&first) as _)
+    .observe(Arc::clone(&second) as _)
+    .build();
+    runner.wake("assistant", "t9");
+    wait_for(&store, "t9", |s| {
+        s.pending_events == 0 && s.lease_owner.is_none()
+    })
+    .await;
+    let seen = first.0.lock().unwrap().clone();
+    for expected in [
+        "server session_claimed",
+        "turn turn_started",
+        "turn turn_completed",
+        "server turn_committed",
+    ] {
+        assert!(
+            seen.iter().any(|kind| kind == expected),
+            "{expected} missing from {seen:?}"
+        );
+    }
+    assert_eq!(seen, *second.0.lock().unwrap());
 }

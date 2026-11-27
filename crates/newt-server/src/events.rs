@@ -5,6 +5,8 @@
 //! event log, in the order they happen; only a turn's go to the trace
 //! exporter.
 
+use std::sync::Arc;
+
 use newt_core::event::Event;
 use newt_core::sink::{EventSink, JsonlSink, LogLine};
 use newt_otlp::OtlpSink;
@@ -118,34 +120,74 @@ impl LogLine for Record {
     }
 }
 
-/// Where the server's instrumentation goes: the event log, the trace
-/// exporter, or both.
-#[derive(Debug)]
-pub struct Instrumentation {
-    pub log: Option<JsonlSink<Record>>,
-    pub traces: Option<OtlpSink>,
+/// Watches what the server does: a turn's events as the loop in newt-core
+/// emits them, and the server's own events around them. An observer runs
+/// on the session's task, so it must not block: one with slow work queues
+/// it, as the event log does.
+pub trait Observer: Send + Sync {
+    /// A turn's event: a model call, a tool call, the turn's end.
+    fn turn(&self, _event: &Event) {}
+    /// A server event: an event accepted, a claim, a commit, a compaction.
+    fn server(&self, _event: &ServerEvent) {}
 }
 
-impl Instrumentation {
-    /// Records one of the server's events in the event log.
+/// The observers a server was built with, each told every event.
+#[derive(Clone, Default)]
+pub struct Observers(Vec<Arc<dyn Observer>>);
+
+impl std::fmt::Debug for Observers {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("Observers")
+            .field(&self.0.len())
+            .finish()
+    }
+}
+
+impl Observers {
+    pub fn push(&mut self, observer: Arc<dyn Observer>) {
+        self.0.push(observer);
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Tells every observer about one of the server's events.
     pub fn server(&self, kind: ServerEventKind) {
-        if let Some(log) = &self.log {
-            log.write(Record::Server(ServerEvent::now(kind)));
+        if self.0.is_empty() {
+            return;
+        }
+        let event = ServerEvent::now(kind);
+        for observer in &self.0 {
+            observer.server(&event);
         }
     }
 }
 
-impl EventSink for Instrumentation {
+impl EventSink for Observers {
     fn emit(&self, event: Event) {
-        match (&self.log, &self.traces) {
-            (Some(log), Some(traces)) => {
-                log.emit(event.clone());
-                traces.emit(event);
-            }
-            (Some(log), None) => log.emit(event),
-            (None, Some(traces)) => traces.emit(event),
-            (None, None) => {}
+        for observer in &self.0 {
+            observer.turn(&event);
         }
+    }
+}
+
+/// The event log: every turn event and every server event, in order.
+impl Observer for JsonlSink<Record> {
+    fn turn(&self, event: &Event) {
+        self.emit(event.clone());
+    }
+
+    fn server(&self, event: &ServerEvent) {
+        self.write(Record::Server(event.clone()));
+    }
+}
+
+/// The trace exporter: a turn's events only.
+impl Observer for OtlpSink {
+    fn turn(&self, event: &Event) {
+        self.emit(event.clone());
     }
 }
 

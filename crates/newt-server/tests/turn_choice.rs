@@ -21,7 +21,6 @@ use newt_server::backend::{
     TurnState,
 };
 use newt_server::fork::{Fork, fork, history};
-use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::sessions::{Lease, TurnCommit};
 use newt_server::store::{InboundEvent, Store};
@@ -198,20 +197,19 @@ impl Model for Recorder {
 }
 
 fn runner(pool: &PgPool, provider: &Provider) -> Runner<Provider, Recorder> {
-    Runner::new(
+    Runner::builder(
         Store::new(pool.clone()),
         provider.clone(),
         Recorder::default(),
-        RunnerConfig {
-            lease_ttl: Duration::from_secs(1),
-            sweep_every: Duration::from_millis(50),
-            shutdown_grace: Duration::from_secs(1),
-            backoff_base: Duration::from_millis(10),
-            ..RunnerConfig::default()
-        },
-        None,
-        Topics::default(),
     )
+    .config(RunnerConfig {
+        lease_ttl: Duration::from_secs(1),
+        sweep_every: Duration::from_millis(50),
+        shutdown_grace: Duration::from_secs(1),
+        backoff_base: Duration::from_millis(10),
+        ..RunnerConfig::default()
+    })
+    .build()
 }
 
 async fn until(what: &str, check: impl AsyncFn() -> bool) {

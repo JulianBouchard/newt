@@ -48,7 +48,7 @@ pub async fn start(pool: PgPool) -> String {
         ])),
         live: Topics::default(),
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: streaming,
         metrics: Arc::default(),

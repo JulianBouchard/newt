@@ -44,7 +44,7 @@ async fn start(pool: &PgPool, lease_ttl: Duration, notifications: Notifications)
     };
     let store = Store::new(pool.clone());
     let model = GatedModel::closed();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         store.clone(),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -52,16 +52,16 @@ async fn start(pool: &PgPool, lease_ttl: Duration, notifications: Notifications)
             workspace: Workspace::default(),
         },
         model.clone(),
-        RunnerConfig {
-            lease_ttl,
-            sweep_every: Duration::from_millis(30),
-            backoff_base: Duration::from_millis(10),
-            shutdown_grace: Duration::from_secs(1),
-            ..RunnerConfig::default()
-        },
-        None,
-        topics.clone(),
-    );
+    )
+    .config(RunnerConfig {
+        lease_ttl,
+        sweep_every: Duration::from_millis(30),
+        backoff_base: Duration::from_millis(10),
+        shutdown_grace: Duration::from_secs(1),
+        ..RunnerConfig::default()
+    })
+    .live(topics.clone())
+    .build();
     tasks.push(runner.spawn_loops());
     let state = AppState {
         store: store.clone(),
@@ -71,7 +71,7 @@ async fn start(pool: &PgPool, lease_ttl: Duration, notifications: Notifications)
         )])),
         live: topics.clone(),
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::default(),
         metrics: runner.metrics(),

@@ -60,7 +60,7 @@ impl Model for CountingModel {
 
 async fn instance(pool: &PgPool, calls: Arc<AtomicUsize>) -> Runner<StaticBackend, CountingModel> {
     let (topics, _listener) = spawn_listener(pool.clone()).await.unwrap();
-    Runner::new(
+    Runner::builder(
         Store::new(pool.clone()),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -68,15 +68,15 @@ async fn instance(pool: &PgPool, calls: Arc<AtomicUsize>) -> Runner<StaticBacken
             workspace: Workspace::default(),
         },
         CountingModel { calls },
-        RunnerConfig {
-            lease_ttl: Duration::from_secs(2),
-            sweep_every: Duration::from_millis(50),
-            shutdown_grace: Duration::from_secs(1),
-            ..RunnerConfig::default()
-        },
-        None,
-        topics,
     )
+    .config(RunnerConfig {
+        lease_ttl: Duration::from_secs(2),
+        sweep_every: Duration::from_millis(50),
+        shutdown_grace: Duration::from_secs(1),
+        ..RunnerConfig::default()
+    })
+    .live(topics)
+    .build()
 }
 
 fn event(id: &str, text: &str) -> InboundEvent {

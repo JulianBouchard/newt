@@ -185,7 +185,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             journal: &journal,
             sink: &TeeSink {
                 live: &live,
-                instrumentation: inner.instrumentation.as_ref(),
+                observers: &inner.observers,
                 on_model_call: Some(&count_model_call),
             },
             cancel: &turn_cancel,

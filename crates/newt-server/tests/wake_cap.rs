@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use newt_core::workspace::Workspace;
 use newt_server::backend::StaticBackend;
 use newt_server::counters::Counter;
-use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
 use newt_server::testing::GatedModel;
@@ -20,7 +19,7 @@ fn event() -> InboundEvent {
 async fn sessions_past_the_waiting_cap_stay_in_the_inbox_until_a_slot_frees(pool: PgPool) {
     let store = Store::new(pool.clone());
     let model = GatedModel::closed();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         store.clone(),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -28,16 +27,15 @@ async fn sessions_past_the_waiting_cap_stay_in_the_inbox_until_a_slot_frees(pool
             workspace: Workspace::default(),
         },
         model.clone(),
-        RunnerConfig {
-            max_sessions: 1,
-            reserved_interactive: 0,
-            max_waiting: 2,
-            sweep_every: Duration::from_millis(20),
-            ..RunnerConfig::default()
-        },
-        None,
-        Topics::default(),
-    );
+    )
+    .config(RunnerConfig {
+        max_sessions: 1,
+        reserved_interactive: 0,
+        max_waiting: 2,
+        sweep_every: Duration::from_millis(20),
+        ..RunnerConfig::default()
+    })
+    .build();
     let metrics = runner.metrics();
     let _loops = runner.spawn_loops();
     for index in 0..6 {

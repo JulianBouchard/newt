@@ -57,7 +57,7 @@ impl Model for NulWriter {
 #[sqlx::test(migrations = "../../migrations")]
 async fn a_nul_in_model_output_still_commits_the_turn(pool: PgPool) {
     let (live, _listener) = spawn_listener(pool.clone()).await.unwrap();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         Store::new(pool.clone()),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -65,16 +65,16 @@ async fn a_nul_in_model_output_still_commits_the_turn(pool: PgPool) {
             workspace: Workspace::default(),
         },
         NulWriter,
-        RunnerConfig {
-            lease_ttl: Duration::from_secs(1),
-            sweep_every: Duration::from_millis(50),
-            backoff_base: Duration::from_millis(10),
-            ..RunnerConfig::default()
-        },
-        None,
-        live.clone(),
     )
-    .with_live_stream(["assistant".to_owned()].into());
+    .config(RunnerConfig {
+        lease_ttl: Duration::from_secs(1),
+        sweep_every: Duration::from_millis(50),
+        backoff_base: Duration::from_millis(10),
+        ..RunnerConfig::default()
+    })
+    .live(live.clone())
+    .live_stream(["assistant".to_owned()].into())
+    .build();
     std::mem::forget(runner.spawn_loops());
     let state = AppState {
         store: Store::new(pool.clone()),
@@ -84,7 +84,7 @@ async fn a_nul_in_model_output_still_commits_the_turn(pool: PgPool) {
         )])),
         live,
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::new(["assistant".to_owned()].into()),
         metrics: Arc::default(),

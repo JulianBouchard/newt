@@ -19,7 +19,6 @@ use newt_core::workspace::Workspace;
 use newt_server::backend::{
     AgentSettings, Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState,
 };
-use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
 use serde_json::json;
@@ -208,28 +207,27 @@ fn runner(
     script: Vec<Message>,
     calls: &Arc<AtomicUsize>,
 ) -> Runner<WorldBackend, Scripted> {
-    Runner::new(
+    Runner::builder(
         Store::new(pool.clone()),
         WorldBackend(Arc::clone(world)),
         Scripted {
             script: Mutex::new(script.into()),
             calls: Arc::clone(calls),
         },
-        RunnerConfig {
-            lease_ttl: Duration::from_secs(1),
-            sweep_every: Duration::from_millis(50),
-            shutdown_grace: Duration::from_secs(1),
-            backoff_base: Duration::from_millis(10),
-            max_attempts: 5,
-            max_sessions: 8,
-            reserved_interactive: 2,
-            max_waiting: 64,
-            cache_key_buckets: newt_server::cache_keys::Buckets::Fixed(1),
-            retention: newt_server::retention::Retention::default(),
-        },
-        None,
-        Topics::default(),
     )
+    .config(RunnerConfig {
+        lease_ttl: Duration::from_secs(1),
+        sweep_every: Duration::from_millis(50),
+        shutdown_grace: Duration::from_secs(1),
+        backoff_base: Duration::from_millis(10),
+        max_attempts: 5,
+        max_sessions: 8,
+        reserved_interactive: 2,
+        max_waiting: 64,
+        cache_key_buckets: newt_server::cache_keys::Buckets::Fixed(1),
+        retention: newt_server::retention::Retention::default(),
+    })
+    .build()
 }
 
 async fn until(what: &str, check: impl AsyncFn() -> bool) {

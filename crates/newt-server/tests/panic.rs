@@ -11,7 +11,6 @@ use newt_core::provider::{
 };
 use newt_core::workspace::Workspace;
 use newt_server::backend::StaticBackend;
-use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
 use serde_json::json;
@@ -60,7 +59,7 @@ async fn a_panicking_turn_releases_its_lease_and_the_event_runs_again_at_once(po
         .accept_event("assistant", "p1", &event, false)
         .await
         .unwrap();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         store.clone(),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -70,15 +69,14 @@ async fn a_panicking_turn_releases_its_lease_and_the_event_runs_again_at_once(po
         PanicsOnce {
             panicked: AtomicBool::new(false),
         },
-        RunnerConfig {
-            lease_ttl: Duration::from_secs(60),
-            sweep_every: Duration::from_millis(50),
-            backoff_base: Duration::from_millis(10),
-            ..RunnerConfig::default()
-        },
-        None,
-        Topics::default(),
-    );
+    )
+    .config(RunnerConfig {
+        lease_ttl: Duration::from_secs(60),
+        sweep_every: Duration::from_millis(50),
+        backoff_base: Duration::from_millis(10),
+        ..RunnerConfig::default()
+    })
+    .build();
     let _loops = runner.spawn_loops();
 
     let started = Instant::now();

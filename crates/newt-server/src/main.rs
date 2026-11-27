@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
-use newt_core::sink::{JsonlSink, SinkError};
+use newt_core::sink::JsonlSink;
 use newt_otlp::{Hooks, OtlpConfig, OtlpSink};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use newt_server::config::{ServerConfig, parse_headers};
-use newt_server::events::{Instrumentation, Record, ServerEvent, ServerEventKind};
+use newt_server::events::{Record, ServerEvent, ServerEventKind};
 use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::http::{self, AppState};
 use newt_server::models::Routes;
@@ -21,8 +21,6 @@ use newt_server::store::Store;
 use newt_server::{db, live};
 
 const EVENT_BUFFER: usize = 1024;
-
-type EventLog = (JsonlSink<Record>, JoinHandle<Result<(), SinkError>>);
 
 #[tokio::main]
 #[expect(clippy::too_many_lines, reason = "startup reads top to bottom")]
@@ -84,25 +82,29 @@ async fn main() -> anyhow::Result<()> {
     let (live_topics, listener_task) = live::spawn_listener(pool.clone())
         .await
         .context("subscribing to Postgres notifications")?;
-    let instrumentation = instrumentation(jsonl.as_ref(), otlp.as_ref());
-    let http_instrumentation = instrumentation.clone();
     let backend = HomeBackend::new(access.homes, config.models.keys().cloned());
-    let runner = Runner::new(
+    let mut runner = Runner::builder(
         Store::new(pool.clone()),
         backend,
         Routes::from_config(&config)?,
-        RunnerConfig {
-            max_sessions: config.runner.max_sessions,
-            reserved_interactive: config.runner.reserved_interactive(),
-            max_waiting: config.runner.max_waiting(),
-            cache_key_buckets: config.runner.cache_key_buckets,
-            retention: config.retention.retention(),
-            ..RunnerConfig::default()
-        },
-        instrumentation,
-        live_topics.clone(),
     )
-    .with_live_stream(access.live_stream.clone());
+    .config(RunnerConfig {
+        max_sessions: config.runner.max_sessions,
+        reserved_interactive: config.runner.reserved_interactive(),
+        max_waiting: config.runner.max_waiting(),
+        cache_key_buckets: config.runner.cache_key_buckets,
+        retention: config.retention.retention(),
+        ..RunnerConfig::default()
+    })
+    .live(live_topics.clone())
+    .live_stream(access.live_stream.clone());
+    if let Some((log, _)) = &jsonl {
+        runner = runner.observe(Arc::new(log.clone()));
+    }
+    if let Some((traces, _)) = &otlp {
+        runner = runner.observe(Arc::new(traces.clone()));
+    }
+    let runner = runner.build();
     let loops = runner.spawn_loops();
     let shutdown = CancellationToken::new();
     let state = AppState {
@@ -110,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         tokens: Arc::new(access.tokens),
         live: live_topics,
         shutdown: shutdown.clone(),
-        instrumentation: http_instrumentation,
+        observers: runner.observers(),
         live_meta: Arc::new(access.live_meta),
         live_stream: Arc::new(access.live_stream),
         metrics: runner.metrics(),
@@ -163,18 +165,6 @@ fn otlp_sink(config: &ServerConfig) -> anyhow::Result<Option<(OtlpSink, JoinHand
     };
     tracing::info!(endpoint = %otlp.endpoint, profile = ?otlp.profile, "exporting traces");
     Ok(Some(OtlpSink::spawn(otlp, Hooks::default(), EVENT_BUFFER)))
-}
-
-fn instrumentation(
-    jsonl: Option<&EventLog>,
-    otlp: Option<&(OtlpSink, JoinHandle<()>)>,
-) -> Option<Arc<Instrumentation>> {
-    let instrumentation = Instrumentation {
-        log: jsonl.map(|(log, _)| log.clone()),
-        traces: otlp.map(|(traces, _)| traces.clone()),
-    };
-    (instrumentation.log.is_some() || instrumentation.traces.is_some())
-        .then(|| Arc::new(instrumentation))
 }
 
 struct AgentAccess {

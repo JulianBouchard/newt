@@ -70,7 +70,7 @@ impl Model for Echo {
 
 async fn start(pool: &PgPool) -> String {
     let (live, _listener) = spawn_listener(pool.clone()).await.unwrap();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         Store::new(pool.clone()),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -78,15 +78,15 @@ async fn start(pool: &PgPool) -> String {
             workspace: Workspace::default(),
         },
         Echo,
-        RunnerConfig {
-            lease_ttl: Duration::from_secs(1),
-            sweep_every: Duration::from_millis(50),
-            backoff_base: Duration::from_millis(10),
-            ..RunnerConfig::default()
-        },
-        None,
-        live.clone(),
-    );
+    )
+    .config(RunnerConfig {
+        lease_ttl: Duration::from_secs(1),
+        sweep_every: Duration::from_millis(50),
+        backoff_base: Duration::from_millis(10),
+        ..RunnerConfig::default()
+    })
+    .live(live.clone())
+    .build();
     std::mem::forget(runner.spawn_loops());
     let state = AppState {
         store: Store::new(pool.clone()),
@@ -96,7 +96,7 @@ async fn start(pool: &PgPool) -> String {
         ])),
         live,
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::default(),
         metrics: Arc::default(),

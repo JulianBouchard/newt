@@ -26,7 +26,7 @@ async fn start(pool: &PgPool) -> Harness {
     let store = Store::new(pool.clone()).with_max_pending(HashMap::from([("assistant".into(), 2)]));
     let model = GatedModel::closed();
     let (live, notifications) = spawn_listener(pool.clone()).await.unwrap();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         store.clone(),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -34,15 +34,15 @@ async fn start(pool: &PgPool) -> Harness {
             workspace: Workspace::default(),
         },
         model.clone(),
-        RunnerConfig {
-            lease_ttl: Duration::from_millis(600),
-            sweep_every: Duration::from_millis(30),
-            backoff_base: Duration::from_millis(10),
-            ..RunnerConfig::default()
-        },
-        None,
-        live.clone(),
-    );
+    )
+    .config(RunnerConfig {
+        lease_ttl: Duration::from_millis(600),
+        sweep_every: Duration::from_millis(30),
+        backoff_base: Duration::from_millis(10),
+        ..RunnerConfig::default()
+    })
+    .live(live.clone())
+    .build();
     let _loops = runner.spawn_loops();
     let state = AppState {
         store,
@@ -52,7 +52,7 @@ async fn start(pool: &PgPool) -> Harness {
         )])),
         live,
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::default(),
         metrics: runner.metrics(),

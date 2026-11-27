@@ -92,7 +92,7 @@ async fn start(pool: PgPool, streaming: bool) -> (String, impl Sized) {
     } else {
         HashSet::new()
     };
-    let runner = Runner::new(
+    let runner = Runner::builder(
         Store::new(pool.clone()),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -102,11 +102,11 @@ async fn start(pool: PgPool, streaming: bool) -> (String, impl Sized) {
         TwoStepModel {
             calls: AtomicUsize::new(0),
         },
-        RunnerConfig::default(),
-        None,
-        live.clone(),
     )
-    .with_live_stream(agents.clone());
+    .config(RunnerConfig::default())
+    .live(live.clone())
+    .live_stream(agents.clone())
+    .build();
     let loops = runner.spawn_loops();
     let state = AppState {
         store: Store::new(pool),
@@ -116,7 +116,7 @@ async fn start(pool: PgPool, streaming: bool) -> (String, impl Sized) {
         )])),
         live,
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::new(agents),
         metrics: Arc::default(),

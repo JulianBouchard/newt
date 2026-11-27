@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use newt_core::event::{Event, EventKind};
 use newt_core::sink::EventSink;
 use std::time::{Duration, Instant};
@@ -7,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::events::Instrumentation;
+use crate::events::Observers;
 use crate::live::Topics;
 use crate::store::{LiveEvent, Store, live_topic};
 
@@ -165,7 +163,7 @@ impl EventSink for LiveSink {
 #[derive(Clone, Copy)]
 pub struct TeeSink<'a> {
     pub live: &'a LiveSink,
-    pub instrumentation: Option<&'a Arc<Instrumentation>>,
+    pub observers: &'a Observers,
     /// Called on every model call the turn starts.
     pub on_model_call: Option<&'a (dyn Fn() + Sync)>,
 }
@@ -186,10 +184,8 @@ impl EventSink for TeeSink<'_> {
         {
             on_model_call();
         }
-        if let Some(instrumentation) = self.instrumentation
-            && !event.kind.is_live_only()
-        {
-            instrumentation.emit(event.clone());
+        if !self.observers.is_empty() && !event.kind.is_live_only() {
+            self.observers.emit(event.clone());
         }
         self.live.emit(event);
     }

@@ -97,7 +97,7 @@ async fn start(pool: PgPool) -> String {
         )])),
         live,
         shutdown: tokio_util::sync::CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::default(),
         metrics: Arc::default(),

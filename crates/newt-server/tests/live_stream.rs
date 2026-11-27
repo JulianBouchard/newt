@@ -96,7 +96,7 @@ async fn live_frames(pool: &PgPool, agent: &str) -> Vec<Value> {
 
 async fn frames_with_opt_in(pool: PgPool, opted_in: bool) -> Vec<Value> {
     let (live, _listener) = spawn_listener(pool.clone()).await.unwrap();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         Store::new(pool.clone()),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -104,15 +104,15 @@ async fn frames_with_opt_in(pool: PgPool, opted_in: bool) -> Vec<Value> {
             workspace: Workspace::default(),
         },
         Talker,
-        RunnerConfig::default(),
-        None,
-        live,
     )
-    .with_live_stream(if opted_in {
+    .config(RunnerConfig::default())
+    .live(live)
+    .live_stream(if opted_in {
         HashSet::from(["assistant".to_owned()])
     } else {
         HashSet::new()
-    });
+    })
+    .build();
     let _loops = runner.spawn_loops();
     live_frames(&pool, "assistant").await
 }

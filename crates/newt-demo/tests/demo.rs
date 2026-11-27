@@ -193,17 +193,16 @@ async fn converse(pool: PgPool, backend: HomeBackend) -> (Vec<String>, Vec<Strin
         )],
     ];
     let store = Store::new(pool.clone());
-    let runner = Runner::new(
+    let runner = Runner::builder(
         Store::new(pool),
         backend,
         Scripted {
             script: Mutex::new(script.into()),
             ..Scripted::default()
         },
-        RunnerConfig::default(),
-        None,
-        newt_server::live::Topics::default(),
-    );
+    )
+    .config(RunnerConfig::default())
+    .build();
 
     say(
         &store,

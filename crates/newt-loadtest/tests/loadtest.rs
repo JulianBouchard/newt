@@ -72,7 +72,7 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
     let (live, _listener) = newt_server::live::spawn_listener(pool.clone())
         .await
         .unwrap();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         Store::new(pool.clone()),
         HomeBackend::new(
             BTreeMap::from([(
@@ -85,20 +85,20 @@ async fn load_against_newt_completes_every_turn_without_a_real_model(pool: PgPoo
             ["default".to_owned()],
         ),
         Routes::from_config(&config).unwrap(),
-        RunnerConfig {
-            max_sessions: 32,
-            ..RunnerConfig::default()
-        },
-        None,
-        live.clone(),
-    );
+    )
+    .config(RunnerConfig {
+        max_sessions: 32,
+        ..RunnerConfig::default()
+    })
+    .live(live.clone())
+    .build();
     let _loops = runner.spawn_loops();
     let newt_url = listen(router(AppState {
         store: Store::new(pool),
         tokens: Arc::new(HashMap::from([("assistant".to_owned(), TOKEN.to_owned())])),
         live,
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::default(),
         metrics: Arc::default(),

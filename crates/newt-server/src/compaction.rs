@@ -3,7 +3,7 @@ use std::time::Duration;
 use newt_core::checkpoint::COMPACTION_INSTRUCTION;
 use newt_core::journal::NoJournal;
 use newt_core::provider::Model;
-use newt_core::sink::{EventSink, NoSink};
+use newt_core::sink::EventSink;
 use newt_core::steering::NoSteering;
 use newt_core::turn::{Compaction, TurnDeps, TurnInput, run_turn};
 
@@ -34,10 +34,7 @@ pub(crate) async fn compact_if_over_budget<B: Backend, M: Model>(
     let turn_id = uuid::Uuid::now_v7().to_string();
     let session = format!("{}/{}", lease.agent, lease.key);
     let cancel = inner.turns.child_token();
-    let sink: &dyn EventSink = match inner.instrumentation.as_deref() {
-        Some(instrumentation) => instrumentation,
-        None => &NoSink,
-    };
+    let sink: &dyn EventSink = &inner.observers;
     tracing::info!(agent = %lease.agent, key = %lease.key, tokens_before, budget, "compacting session history");
     let result = run_turn(
         &TurnDeps {

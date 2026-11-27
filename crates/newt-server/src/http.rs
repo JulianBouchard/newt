@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use self::error::{ApiError, json_errors};
 use crate::cancel::CancelRequest;
 use crate::counters::Counter;
-use crate::events::{Instrumentation, ServerEventKind};
+use crate::events::{Observers, ServerEventKind};
 use crate::live::{Channel, Topics, Watch};
 use crate::metrics::Metrics;
 use crate::retention::Deleted;
@@ -45,7 +45,7 @@ pub struct AppState {
     pub tokens: Arc<HashMap<String, String>>,
     pub live: Topics,
     pub shutdown: CancellationToken,
-    pub instrumentation: Option<Arc<Instrumentation>>,
+    pub observers: Observers,
     /// Agents whose live `received` frames carry the event's `meta`.
     pub live_meta: Arc<HashSet<String>>,
     /// Agents that stream text and tool input on the live feed, which `/chat` needs.
@@ -59,7 +59,7 @@ impl std::fmt::Debug for AppState {
         formatter
             .debug_struct("AppState")
             .field("agents", &self.tokens.len())
-            .field("instrumented", &self.instrumentation.is_some())
+            .field("observers", &self.observers)
             .finish_non_exhaustive()
     }
 }
@@ -211,10 +211,8 @@ async fn accept_event(
     } else {
         Counter::EventsAccepted
     });
-    if let Some(sink) = &state.instrumentation
-        && !accepted.duplicate
-    {
-        sink.server(ServerEventKind::EventAccepted {
+    if !accepted.duplicate {
+        state.observers.server(ServerEventKind::EventAccepted {
             session: format!("{agent}/{key}"),
             inbox_id: accepted.inbox_id,
             accept_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),

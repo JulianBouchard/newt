@@ -24,7 +24,7 @@ async fn serve(store_pool: PgPool, runner: &Runner<StaticBackend, GatedModel>) -
         )])),
         live: Topics::default(),
         shutdown: CancellationToken::new(),
-        instrumentation: None,
+        observers: newt_server::events::Observers::default(),
         live_meta: Arc::default(),
         live_stream: Arc::default(),
         metrics: runner.metrics(),
@@ -36,7 +36,7 @@ async fn serve(store_pool: PgPool, runner: &Runner<StaticBackend, GatedModel>) -
 }
 
 fn runner(pool: &PgPool, model: GatedModel) -> Runner<StaticBackend, GatedModel> {
-    Runner::new(
+    Runner::builder(
         Store::new(pool.clone()),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -44,14 +44,13 @@ fn runner(pool: &PgPool, model: GatedModel) -> Runner<StaticBackend, GatedModel>
             workspace: Workspace::default(),
         },
         model,
-        RunnerConfig {
-            max_sessions: 1,
-            sweep_every: Duration::from_millis(50),
-            ..RunnerConfig::default()
-        },
-        None,
-        Topics::default(),
     )
+    .config(RunnerConfig {
+        max_sessions: 1,
+        sweep_every: Duration::from_millis(50),
+        ..RunnerConfig::default()
+    })
+    .build()
 }
 
 async fn health(base: &str) -> (u16, Value) {

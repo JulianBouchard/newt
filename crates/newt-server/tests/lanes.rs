@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use newt_core::workspace::Workspace;
 use newt_server::backend::StaticBackend;
-use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::store::{InboundEvent, Store};
 use newt_server::testing::GatedModel;
@@ -27,7 +26,7 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
 async fn background_turns_leave_the_reserved_slots_to_interactive_ones(pool: PgPool) {
     let store = Store::new(pool.clone());
     let model = GatedModel::closed();
-    let runner = Runner::new(
+    let runner = Runner::builder(
         store.clone(),
         StaticBackend {
             system: "You are a helpful agent.".into(),
@@ -35,15 +34,14 @@ async fn background_turns_leave_the_reserved_slots_to_interactive_ones(pool: PgP
             workspace: Workspace::default(),
         },
         model.clone(),
-        RunnerConfig {
-            max_sessions: 4,
-            reserved_interactive: 1,
-            sweep_every: Duration::from_millis(20),
-            ..RunnerConfig::default()
-        },
-        None,
-        Topics::default(),
-    );
+    )
+    .config(RunnerConfig {
+        max_sessions: 4,
+        reserved_interactive: 1,
+        sweep_every: Duration::from_millis(20),
+        ..RunnerConfig::default()
+    })
+    .build();
     let metrics = runner.metrics();
     let _loops = runner.spawn_loops();
 

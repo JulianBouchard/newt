@@ -15,7 +15,6 @@ use newt_core::workspace::Workspace;
 use newt_server::backend::{
     AgentSettings, Backend, BackendError, Prepared, SessionState, TurnRequest, TurnState,
 };
-use newt_server::live::Topics;
 use newt_server::runner::{Runner, RunnerConfig};
 use newt_server::sessions::Lease;
 use newt_server::store::{InboundEvent, Store};
@@ -240,17 +239,12 @@ async fn until_idle(store: &Store) {
 }
 
 fn runner(pool: &PgPool, model: Chatty) -> Runner<Budgeted, Chatty> {
-    Runner::new(
-        Store::new(pool.clone()),
-        Budgeted,
-        model,
-        RunnerConfig {
+    Runner::builder(Store::new(pool.clone()), Budgeted, model)
+        .config(RunnerConfig {
             sweep_every: Duration::from_millis(50),
             ..RunnerConfig::default()
-        },
-        None,
-        Topics::default(),
-    )
+        })
+        .build()
 }
 
 async fn converse(store: &Store, runner: &Runner<Budgeted, Chatty>, turns: usize) {

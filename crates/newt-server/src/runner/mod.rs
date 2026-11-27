@@ -13,7 +13,7 @@ use tokio_util::task::TaskTracker;
 use crate::backend::Backend;
 use crate::cache_keys::{Buckets, CacheKeys};
 use crate::cancel::RunningTurns;
-use crate::events::{Instrumentation, ServerEventKind};
+use crate::events::{Observer, Observers, ServerEventKind};
 use crate::live::Topics;
 use crate::metrics::Metrics;
 use crate::retention::Retention;
@@ -105,7 +105,7 @@ pub(crate) struct Inner<B, M> {
     pub(crate) owner: String,
     pub(crate) config: RunnerConfig,
     pub(crate) cache_keys: CacheKeys,
-    pub(crate) instrumentation: Option<Arc<Instrumentation>>,
+    pub(crate) observers: Observers,
     pub(crate) notifications: Topics,
     pub(crate) live_stream: HashSet<String>,
     in_flight: Mutex<HashSet<Session>>,
@@ -125,9 +125,7 @@ pub(crate) fn elapsed_ms(started: std::time::Instant) -> u64 {
 
 impl<B, M> Inner<B, M> {
     pub(crate) fn emit(&self, kind: ServerEventKind) {
-        if let Some(instrumentation) = &self.instrumentation {
-            instrumentation.server(kind);
-        }
+        self.observers.server(kind);
     }
 
     fn running(&self) -> MutexGuard<'_, HashSet<Session>> {
@@ -145,22 +143,71 @@ fn background_slots(config: RunnerConfig) -> usize {
         .max(1)
 }
 
-impl<B: Backend, M: Model + 'static> Runner<B, M> {
-    pub fn new(
-        store: Store,
-        backend: B,
-        model: M,
-        config: RunnerConfig,
-        instrumentation: Option<Arc<Instrumentation>>,
-        notifications: Topics,
-    ) -> Self {
+/// A [`Runner`] being built: see [`Runner::builder`].
+pub struct RunnerBuilder<B, M> {
+    store: Store,
+    backend: B,
+    model: M,
+    config: RunnerConfig,
+    observers: Observers,
+    notifications: Topics,
+    live_stream: HashSet<String>,
+}
+
+impl<B, M> std::fmt::Debug for RunnerBuilder<B, M> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RunnerBuilder")
+            .field("observers", &self.observers)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<B: Backend, M: Model + 'static> RunnerBuilder<B, M> {
+    #[must_use]
+    pub const fn config(mut self, config: RunnerConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Adds an observer, told every turn and server event.
+    #[must_use]
+    pub fn observe(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observers.push(observer);
+        self
+    }
+
+    /// The Postgres notifications the runner wakes and cancels on.
+    #[must_use]
+    pub fn live(mut self, notifications: Topics) -> Self {
+        self.notifications = notifications;
+        self
+    }
+
+    /// The agents whose model output streams on the live feed.
+    #[must_use]
+    pub fn live_stream(mut self, agents: HashSet<String>) -> Self {
+        self.live_stream = agents;
+        self
+    }
+
+    pub fn build(self) -> Runner<B, M> {
+        let Self {
+            store,
+            backend,
+            model,
+            config,
+            observers,
+            notifications,
+            live_stream,
+        } = self;
         let owner = format!(
             "{}-{}-{}",
             std::env::var("HOSTNAME").unwrap_or_else(|_| "newt".to_owned()),
             std::process::id(),
             uuid::Uuid::now_v7().simple()
         );
-        Self {
+        Runner {
             inner: Arc::new(Inner {
                 store,
                 backend,
@@ -168,9 +215,9 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
                 owner,
                 config,
                 cache_keys: CacheKeys::new(config.cache_key_buckets),
-                instrumentation,
+                observers,
                 notifications,
-                live_stream: HashSet::new(),
+                live_stream,
                 in_flight: Mutex::new(HashSet::new()),
                 sessions: Semaphore::new(config.max_sessions.max(1)),
                 background: Semaphore::new(background_slots(config)),
@@ -183,22 +230,27 @@ impl<B: Backend, M: Model + 'static> Runner<B, M> {
             }),
         }
     }
+}
 
-    /// Turns on `live_stream` for these agents.
-    ///
-    /// # Panics
-    ///
-    /// If the runner was already cloned or started.
-    #[must_use]
-    pub fn with_live_stream(mut self, agents: HashSet<String>) -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "a setup mistake, caught by the first test that builds a runner"
-        )]
-        let inner = Arc::get_mut(&mut self.inner)
-            .expect("with_live_stream is called before the runner is shared");
-        inner.live_stream = agents;
-        self
+impl<B: Backend, M: Model + 'static> Runner<B, M> {
+    /// Starts building a runner over its store, backend and model; anything
+    /// not set keeps its default.
+    pub fn builder(store: Store, backend: B, model: M) -> RunnerBuilder<B, M> {
+        RunnerBuilder {
+            store,
+            backend,
+            model,
+            config: RunnerConfig::default(),
+            observers: Observers::default(),
+            notifications: Topics::default(),
+            live_stream: HashSet::new(),
+        }
+    }
+
+    /// The observers the runner tells about its events, for the HTTP API
+    /// to tell about the events it accepts.
+    pub fn observers(&self) -> Observers {
+        self.inner.observers.clone()
     }
 
     /// The load figures this runner keeps, for `/healthz` and `/metrics`.
