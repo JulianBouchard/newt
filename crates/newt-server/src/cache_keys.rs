@@ -30,7 +30,8 @@ const MAX_BUCKETS: u32 = 256;
 /// an idle prefix cached. After that the cache is cold and a new key is free.
 const STICK_FOR: Duration = Duration::from_mins(10);
 /// Past this many remembered sessions, those idle longer than [`STICK_FOR`]
-/// are forgotten.
+/// are forgotten. After each sweep the next one waits until the map has
+/// doubled, so a map of recent sessions is not swept on every call.
 const FORGET_ABOVE: usize = 4096;
 const WINDOW: Duration = Duration::from_mins(1);
 
@@ -63,6 +64,7 @@ pub struct CacheKeys {
     buckets: Buckets,
     agents: Mutex<HashMap<String, Rate>>,
     last: Mutex<HashMap<(String, String), (u32, Instant)>>,
+    forget_above: std::sync::atomic::AtomicUsize,
     per_key: Mutex<HashMap<String, VecDeque<Instant>>>,
 }
 
@@ -72,6 +74,7 @@ impl CacheKeys {
             buckets,
             agents: Mutex::new(HashMap::new()),
             last: Mutex::new(HashMap::new()),
+            forget_above: std::sync::atomic::AtomicUsize::new(FORGET_ABOVE),
             per_key: Mutex::new(HashMap::new()),
         }
     }
@@ -98,8 +101,12 @@ impl CacheKeys {
             _ => jump(fnv1a(session), count),
         };
         last.insert(id, (bucket, now));
-        if last.len() > FORGET_ABOVE {
+        if last.len() > self.forget_above.load(std::sync::atomic::Ordering::Relaxed) {
             last.retain(|_, (_, used)| now.duration_since(*used) < STICK_FOR);
+            self.forget_above.store(
+                (last.len() * 2).max(FORGET_ABOVE),
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
         format!("{agent}/{bucket}")
     }
@@ -229,7 +236,24 @@ mod tests {
     use std::collections::BTreeSet;
     use std::time::{Duration, Instant};
 
-    use super::{Buckets, CALLS_PER_KEY, CacheKeys, SHRINK_AFTER, STICK_FOR, jump};
+    use super::{Buckets, CALLS_PER_KEY, CacheKeys, FORGET_ABOVE, SHRINK_AFTER, STICK_FOR, jump};
+
+    #[test]
+    fn a_map_of_recent_sessions_is_swept_once_per_doubling_not_on_every_call() {
+        let keys = CacheKeys::new(Buckets::Fixed(1));
+        let now = std::time::Instant::now();
+        for session in 0..=FORGET_ABOVE {
+            keys.key_at("assistant", &session.to_string(), now);
+        }
+        let after_first_sweep = keys.forget_above.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(after_first_sweep, (FORGET_ABOVE + 1) * 2);
+        keys.key_at("assistant", "one more", now);
+        assert_eq!(
+            keys.forget_above.load(std::sync::atomic::Ordering::Relaxed),
+            after_first_sweep,
+            "one more recent session sweeps nothing"
+        );
+    }
 
     #[test]
     fn a_fixed_count_spreads_sessions_and_keeps_each_on_one_key() {
