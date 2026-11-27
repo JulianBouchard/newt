@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 
 use newt_server::config::{ServerConfig, parse_headers};
 use newt_server::events::{Record, ServerEvent, ServerEventKind};
+use newt_server::failures::GiveUpAfter;
 use newt_server::home::{HomeBackend, HomeServer};
 use newt_server::http::{self, AppState};
 use newt_server::models::Routes;
@@ -95,6 +96,9 @@ async fn main() -> anyhow::Result<()> {
         cache_key_buckets: config.runner.cache_key_buckets,
         retention: config.retention.retention(),
         ..RunnerConfig::default()
+    })
+    .failures(GiveUpAfter {
+        attempts: config.runner.give_up_after,
     })
     .live(live_topics.clone())
     .live_stream(access.live_stream.clone());

@@ -1162,3 +1162,27 @@ async fn a_prefix_invalidation_reaches_a_template_page_keyed_by_its_newt_key() {
         Some("WEB-12: fixed\n")
     );
 }
+
+#[tokio::test]
+async fn an_agents_history_setting_reaches_its_turns_and_an_unknown_one_is_refused() {
+    let app = App::home();
+    app.settings(json!({ "model": "default", "history": "keep_all_tool_calls" }));
+    let chosen = backend(app).await;
+    let prepared = prepare(&chosen, "ana").await;
+    assert_eq!(
+        prepared.settings.history,
+        Some(newt_server::backend::KeptHistory::KeepAllToolCalls)
+    );
+    let plain = App::home();
+    assert_eq!(
+        prepare(&backend(plain).await, "ana").await.settings.history,
+        None
+    );
+    let wrong = App::home();
+    wrong.settings(json!({ "model": "default", "history": "everything" }));
+    let error = prepare_error(wrong).await;
+    assert!(
+        error.contains("history") || error.contains("everything"),
+        "{error}"
+    );
+}

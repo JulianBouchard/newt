@@ -113,6 +113,7 @@ impl Backend for Provider {
                 builtin_tools: newt_core::tools::BuiltinTools::ALL,
                 page_index_wait: std::time::Duration::from_secs(2),
                 history_budget: 60_000,
+                history: None,
             },
             state: SessionState::starting_from(request.state.clone()),
             choice,

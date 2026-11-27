@@ -49,6 +49,7 @@ Optional. The JSONL event file, used for local runs, sims and `newt-report`.
 | `reserved_interactive` | integer, less than `max_sessions` | a quarter of `max_sessions`, at least 1 (0 when `max_sessions` is 1) | Slots only interactive turns may use. Turns whose events are all `background` priority (protocol 5.1) share the other `max_sessions - reserved_interactive` slots (at least one), so a burst of background work never fills the process and leaves a live chat waiting. An interactive turn can use every slot. |
 | `max_waiting` | integer, at least 1 | `4 * max_sessions` | Woken sessions that may wait for a slot at once. A wake past it is dropped and the session stays in its inbox until the next sweep (every second) finds it again, oldest first, so a burst of notifications cannot pile up unbounded tasks. Counted in `newt_wakes_dropped_total` (protocol 5.10). |
 | `cache_key_buckets` | integer, at least 1, or `"auto"` | `"auto"` | How many prompt cache keys the sessions of one agent share. See below. |
+| `give_up_after` | integer, at least 1 | `5` | Failed attempts after which a turn with no effects is given up and its events dead-lettered. Taking over a turn that never finished, as a crash mid-turn leaves it, counts as an attempt; a turn with an outward call is never given up. |
 
 ### `cache_key_buckets`
 
@@ -67,7 +68,6 @@ These are constants in `RunnerConfig::default()` (`crates/newt-server/src/runner
 | Lease TTL | 30 s. A heartbeat renews running leases every 10 s. |
 | Sweep interval | 1 s. Each sweep wakes up to 100 sessions with pending events and no live lease. |
 | Retry backoff after a failed turn | 2 s doubling per failed attempt, capped at 300 s. |
-| Attempts before dead-lettering a turn that had no effects | 5. Taking over a turn that never finished, as a crash mid-turn leaves it once its lease expires, counts as an attempt too, unless the turn made an outward call; a commit resets the count. |
 | Shutdown grace period | 8 s, then running turns are cancelled and given 5 s more. |
 
 ## `[retention]`

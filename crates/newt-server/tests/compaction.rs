@@ -54,6 +54,7 @@ impl Backend for Budgeted {
                 builtin_tools: newt_core::tools::BuiltinTools::ALL,
                 page_index_wait: std::time::Duration::from_secs(2),
                 history_budget: BUDGET,
+                history: None,
             },
             state: SessionState::default(),
             choice: None,

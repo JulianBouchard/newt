@@ -183,6 +183,10 @@ async fn run_one_turn<B: Backend, M: Model>(
     let cache_key = inner.cache_keys.key(&lease.agent, &lease.key);
     let count_model_call = || inner.cache_keys.record_call(&lease.agent, &cache_key);
 
+    let kept: &dyn newt_core::commit::HistoryPolicy = match prepared.settings.history {
+        Some(kept) => kept.policy(),
+        None => &*inner.history,
+    };
     inner.metrics.count(Counter::TurnsStarted);
     let result = run_turn(
         &TurnDeps {
@@ -190,7 +194,7 @@ async fn run_one_turn<B: Backend, M: Model>(
             host: &prepared.host,
             steering: &steering,
             journal: &journal,
-            history: &*inner.history,
+            history: kept,
             sink: &TeeSink {
                 live: &live,
                 observers: &inner.observers,

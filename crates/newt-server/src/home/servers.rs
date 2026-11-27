@@ -61,6 +61,10 @@ pub struct Settings {
     /// milliseconds; 0 leaves the index out.
     #[serde(default = "default_page_index_wait_ms")]
     pub page_index_wait_ms: u64,
+    /// What of each turn becomes history: `retained` or
+    /// `keep_all_tool_calls`; unset, the server's default (`retained`).
+    #[serde(default)]
+    pub history: Option<crate::backend::KeptHistory>,
     /// Ask the home with `newt/turn` before each turn.
     #[serde(default)]
     pub turn: bool,
@@ -86,6 +90,7 @@ impl Settings {
             builtin_tools: self.builtin_tools,
             page_index_wait: std::time::Duration::from_millis(self.page_index_wait_ms),
             history_budget: self.history_budget,
+            history: self.history,
         }
     }
 }

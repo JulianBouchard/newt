@@ -55,6 +55,9 @@ impl ServerConfig {
         if config.runner.max_sessions == 0 {
             bail!("runner max_sessions must be at least 1");
         }
+        if config.runner.give_up_after < 1 {
+            bail!("runner give_up_after must be at least 1");
+        }
         if config.runner.max_waiting() == 0 {
             bail!("runner max_waiting must be at least 1");
         }
@@ -213,6 +216,20 @@ mod tests {
         "#;
         let error = ServerConfig::parse(raw).unwrap_err().to_string();
         assert!(error.contains("max_concurrent"), "{error}");
+    }
+
+    #[test]
+    fn give_up_after_defaults_to_five_and_must_be_at_least_one() {
+        let base = r#"
+            server = { listen = "127.0.0.1:0" }
+            database = { url_env = "X" }
+        "#;
+        assert_eq!(ServerConfig::parse(base).unwrap().runner.give_up_after, 5);
+        let three = format!("{base}\nrunner = {{ give_up_after = 3 }}");
+        assert_eq!(ServerConfig::parse(&three).unwrap().runner.give_up_after, 3);
+        let zero = format!("{base}\nrunner = {{ give_up_after = 0 }}");
+        let error = ServerConfig::parse(&zero).unwrap_err().to_string();
+        assert!(error.contains("give_up_after"), "{error}");
     }
 
     #[test]

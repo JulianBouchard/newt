@@ -4,6 +4,11 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Added
+
+- **`history` in the agent's `newt` settings** chooses what of each turn becomes history from the `newt` binary: `retained` (the default) or `keep_all_tool_calls`. Before, only a Rust caller building its own server could choose.
+- **`[runner] give_up_after`** (default 5) sets how many failed attempts a turn with no effects gets before its events are dead-lettered.
+
 ## [2.5.1] - 2026-11-27
 
 Two fixes from an architecture review. The config, the event API and the database are unchanged.

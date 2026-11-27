@@ -6,7 +6,8 @@ events = { jsonl = "newt-events.jsonl" }
 # cache_key_buckets: how many prompt cache keys the sessions of one agent
 # share. "auto" (the default) measures each agent's calls a minute and uses
 # just enough keys to keep each under OpenAI's spill point; a number fixes it.
-runner = { max_sessions = 64, cache_key_buckets = "auto" }
+# give_up_after: failed attempts before a turn with no effects is given up.
+runner = { max_sessions = 64, cache_key_buckets = "auto", give_up_after = 5 }
 # Days to keep consumed events and live feed frames (0 keeps them forever).
 # History stays until you delete the session.
 retention = { inbox_days = 30, live_days = 7 }

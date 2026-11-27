@@ -184,6 +184,27 @@ pub struct Prepared<H> {
     pub host: H,
 }
 
+/// The built-in history policy an agent chose in its settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeptHistory {
+    /// [`Retained`](newt_core::commit::Retained): ephemeral calls dropped,
+    /// a kept result cut to its summary or 500 characters.
+    Retained,
+    /// [`KeepAllToolCalls`](newt_core::commit::KeepAllToolCalls): every call
+    /// and its full result.
+    KeepAllToolCalls,
+}
+
+impl KeptHistory {
+    pub fn policy(self) -> &'static dyn newt_core::commit::HistoryPolicy {
+        match self {
+            Self::Retained => &newt_core::commit::Retained,
+            Self::KeepAllToolCalls => &newt_core::commit::KeepAllToolCalls,
+        }
+    }
+}
+
 /// How an agent's turns run: its model, efforts and limits, carried from the
 /// agent's declared settings to each turn's [`TurnSettings`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +220,8 @@ pub struct AgentSettings {
     pub builtin_tools: BuiltinTools,
     pub page_index_wait: std::time::Duration,
     pub history_budget: u32,
+    /// The history policy the agent chose; `None` keeps the runner's.
+    pub history: Option<KeptHistory>,
 }
 
 impl AgentSettings {
@@ -301,6 +324,7 @@ impl Backend for StaticBackend {
                 builtin_tools: BuiltinTools::ALL,
                 page_index_wait: std::time::Duration::from_secs(2),
                 history_budget: 60_000,
+                history: None,
             },
             state: SessionState::starting_from(request.state.clone()),
             choice: None,

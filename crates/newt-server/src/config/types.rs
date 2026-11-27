@@ -63,6 +63,10 @@ pub struct Runner {
     pub max_waiting: Option<usize>,
     #[serde(default = "default_cache_key_buckets")]
     pub cache_key_buckets: Buckets,
+    /// Failed attempts after which a turn with no effects is given up and
+    /// its events dead-lettered.
+    #[serde(default = "default_give_up_after")]
+    pub give_up_after: i32,
 }
 
 impl Runner {
@@ -88,12 +92,17 @@ impl Default for Runner {
             reserved_interactive: None,
             max_waiting: None,
             cache_key_buckets: default_cache_key_buckets(),
+            give_up_after: default_give_up_after(),
         }
     }
 }
 
 pub(super) const fn default_cache_key_buckets() -> Buckets {
     Buckets::AUTO
+}
+
+pub(super) const fn default_give_up_after() -> i32 {
+    5
 }
 
 pub(super) const fn default_max_sessions() -> usize {
