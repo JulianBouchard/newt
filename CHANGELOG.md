@@ -4,6 +4,8 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-27
+
 The workspace reads a page only when the turn asks for it, newt-core keeps only the turn loop and the traits around it, and three hooks let an app change what the server does without forking it.
 
 ### Added

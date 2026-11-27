@@ -1,6 +1,6 @@
 [package]
 name = "newt-core"
-version = "2.4.0"
+version = "2.5.0"
 description = "Agent loop, context model and the Model trait for newt"
 edition.workspace = true
 rust-version.workspace = true
