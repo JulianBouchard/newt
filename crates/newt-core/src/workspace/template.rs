@@ -1,38 +1,51 @@
 use super::{Listed, PageKey, State, Template};
 
+/// What `text` puts in each `{part}` of `pattern`, in order, when it
+/// matches. A part matches a run of characters with no `/` in it.
+pub fn capture(pattern: &str, text: &str) -> Option<Vec<(String, String)>> {
+    let mut regex = String::from("^");
+    let mut names = Vec::new();
+    let mut rest = pattern;
+    while let Some(open) = rest.find('{') {
+        let close = rest[open..].find('}')? + open;
+        regex.push_str(&regex::escape(&rest[..open]));
+        regex.push_str("([^/]+)");
+        names.push(rest[open + 1..close].to_owned());
+        rest = &rest[close + 1..];
+    }
+    regex.push_str(&regex::escape(rest));
+    regex.push('$');
+    let found = regex::Regex::new(&regex).ok()?.captures(text)?;
+    Some(
+        names
+            .into_iter()
+            .zip(found.iter().skip(1))
+            .map(|(name, value)| (name, value.map_or("", |value| value.as_str()).to_owned()))
+            .collect(),
+    )
+}
+
+/// `pattern` with each `{part}` that has a value replaced by it.
+pub fn fill(pattern: &str, values: &[(String, String)]) -> String {
+    values
+        .iter()
+        .fold(pattern.to_owned(), |filled, (part, value)| {
+            filled.replace(&format!("{{{part}}}"), value)
+        })
+}
+
 impl Template {
     /// The `{name}` parts of the template's path and what `path` puts in
-    /// each, in order, when `path` is one of its pages. A part matches one
-    /// path segment or a piece of one, never a `/`.
+    /// each, in order, when `path` is one of its pages.
     pub fn captures(&self, path: &str) -> Option<Vec<(String, String)>> {
-        let mut pattern = String::from("^");
-        let mut names = Vec::new();
-        let mut rest = self.path.as_str();
-        while let Some(open) = rest.find('{') {
-            let close = rest[open..].find('}')? + open;
-            pattern.push_str(&regex::escape(&rest[..open]));
-            pattern.push_str("([^/]+)");
-            names.push(rest[open + 1..close].to_owned());
-            rest = &rest[close + 1..];
-        }
-        pattern.push_str(&regex::escape(rest));
-        pattern.push('$');
-        let found = regex::Regex::new(&pattern).ok()?.captures(path)?;
-        Some(
-            names
-                .into_iter()
-                .zip(found.iter().skip(1))
-                .map(|(name, value)| (name, value.map_or("", |value| value.as_str()).to_owned()))
-                .collect(),
-        )
+        capture(&self.path, path)
     }
 
-    /// The key of the template's page at `path`: the template's key, then
-    /// the path.
-    pub fn page_key(&self, path: &str) -> PageKey {
-        let mut key = self.key.clone();
-        key.push(path.to_owned());
-        key
+    /// The key of the template's page at `path`, when it is one: the
+    /// template's key with the path's parts filled in.
+    pub fn page_key(&self, path: &str) -> Option<PageKey> {
+        let values = self.captures(path)?;
+        Some(self.key.iter().map(|part| fill(part, &values)).collect())
     }
 }
 
@@ -43,14 +56,13 @@ impl State {
         if self.knows(path) {
             return false;
         }
-        let Some(template) = self
+        let Some(key) = self
             .templates
             .iter()
-            .find(|template| template.captures(path).is_some())
+            .find_map(|template| template.page_key(path))
         else {
             return false;
         };
-        let key = template.page_key(path);
         self.index.insert(path.to_owned(), Listed::new(key, path));
         true
     }
@@ -72,7 +84,7 @@ mod tests {
         Template {
             path: path.to_owned(),
             description: None,
-            key: vec!["orders".to_owned()],
+            key: vec!["orders".to_owned(), "{id}".to_owned()],
         }
     }
 
@@ -102,10 +114,11 @@ mod tests {
     }
 
     #[test]
-    fn a_page_key_is_the_templates_key_and_the_path() {
+    fn a_page_key_is_the_templates_key_with_the_paths_parts_filled_in() {
         assert_eq!(
             template("orders/{id}.md").page_key("orders/17.md"),
-            vec!["orders".to_owned(), "orders/17.md".to_owned()]
+            Some(vec!["orders".to_owned(), "17".to_owned()])
         );
+        assert_eq!(template("orders/{id}.md").page_key("roles/17.md"), None);
     }
 }

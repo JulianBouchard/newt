@@ -53,7 +53,7 @@ struct App {
     result_meta: Option<Value>,
     listings: Arc<AtomicUsize>,
     links: Vec<&'static str>,
-    templates: Vec<(&'static str, &'static str)>,
+    templates: Vec<(&'static str, &'static str, Option<Value>)>,
 }
 
 impl App {
@@ -274,7 +274,15 @@ impl ServerHandler for App {
         Ok(ListResourceTemplatesResult::with_all_items(
             self.templates
                 .iter()
-                .map(|(name, uri)| ResourceTemplate::new(*uri, *name))
+                .map(|(name, uri, key)| {
+                    let mut template = ResourceTemplate::new(*uri, *name);
+                    if let Some(key) = key {
+                        let mut meta = MetaObject::new();
+                        meta.insert("newt/key".to_owned(), key.clone());
+                        template.meta = Some(meta);
+                    }
+                    template
+                })
                 .collect(),
         ))
     }
@@ -1095,7 +1103,7 @@ async fn a_page_a_tool_result_links_to_is_read_ahead_from_its_servers_listing() 
 #[tokio::test]
 async fn a_path_a_resource_template_serves_is_read_by_its_filled_uri_without_being_listed() {
     let mut app = App::home();
-    app.templates = vec![("orders/{id}.md", "orders://{id}")];
+    app.templates = vec![("orders/{id}.md", "orders://{id}", None)];
     app.set("orders://17", "Order 17: shipped\n");
     let backend = backend(app.clone()).await;
     let prepared = prepare(&backend, "ana").await;
@@ -1119,4 +1127,38 @@ async fn a_path_a_resource_template_serves_is_read_by_its_filled_uri_without_bei
     );
     assert!(prepared.workspace.read("orders/18.md").await.is_err());
     assert_eq!(prepared.workspace.read("roles/1.md").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_prefix_invalidation_reaches_a_template_page_keyed_by_its_newt_key() {
+    let mut app = App::home();
+    app.templates = vec![(
+        "issues/{key}.md",
+        "issues://{key}",
+        Some(json!(["issues", "{key}"])),
+    )];
+    app.set("issues://WEB-12", "WEB-12: login loops\n");
+    let backend = backend(app.clone()).await;
+    let prepared = prepare(&backend, "ana").await;
+    assert_eq!(
+        prepared
+            .workspace
+            .read("issues/WEB-12.md")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("WEB-12: login loops\n")
+    );
+    let touched = prepared.workspace.invalidate(&[vec!["issues".to_owned()]]);
+    assert_eq!(touched, vec!["issues/WEB-12.md".to_owned()]);
+    app.set("issues://WEB-12", "WEB-12: fixed\n");
+    assert_eq!(
+        prepared
+            .workspace
+            .read("issues/WEB-12.md")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("WEB-12: fixed\n")
+    );
 }

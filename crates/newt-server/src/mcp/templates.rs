@@ -2,14 +2,11 @@
 //! a path pattern such as `orders/{id}.md`, and reading a path it matches
 //! fills its URI template with the same values.
 
-use newt_core::workspace::{Listed, PageKey, Template};
+use newt_core::workspace::{Listed, PageKey, Template, capture, fill};
 use rmcp::model::ResourceTemplate;
 
-use super::Owner;
-
-/// The first part of every template's key, after the server's own tag. It
-/// cannot start with the NUL that marks an added server's keys.
-const TEMPLATE_KEY: &str = "newt/template";
+use super::pages::META_KEY;
+use super::{Owner, meta_field};
 
 /// A template a server serves: its workspace collection and the URI
 /// template its pages are read by.
@@ -19,53 +16,78 @@ pub(super) struct Served {
     uri: String,
 }
 
+/// The `{part}` names in `text`, sorted; `None` when one is not a simple
+/// name, as an RFC 6570 operator such as `{?q}` is not.
+fn parts(text: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let close = rest[open..].find('}')? + open;
+        let part = &rest[open + 1..close];
+        if part.is_empty() || !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        parts.push(part.to_owned());
+        rest = &rest[close + 1..];
+    }
+    parts.sort();
+    parts.dedup();
+    Some(parts)
+}
+
 impl Served {
     /// A server's template, when newt can serve it: a name with at least
-    /// one `{part}`, a URI template that uses only simple `{part}`
-    /// expressions, and the same parts in both.
+    /// one `{part}`, and a URI template and page key with exactly the same
+    /// simple parts. Its pages are keyed by `_meta["newt/key"]` with the
+    /// parts filled in, or by the filled URI, as listed resources are.
     pub(super) fn new(listed: ResourceTemplate, owner: &Owner, server: &str) -> Option<Self> {
-        let parts = |text: &str| -> Option<Vec<String>> {
-            let mut parts = Vec::new();
-            let mut rest = text;
-            while let Some(open) = rest.find('{') {
-                let close = rest[open..].find('}')? + open;
-                let part = &rest[open + 1..close];
-                if part.is_empty() || !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    return None;
-                }
-                parts.push(part.to_owned());
-                rest = &rest[close + 1..];
+        let named = parts(&listed.name).filter(|named| !named.is_empty());
+        let key = match meta_field::<PageKey>(listed.meta.as_deref(), META_KEY) {
+            Ok(Some(key)) => key,
+            Ok(None) => vec![listed.uri_template.clone()],
+            Err(error) => {
+                tracing::warn!(server, name = %listed.name, %error, "MCP resource template left out: its page key is not a list of strings");
+                return None;
             }
-            parts.sort();
-            Some(parts)
         };
-        let named = parts(&listed.name);
-        if named.as_ref().is_none_or(Vec::is_empty) || named != parts(&listed.uri_template) {
-            tracing::warn!(server, name = %listed.name, uri = %listed.uri_template, "MCP resource template left out: its name and URI template need the same simple {{part}}s");
+        let keyed = parts(&key.concat());
+        if named.is_none() || named != parts(&listed.uri_template) || named != keyed {
+            tracing::warn!(server, name = %listed.name, uri = %listed.uri_template, "MCP resource template left out: its name, URI template and page key need the same simple {{part}}s");
             return None;
         }
         Some(Self {
             template: Template {
                 path: owner.path(&listed.name),
                 description: listed.description,
-                key: owner.key(vec![TEMPLATE_KEY.to_owned(), listed.uri_template.clone()]),
+                key: owner.key(key),
             },
             uri: listed.uri_template,
         })
     }
 
-    /// The URI of the template page `key` names, when it is one of this
-    /// template's pages.
-    pub(super) fn uri_for(&self, key: &PageKey) -> Option<String> {
-        let (path, prefix) = key.split_last()?;
-        if prefix != self.template.key.as_slice() {
+    /// The URI and path of the template page `key` names, when it is one of
+    /// this template's pages: the key read back into its parts, and the
+    /// URI template filled with them, percent-encoded.
+    pub(super) fn page_for(&self, key: &PageKey) -> Option<(String, String)> {
+        if key.len() != self.template.key.len() {
             return None;
         }
-        let mut uri = self.uri.clone();
-        for (part, value) in self.template.captures(path)? {
-            uri = uri.replace(&format!("{{{part}}}"), &encoded(&value));
+        let mut values = Vec::new();
+        for (pattern, element) in self.template.key.iter().zip(key) {
+            if pattern.contains('{') {
+                values.extend(capture(pattern, element)?);
+            } else if pattern != element {
+                return None;
+            }
         }
-        Some(uri)
+        let encoded_values: Vec<(String, String)> = values
+            .iter()
+            .map(|(part, value)| (part.clone(), encoded(value)))
+            .collect();
+        Some((
+            fill(&self.uri, &encoded_values),
+            fill(&self.template.path, &values),
+        ))
     }
 }
 
@@ -90,14 +112,9 @@ pub(super) fn split(served: &[Served], keys: &[PageKey]) -> (Vec<(Listed, String
     let mut templated = Vec::new();
     let mut listed = Vec::new();
     for key in keys {
-        match (
-            served.iter().find_map(|served| served.uri_for(key)),
-            key.last(),
-        ) {
-            (Some(uri), Some(path)) => {
-                templated.push((Listed::new(key.clone(), path.clone()), uri));
-            }
-            _ => listed.push(key.clone()),
+        match served.iter().find_map(|served| served.page_for(key)) {
+            Some((uri, path)) => templated.push((Listed::new(key.clone(), path), uri)),
+            None => listed.push(key.clone()),
         }
     }
     (templated, listed)
@@ -119,30 +136,62 @@ fn encoded(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use rmcp::model::ResourceTemplate;
+    use rmcp::model::{MetaObject, ResourceTemplate};
+    use serde_json::json;
 
     use super::{Owner, Served};
 
-    fn served(name: &str, uri: &str) -> Option<Served> {
-        Served::new(
-            ResourceTemplate::new(uri, name),
-            &Owner::added("crm"),
-            "crm",
-        )
+    fn served(name: &str, uri: &str, key: Option<serde_json::Value>) -> Option<Served> {
+        let mut template = ResourceTemplate::new(uri, name);
+        if let Some(key) = key {
+            let mut meta = MetaObject::new();
+            meta.insert("newt/key".to_owned(), key);
+            template.meta = Some(meta);
+        }
+        Served::new(template, &Owner::added("crm"), "crm")
     }
 
     #[test]
     #[expect(clippy::unwrap_used, reason = "the test fails loudly on setup")]
-    fn a_page_of_a_template_is_read_by_its_filled_uri() {
-        let orders = served("orders/{id}.md", "crm://orders/{id}").unwrap();
-        assert_eq!(orders.template.path, "crm/orders/{id}.md");
-        let key = orders.template.page_key("crm/orders/a b.md");
-        assert_eq!(orders.uri_for(&key).as_deref(), Some("crm://orders/a%20b"));
+    fn a_template_page_is_keyed_by_its_newt_key_and_read_by_its_filled_uri() {
+        let issues = served(
+            "issues/{key}.md",
+            "crm://issues/{key}",
+            Some(json!(["issues", "{key}"])),
+        )
+        .unwrap();
+        assert_eq!(issues.template.path, "crm/issues/{key}.md");
+        let key = issues.template.page_key("crm/issues/WEB 12.md").unwrap();
         assert_eq!(
-            orders.uri_for(&orders.template.page_key("crm/roles/1.md")),
+            key,
+            Owner::added("crm").key(vec!["issues".to_owned(), "WEB 12".to_owned()])
+        );
+        assert_eq!(
+            issues.page_for(&key),
+            Some((
+                "crm://issues/WEB%2012".to_owned(),
+                "crm/issues/WEB 12.md".to_owned()
+            ))
+        );
+        assert_eq!(
+            issues.page_for(&Owner::added("crm").key(vec!["roles".to_owned(), "1".to_owned()])),
             None
         );
-        assert_eq!(orders.uri_for(&vec!["crm/orders/1.md".to_owned()]), None);
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "the test fails loudly on setup")]
+    fn without_a_newt_key_a_template_page_is_keyed_by_its_uri_as_a_listed_page_is() {
+        let orders = served("orders/{id}.md", "crm://orders/{id}", None).unwrap();
+        let key = orders.template.page_key("crm/orders/17.md").unwrap();
+        assert_eq!(
+            key,
+            Owner::added("crm").key(vec!["crm://orders/17".to_owned()])
+        );
+        assert_eq!(
+            orders.page_for(&key),
+            Some(("crm://orders/17".to_owned(), "crm/orders/17.md".to_owned()))
+        );
     }
 
     #[test]
@@ -155,19 +204,40 @@ mod tests {
     }
 
     #[test]
-    fn templates_newt_cannot_fill_are_left_out() {
-        assert!(served("orders.md", "crm://orders").is_none(), "no parts");
+    fn templates_newt_cannot_fill_or_key_are_left_out() {
         assert!(
-            served("orders/{id}.md", "crm://orders/{order}").is_none(),
+            served("orders.md", "crm://orders", None).is_none(),
+            "no parts"
+        );
+        assert!(
+            served("orders/{id}.md", "crm://orders/{order}", None).is_none(),
             "other parts"
         );
         assert!(
-            served("search/{q}.md", "crm://search{?q}").is_none(),
+            served("search/{q}.md", "crm://search{?q}", None).is_none(),
             "an operator"
         );
         assert!(
-            served("{a}/{b}.md", "crm://{b}/{a}").is_some(),
+            served("{a}/{b}.md", "crm://{b}/{a}", None).is_some(),
             "order may differ"
+        );
+        assert!(
+            served(
+                "issues/{key}.md",
+                "crm://issues/{key}",
+                Some(json!(["issues"]))
+            )
+            .is_none(),
+            "a key without the parts would give every page one key"
+        );
+        assert!(
+            served(
+                "issues/{key}.md",
+                "crm://issues/{key}",
+                Some(json!("issues"))
+            )
+            .is_none(),
+            "a key that is not a list"
         );
     }
 }

@@ -11,6 +11,7 @@ mod preload;
 mod refresh;
 mod search;
 mod template;
+pub use template::{capture, fill};
 
 pub use listing::Index;
 use refresh::Claimed;
@@ -50,7 +51,8 @@ impl Listed {
 }
 
 /// A collection a source serves by pattern, such as `roles/{id}`: each
-/// path it matches is a page, keyed by `key` and the path.
+/// path it matches is a page, keyed by `key` with the path's `{parts}`
+/// filled in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Template {
     pub path: String,

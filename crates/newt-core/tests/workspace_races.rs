@@ -197,7 +197,7 @@ async fn a_template_path_its_source_does_not_return_reads_as_missing_once() {
     gated.templates.lock().unwrap().push(Template {
         path: "orders/{id}.md".to_owned(),
         description: None,
-        key: vec!["orders".to_owned()],
+        key: vec!["orders".to_owned(), "{id}".to_owned()],
     });
     let workspace = Workspace::loading(Arc::new(Source(Arc::clone(&gated))));
     let reading = tokio::spawn(async move { workspace.read("orders/1.md").await });
@@ -213,7 +213,7 @@ async fn a_template_path_that_fails_to_read_does_not_stay_listed() {
     gated.templates.lock().unwrap().push(Template {
         path: "orders/{id}.md".to_owned(),
         description: None,
-        key: vec!["orders".to_owned()],
+        key: vec!["orders".to_owned(), "{id}".to_owned()],
     });
     let workspace = Workspace::loading(Arc::new(Source(Arc::clone(&gated))));
     workspace.glob("**").await.unwrap();

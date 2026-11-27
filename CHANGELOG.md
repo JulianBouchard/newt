@@ -10,7 +10,7 @@ The workspace reads a page only when the turn asks for it, newt-core keeps only 
 
 - **The turn opens with an index of the workspace's pages**: path, size and description, priority first, a large folder as one line with the glob that lists it. `page_index_wait_ms` in the agent's `newt` settings (default 2000) bounds how long the first model call waits for it; `0` leaves it out.
 - **Pages are read ahead without counting as read**: those whose `annotations.priority` is at least `preload_priority` (default 1.0) as the turn starts, and those a tool result links to with `resource_link`.
-- **MCP resource templates**: a template named like `orders/{id}.md` with a matching `uriTemplate` serves the pages its pattern matches.
+- **MCP resource templates**: a template named like `orders/{id}.md` with a matching `uriTemplate` serves the pages its pattern matches, keyed by its `_meta["newt/key"]` with the parts filled in, or by the filled URI.
 - **Hooks on `Runner::builder`**: `.observe(...)` adds an `Observer` (an `EventSink` that can also hear server events), `.history(...)` sets the `HistoryPolicy` that decides what of a turn becomes history (`Retained` by default, `KeepAllToolCalls` as an alternative), and `.failures(...)` sets the `FailurePolicy` that decides when a failed turn is dead-lettered (`GiveUpAfter { attempts: 5 }` by default). A turn with effects outside is always retried.
 
 ### Changed
